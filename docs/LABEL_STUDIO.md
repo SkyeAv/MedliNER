@@ -28,8 +28,10 @@ Behavior notes:
   the import when the project already has tasks. To replace project tasks, materialize with
   run config `{"reimport": true}` (Shift-click "Materialize" to open the launchpad).
 - If the default-account login ever fails (e.g. image behavior changes), create an account in
-  the browser, copy a legacy access token from Account & Settings, and set
-  `MEDLINER_LABEL_STUDIO_TOKEN` in `.envrc.local`; the asset then uses the token directly.
+  the browser, copy an access token from Account & Settings, and set
+  `MEDLINER_LABEL_STUDIO_TOKEN` in `.envrc.local`; the asset then sends it as a Bearer
+  credential and skips the login form. (Legacy `Token` API auth is disabled by default in
+  Label Studio ≥ 1.23, which is why the default path uses session login.)
 - Stop the server with `make label-studio-stop` (removes the container, keeps the data dir).
 
 ## Import task JSON

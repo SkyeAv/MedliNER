@@ -22,7 +22,7 @@ DEFAULT_CONTAINER = "medliner-label-studio"
 DEFAULT_IMAGE = "docker.io/heartexlabs/label-studio:latest"
 DEFAULT_PORT = 9030
 DEFAULT_PROJECT_TITLE = "MEDliNER medical NER"
-HEALTH_TIMEOUT_S = 120.0
+HEALTH_TIMEOUT_S = 300.0
 
 
 class LabelStudioServerError(RuntimeError):
@@ -127,7 +127,13 @@ def wait_healthy(base_url: str, *, timeout_s: float = HEALTH_TIMEOUT_S, interval
 
 
 class LabelStudioClient:
-    """Token-authenticated subset of the Label Studio API used by the pipeline."""
+    """Authenticated subset of the Label Studio API used by the pipeline.
+
+    Label Studio ≥1.23 disables legacy token authentication by default, so the default path
+    is Django session auth: log in through the browser form, then send every API request
+    with the session cookie and the CSRF header. An explicit `token` (the JWT access tokens
+    from Account & Settings) is sent as a Bearer credential instead.
+    """
 
     def __init__(
         self,
@@ -139,21 +145,20 @@ class LabelStudioClient:
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self._token = token
+        self._opener = None
+        self._csrf: str | None = None
         if self._token is None:
             if not username or not password:
                 raise LabelStudioServerError(
                     "set MEDLINER_LABEL_STUDIO_TOKEN or MEDLINER_LABEL_STUDIO_USERNAME/_PASSWORD"
                 )
-            self._token = self._login(username, password)
+            self._login(username, password)
 
-    def _opener(self):
+    def _login(self, username: str, password: str) -> None:
         jar = CookieJar()
-        return jar, urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
-
-    def _login(self, username: str, password: str) -> str:
-        jar, opener = self._opener()
+        self._opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
         # Django's login form is CSRF-protected; fetch it first so the cookie exists.
-        opener.open(urllib.request.Request(f"{self.base_url}/user/login/"), timeout=30.0)
+        self._opener.open(urllib.request.Request(f"{self.base_url}/user/login/"), timeout=30.0)
         csrf = next((cookie.value for cookie in jar if cookie.name == "csrftoken"), None)
         if csrf is None:
             raise LabelStudioServerError("Label Studio login page did not set a CSRF cookie")
@@ -165,31 +170,28 @@ class LabelStudioClient:
             data=form,
             headers={"Referer": f"{self.base_url}/user/login/"},
         )
-        opener.open(request, timeout=30.0)
-        payload = self._api_with(opener, "GET", "/api/current-user/token")
-        token = payload.get("token") or payload.get("api_token")
-        if not token:
-            raise LabelStudioServerError(f"unexpected token response: {payload!r}")
-        return str(token)
-
-    def _api_with(self, opener, method: str, path: str, payload: Any | None = None) -> Any:
-        data = json.dumps(payload).encode() if payload is not None else None
-        request = urllib.request.Request(f"{self.base_url}{path}", data=data, method=method)
-        if data is not None:
-            request.add_header("Content-Type", "application/json")
-        with opener.open(request, timeout=30.0) as response:
-            body = response.read().decode()
-        return json.loads(body) if body.strip() else {}
+        self._opener.open(request, timeout=30.0)
+        if not any(cookie.name == "sessionid" for cookie in jar):
+            raise LabelStudioServerError(f"Label Studio login failed for {username!r}")
+        self._csrf = csrf
 
     def api(self, method: str, path: str, payload: Any | None = None) -> Any:
         data = json.dumps(payload).encode() if payload is not None else None
         request = urllib.request.Request(f"{self.base_url}{path}", data=data, method=method)
-        request.add_header("Authorization", f"Token {self._token}")
         if data is not None:
             request.add_header("Content-Type", "application/json")
         try:
-            with _urlopen(request) as response:
-                body = response.read().decode()
+            if self._opener is not None:
+                # Session-authenticated mutating requests must echo the CSRF token.
+                if self._csrf is not None:
+                    request.add_header("X-CSRFToken", self._csrf)
+                request.add_header("Referer", f"{self.base_url}/")
+                with self._opener.open(request, timeout=30.0) as response:
+                    body = response.read().decode()
+            else:
+                request.add_header("Authorization", f"Bearer {self._token}")
+                with _urlopen(request) as response:
+                    body = response.read().decode()
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode(errors="replace")[:500]
             raise LabelStudioServerError(f"Label Studio API {method} {path} failed: {exc.code} {detail}") from exc
@@ -232,7 +234,9 @@ def provision(
     container = ensure_container(
         name=name, image=image, port=port, data_dir=data_dir, username=username, password=password
     )
-    base_url = f"http://localhost:{port}"
+    # 127.0.0.1, not localhost: rootless podman's forwarder may not listen on ::1, and
+    # localhost can resolve there first.
+    base_url = f"http://127.0.0.1:{port}"
     wait_healthy(base_url)
     client = LabelStudioClient(base_url, token=token, username=username, password=password)
     project_id = client.ensure_project(project_title, Path(label_config_path).read_text(encoding="utf-8"))

@@ -74,7 +74,7 @@ class FakeLabelStudio:
             if not self.healthy:
                 raise urllib.error.URLError("connection refused")
             return FakeResponse({"status": "UP"})
-        assert request.get_header("Authorization") == "Token test-token"
+        assert request.get_header("Authorization") == "Bearer test-token"
         if path == "/api/projects" and method == "GET":
             return FakeResponse({"results": [{"id": p["id"], "title": p["title"]} for p in self.projects.values()]})
         if path == "/api/projects" and method == "POST":
@@ -158,14 +158,12 @@ def test_client_requires_token_or_credentials():
         server.LabelStudioClient("http://localhost:8080")
 
 
-def test_session_login_fetches_a_legacy_token(monkeypatch):
-    jar = CookieJar()
-
-    def csrf_cookie() -> Cookie:
+def test_session_login_drives_the_api_with_cookies_and_csrf(monkeypatch):
+    def make_cookie(name: str, value: str) -> Cookie:
         return Cookie(
             version=0,
-            name="csrftoken",
-            value="csrf-value",
+            name=name,
+            value=value,
             port=None,
             port_specified=False,
             domain="localhost",
@@ -183,23 +181,35 @@ def test_session_login_fetches_a_legacy_token(monkeypatch):
         )
 
     class FakeOpener:
-        def __init__(self) -> None:
+        def __init__(self, jar: CookieJar) -> None:
+            self.jar = jar
             self.posts: list[bytes] = []
+            self.api_headers: list[dict] = []
 
         def open(self, request, timeout: float = 30.0) -> FakeResponse:
-            if request.data is not None:
-                self.posts.append(request.data)
+            if request.full_url.endswith("/user/login/"):
+                if request.data is not None:
+                    self.posts.append(request.data)
+                    self.jar.set_cookie(make_cookie("sessionid", "session-value"))
+                else:
+                    self.jar.set_cookie(make_cookie("csrftoken", "csrf-value"))
                 return FakeResponse({})
-            if request.full_url.endswith("/api/current-user/token"):
-                return FakeResponse({"token": "session-token"})
-            jar.set_cookie(csrf_cookie())
-            return FakeResponse({})
+            self.api_headers.append(
+                {"csrf": request.get_header("X-csrftoken"), "auth": request.get_header("Authorization")}
+            )
+            return FakeResponse({"results": []})
 
-    opener = FakeOpener()
-    monkeypatch.setattr(server.LabelStudioClient, "_opener", lambda self: (jar, opener))
-    client = server.LabelStudioClient("http://localhost:8080", username="u", password="p")
-    assert client._token == "session-token"
+    def fake_build_opener(*handlers):
+        return FakeOpener(handlers[0].cookiejar)
+
+    monkeypatch.setattr("urllib.request.build_opener", fake_build_opener)
+    client = server.LabelStudioClient("http://localhost:9030", username="u", password="p")
+    opener = client._opener
     assert b"email=u" in opener.posts[0] and b"csrfmiddlewaretoken=csrf-value" in opener.posts[0]
+
+    client.api("GET", "/api/projects")
+    # Session path: CSRF header, no Authorization bearer.
+    assert opener.api_headers == [{"csrf": "csrf-value", "auth": None}]
 
 
 def test_provision_creates_project_and_imports_tasks(monkeypatch, podman, tmp_path):
@@ -217,7 +227,7 @@ def test_provision_creates_project_and_imports_tasks(monkeypatch, podman, tmp_pa
         password="p",
         token="test-token",
     )
-    assert result["url"] == f"http://localhost:{server.DEFAULT_PORT}"
+    assert result["url"] == f"http://127.0.0.1:{server.DEFAULT_PORT}"
     assert result["tasks_in_project"] == 1
     assert result["reimported"] is False
     project = fake.projects[result["project_id"]]
