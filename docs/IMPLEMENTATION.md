@@ -11,6 +11,7 @@
 - `src/medliner/packaging.py`: standalone bundle.
 - `src/medliner/dagster_defs.py`: local asset graph.
 - `configs/label_studio_ner.xml`, `configs/train-small.yaml`: external annotation and training configuration.
+- `configs/dagster.yaml`: local Dagster instance config, copied into the gitignored `$DAGSTER_HOME` by `make UP`/`make validate`.
 - `tests/test_contracts.py`: canonical schema contracts and deterministic split behaviour.
 - `tests/test_label_studio.py`: export adapter, offsets, whitespace, overlap, and review status.
 - `tests/test_gliner_data.py`: token conversion and the `max_len`/`max_width` budgets.
@@ -23,7 +24,8 @@
 ```bash
 direnv allow
 make sync
-make check       # tests, lint, format
+make check       # tests, lint, format, Dagster definitions
+make validate    # Dagster definitions only, without starting a server
 make coverage    # tests with a coverage report
 make env         # resolved pipeline environment
 

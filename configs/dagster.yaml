@@ -1,0 +1,12 @@
+# Local Dagster instance configuration for MEDliNER.
+#
+# Dagster reads this from $DAGSTER_HOME, which is gitignored, so `make UP` and `make validate`
+# install this committed copy there when it is absent. Without it Dagster warns on every command
+# that no dagster.yaml was found and falls back to undeclared defaults.
+#
+# Everything else is left at Dagster's local defaults on purpose: SQLite run/event storage and
+# local compute logs under $DAGSTER_HOME. Do not switch to a QueuedRunCoordinator here — queued
+# runs need the daemon, and a run submitted without it would wait forever.
+
+telemetry:
+  enabled: false

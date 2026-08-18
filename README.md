@@ -72,7 +72,9 @@ make evaluate
 make bundle
 ```
 
-`make check` runs the tests, lint, and format checks; `make coverage` adds a coverage report.
+`make check` runs the tests, lint, format checks, and `dagster definitions validate`;
+`make coverage` adds a coverage report. `make UP` and `make validate` seed `$DAGSTER_HOME` from
+the committed `configs/dagster.yaml`, since the instance directory itself is gitignored.
 
 The smoke run performs one training step using the same code path as the full run. Override any environment path without editing files, for example:
 
