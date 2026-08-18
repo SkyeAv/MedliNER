@@ -23,7 +23,9 @@ Read [`docs/ANNOTATION_GUIDE.md`](docs/ANNOTATION_GUIDE.md) before annotation.
 
 ## Annotation
 
-Label Studio Community Edition is free to self-host locally and provides a browser UI. Install it separately using pip or Docker; see [`docs/LABEL_STUDIO.md`](docs/LABEL_STUDIO.md).
+Label Studio Community Edition is free to self-host locally and provides a browser UI. The
+pipeline runs it in a podman container via the `label_studio_server` asset — no separate
+install needed; see [`docs/LABEL_STUDIO.md`](docs/LABEL_STUDIO.md).
 
 Annotators do not count offsets:
 
@@ -44,27 +46,43 @@ The checked-in `.envrc` exports:
 
 | Variable | Purpose |
 | --- | --- |
+| `MEDLINER_RAW_CANDIDATES` | raw candidates JSONL you author from DAKP intermediates (see [`docs/CANDIDATE_TASKS.md`](docs/CANDIDATE_TASKS.md)) |
 | `MEDLINER_LABEL_STUDIO_EXPORT` | reviewed export that feeds the pipeline |
 | `MEDLINER_WORKDIR` | root for normalized data, splits, checkpoints, and reports |
 | `MEDLINER_TRAIN_CONFIG` | training configuration YAML |
 | `MEDLINER_DAKP_ROOT` | sibling DAKP checkout used for baselines and the regression fixture |
+| `MEDLINER_LABEL_STUDIO_PORT` / `_IMAGE` | podman Label Studio container port and image |
+| `MEDLINER_LABEL_STUDIO_USERNAME` / `_PASSWORD` / `_TOKEN` | Label Studio login created on first container boot, or an explicit API token |
 | `MEDLINER_SPLIT_SEED` / `MEDLINER_REGRESSION_IDS` | split seed and IDs withheld from every split |
 | `DAGSTER_HOME` | local Dagster run storage |
 | `TRITON_LIBCUDA_PATH` | set automatically when the system has no `/sbin/ldconfig` (see [`docs/HARDWARE.md`](docs/HARDWARE.md)) |
 
 Print the resolved values with `make env`. For private local overrides, create the ignored `.envrc.local`; do not put secrets or machine-specific paths into the committed `.envrc`.
 
-Label Studio is intentionally not a MEDliNER dependency. The Dagster UI is the only pipeline
-entry point. Start the local deployment with the phony `UP` target:
+Label Studio runs in a podman container started by the pipeline; it is intentionally not a
+MEDliNER Python dependency. The Dagster UI is the only pipeline entry point. Start the local
+deployment with the phony `UP` target:
 
 ```bash
 make UP
 # `make up` is a lowercase convenience alias.
 ```
 
-Then open <http://localhost:3000> and materialize `export_bundle` from the UI; upstream
-assets (`label_studio_export` → `normalized_dataset` → `frozen_splits` → `training_run` →
-`evaluation_report`) materialize automatically in order.
+Then open <http://localhost:3000>. The full flow is:
+
+1. Author `data/label-studio/candidates.jsonl` from intermediate DAKP inputs
+   ([`docs/CANDIDATE_TASKS.md`](docs/CANDIDATE_TASKS.md)).
+2. Materialize `label_studio_server` — this builds the Label Studio import file
+   (`candidate_tasks`) and starts the annotation server with those tasks imported.
+3. Annotate in the browser at <http://localhost:9030>, export the reviewed JSON manually,
+   and point `MEDLINER_LABEL_STUDIO_EXPORT` at it (default
+   `data/label-studio/reviewed.json`).
+4. Materialize `export_bundle`; the remaining assets (`label_studio_export` →
+   `normalized_dataset` → `frozen_splits` → `training_run` → `evaluation_report`)
+   materialize automatically in order.
+
+Stop the annotation server with `make label-studio-stop`; annotations survive in the
+container's data volume directory under `$MEDLINER_WORKDIR/label-studio/server-data`.
 
 The required first GPU check is a one-step smoke run of `training_run` using the same code
 path as full training: materialize that asset with run config `{"smoke": true}` from the
@@ -82,9 +100,17 @@ MEDLINER_LABEL_STUDIO_EXPORT=$PWD/data/label-studio/reviewed.json make UP
 
 ## Dagster graph
 
-The initial graph is intentionally small:
+The graph covers the whole workflow except the human annotation step itself:
 
 ```text
+raw candidates JSONL (authored from DAKP intermediates)
+        ↓
+Label Studio import tasks (validated, deduplicated)
+        ↓
+Label Studio server (podman container + project + import)
+        ↓
+[human annotation in the browser → manual JSON export]
+        ↓
 Label Studio export
         ↓
 validated/normalized dataset

@@ -3,6 +3,8 @@
 ## Files
 
 - `src/medliner/schema.py`: canonical contracts and policy enums.
+- `src/medliner/candidates.py`: raw candidate JSONL validation, BLAKE3 task IDs, dedupe, and Label Studio import generation.
+- `src/medliner/label_studio_server.py`: podman container lifecycle and stdlib Label Studio REST client (project + task import).
 - `src/medliner/label_studio.py`: reviewed Label Studio JSON/JSONL adapter.
 - `src/medliner/gliner_data.py`: character-to-token span conversion.
 - `src/medliner/dataset.py`, `splits.py`: JSONL, manifests, grouped splits, hashes.
@@ -13,6 +15,8 @@
 - `configs/label_studio_ner.xml`, `configs/train-small.yaml`: external annotation and training configuration.
 - `configs/dagster.yaml`: local Dagster instance config, copied into the gitignored `$DAGSTER_HOME` by `make UP`/`make validate`.
 - `tests/test_contracts.py`: canonical schema contracts and deterministic split behaviour.
+- `tests/test_candidates.py`: candidate validation, deterministic IDs, dedupe, and import shape.
+- `tests/test_label_studio_server.py`: mocked podman/API lifecycle, auth, project, and import behavior.
 - `tests/test_label_studio.py`: export adapter, offsets, whitespace, overlap, and review status.
 - `tests/test_gliner_data.py`: token conversion and the `max_len`/`max_width` budgets.
 - `tests/test_training.py`: training arguments, precision, collator, and checkpoint selection.
@@ -44,9 +48,11 @@ make UP
 
 ## End-to-end gate
 
-1. Import reviewed Label Studio export into the UI.
-2. Confirm annotators can highlight text without entering offsets.
-3. Run normalization and inspect rejected spans/errors.
+0. Author `data/label-studio/candidates.jsonl` from intermediate DAKP inputs and materialize
+   `label_studio_server`; confirm http://localhost:9030 shows the project with the imported tasks.
+1. Annotate in the browser and export the reviewed JSON manually; confirm annotators can
+   highlight text without entering offsets.
+2. Materialize `label_studio_export` → `normalized_dataset` and inspect rejected spans/errors.
 4. Materialize frozen splits and verify the split manifest hash.
 5. Run the one-step smoke test and confirm `training/final/` is loadable with `GLiNER.from_pretrained` and records `selected_checkpoint`.
 6. Run bounded training with resume enabled.

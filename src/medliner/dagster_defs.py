@@ -9,9 +9,11 @@ from pathlib import Path
 
 from dagster import AssetCheckResult, Config, Definitions, asset, asset_check
 
+from .candidates import build_import_tasks, import_manifest, read_candidates, write_import_file
 from .dataset import hash_file, manifest_for, read_examples, write_examples, write_manifest
 from .evaluation import evaluate_checkpoint
 from .label_studio import normalize_export
+from .label_studio_server import DEFAULT_IMAGE, DEFAULT_PORT, provision
 from .packaging import build_export_bundle
 from .splits import assert_no_group_leakage, group_key, split_examples
 from .training import train_from_split_directory
@@ -19,6 +21,70 @@ from .training import train_from_split_directory
 
 def workdir() -> Path:
     return Path(os.environ.get("MEDLINER_WORKDIR", "data/materialized"))
+
+
+def repo_root() -> Path:
+    """Dagster's working directory is not the repository, so anchor committed configs."""
+    return Path(__file__).resolve().parents[2]
+
+
+@asset(
+    description="Path to the user-authored raw candidates JSONL (texts derived from "
+    "intermediate DAKP inputs; see docs/CANDIDATE_TASKS.md)."
+)
+def raw_candidate_texts() -> str:
+    value = os.environ.get("MEDLINER_RAW_CANDIDATES", "data/label-studio/candidates.jsonl")
+    path = Path(value)
+    if not path.exists():
+        raise FileNotFoundError(f"raw candidates file not found: {path} (MEDLINER_RAW_CANDIDATES)")
+    return str(path)
+
+
+@asset(description="Validated, deduplicated plain-text Label Studio import file and manifest.")
+def candidate_tasks(context, raw_candidate_texts: str) -> str:
+    tasks = build_import_tasks(read_candidates(raw_candidate_texts))
+    manifest = import_manifest(tasks, input_path=raw_candidate_texts)
+    output = workdir() / "label-studio" / f"import-{manifest['input_hash'][:16]}.json"
+    write_import_file(tasks, output)
+    output.with_suffix(".manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    context.add_output_metadata(
+        {
+            "path": str(output),
+            "tasks": manifest["task_count"],
+            "duplicates_merged": manifest["duplicates_merged"],
+            "task_counts": manifest["task_counts"],
+            "family_counts": manifest["family_counts"],
+        }
+    )
+    return str(output)
+
+
+class LabelStudioServerConfig(Config):
+    """Materialize label_studio_server with {'reimport': true} to replace existing project tasks."""
+
+    reimport: bool = False
+    port: int = DEFAULT_PORT
+    image: str = DEFAULT_IMAGE
+
+
+@asset(
+    description="Podman-hosted Label Studio server with the candidate tasks imported. "
+    "Annotate in the browser, export JSON manually, then materialize label_studio_export."
+)
+def label_studio_server(context, config: LabelStudioServerConfig, candidate_tasks: str) -> str:
+    result = provision(
+        import_file=candidate_tasks,
+        label_config_path=repo_root() / "configs" / "label_studio_ner.xml",
+        port=config.port,
+        image=config.image,
+        data_dir=workdir() / "label-studio" / "server-data",
+        username=os.environ.get("MEDLINER_LABEL_STUDIO_USERNAME", "medliner@localhost"),
+        password=os.environ.get("MEDLINER_LABEL_STUDIO_PASSWORD", "medliner-local"),
+        token=os.environ.get("MEDLINER_LABEL_STUDIO_TOKEN") or None,
+        reimport=config.reimport,
+    )
+    context.add_output_metadata(result)
+    return str(result["url"])
 
 
 @asset(description="Path to a reviewed Label Studio JSON/JSONL export supplied outside MEDliNER.")
@@ -114,6 +180,12 @@ def export_bundle(
     return str(result)
 
 
+@asset_check(asset=candidate_tasks)
+def candidate_tasks_are_nonempty(candidate_tasks: str) -> AssetCheckResult:
+    tasks = json.loads(Path(candidate_tasks).read_text(encoding="utf-8"))
+    return AssetCheckResult(passed=bool(tasks), metadata={"tasks": len(tasks)})
+
+
 @asset_check(asset=normalized_dataset)
 def normalized_dataset_is_nonempty(normalized_dataset: str) -> AssetCheckResult:
     examples = read_examples(normalized_dataset)
@@ -133,8 +205,18 @@ def frozen_splits_are_disjoint(frozen_splits: str) -> AssetCheckResult:
 
 def definitions() -> Definitions:
     return Definitions(
-        assets=[label_studio_export, normalized_dataset, frozen_splits, training_run, evaluation_report, export_bundle],
-        asset_checks=[normalized_dataset_is_nonempty, frozen_splits_are_disjoint],
+        assets=[
+            raw_candidate_texts,
+            candidate_tasks,
+            label_studio_server,
+            label_studio_export,
+            normalized_dataset,
+            frozen_splits,
+            training_run,
+            evaluation_report,
+            export_bundle,
+        ],
+        asset_checks=[candidate_tasks_are_nonempty, normalized_dataset_is_nonempty, frozen_splits_are_disjoint],
     )
 
 

@@ -1,33 +1,41 @@
 # Label Studio Community Edition workflow
 
-Label Studio Community Edition is a free, locally self-hosted browser UI for this project. Keep it outside the MEDliNER Python environment: it is only used to create reviewed exports.
+Label Studio Community Edition is a free, locally self-hosted browser UI for this project. It
+runs in a podman container managed by the Dagster pipeline; it is not a MEDliNER Python
+dependency.
 
-## Install locally
+## Dagster-managed server (default)
 
-Choose one method:
-
-```bash
-# Dedicated environment, separate from MEDliNER
-python -m venv .label-studio-venv
-source .label-studio-venv/bin/activate
-pip install label-studio
-label-studio start --port 8080
-```
-
-or:
+The `label_studio_server` asset starts the stock `heartexlabs/label-studio` image with podman,
+waits for health, creates the `MEDliNER medical NER` project from
+`configs/label_studio_ner.xml`, and imports the tasks built by the upstream `candidate_tasks`
+asset:
 
 ```bash
-docker run --rm -it -p 8080:8080 \
-  -v "$PWD/.label-studio-data:/label-studio/data" \
-  heartexlabs/label-studio:latest
+make UP
+# In the Dagster UI, materialize `label_studio_server`.
+# Its upstream assets `raw_candidate_texts` and `candidate_tasks` materialize first.
 ```
 
-Open <http://localhost:8080>, create a local account/project, and paste the contents of
-`configs/label_studio_ner.xml` into the project's labeling configuration.
+Open <http://localhost:9030> and log in with `$MEDLINER_LABEL_STUDIO_USERNAME` /
+`$MEDLINER_LABEL_STUDIO_PASSWORD` (local defaults are in `.envrc`; the container image creates
+that account on first boot). Server state — accounts, projects, annotations — lives in
+`$MEDLINER_WORKDIR/label-studio/server-data` and survives container restarts.
+
+Behavior notes:
+
+- Re-materializing the asset reuses a running container and an existing project, and skips
+  the import when the project already has tasks. To replace project tasks, materialize with
+  run config `{"reimport": true}` (Shift-click "Materialize" to open the launchpad).
+- If the default-account login ever fails (e.g. image behavior changes), create an account in
+  the browser, copy a legacy access token from Account & Settings, and set
+  `MEDLINER_LABEL_STUDIO_TOKEN` in `.envrc.local`; the asset then uses the token directly.
+- Stop the server with `make label-studio-stop` (removes the container, keeps the data dir).
 
 ## Import task JSON
 
-Candidate tasks are JSON/JSONL files produced outside MEDliNER. Each task must expose at least:
+Candidate tasks come from the `candidate_tasks` asset (see `docs/CANDIDATE_TASKS.md`). Each
+task exposes at least:
 
 ```json
 {
@@ -42,6 +50,30 @@ Candidate tasks are JSON/JSONL files produced outside MEDliNER. Each task must e
 ```
 
 The task and source fields are displayed for context and are preserved when exported. They are not labels to be highlighted.
+
+## Alternative: run Label Studio yourself
+
+If you prefer not to use the Dagster-managed container, install Label Studio separately:
+
+```bash
+# Dedicated environment, separate from MEDliNER
+python -m venv .label-studio-venv
+source .label-studio-venv/bin/activate
+pip install label-studio
+label-studio start --port 9030
+```
+
+or:
+
+```bash
+podman run --rm -it -p 9030:8080 \
+  -v "$PWD/.label-studio-data:/label-studio/data:Z" \
+  docker.io/heartexlabs/label-studio:latest
+```
+
+Then create a local account/project, paste the contents of `configs/label_studio_ner.xml`
+into the project's labeling configuration, and import the JSON file written by the
+`candidate_tasks` asset (its path is on the asset's metadata in the Dagster UI).
 
 ## Annotator workflow
 

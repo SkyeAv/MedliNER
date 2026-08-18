@@ -1,39 +1,61 @@
-# Candidate task creation contract
+# Candidate task creation
 
-Candidate text creation happens outside MEDliNER. The repository consumes only the reviewed Label Studio export.
+Candidates start as a small JSONL file you author yourself, typically derived from
+intermediate DAKP inputs (DailyMed SPL section text, FAERS indication strings). The
+`raw_candidate_texts` → `candidate_tasks` Dagster assets validate that file, deduplicate it,
+and convert it into the Label Studio import shape documented in `docs/LABEL_STUDIO.md`.
+Reviewed exports remain the only training input.
 
-## Recommended upstream sources
+## Raw candidates contract
 
-Create short, self-contained tasks from:
+One JSON object per line, at `$MEDLINER_RAW_CANDIDATES` (default
+`data/label-studio/candidates.jsonl`):
 
-- DailyMed contraindication sections (`LOINC 34070-3`) and filtered contraindication sentences from indication/warning sections.
-- DailyMed indications-and-usage sections (`LOINC 34067-9`).
-- FAERS `indication` strings used for approved-treatment and observed-use contexts.
+```json
+{"text": "Contraindicated in patients with pulmonary hypertension.", "task": "contraindication", "source_family": "dailymed", "source_document_id": "spl-document-001", "section": "34070-3"}
+{"text": "Indicated for the treatment of partial-onset seizures.", "task": "indication", "source_family": "dailymed", "source_document_id": "spl-document-002", "section": "34067-9"}
+{"text": "CHRONIC KIDNEY DISEASE", "task": "indication", "source_family": "faers", "source_record_id": "case-12345"}
+```
 
-A candidate generator may be implemented in DAKP or a separate notebook/script. It should emit the Label Studio import shape documented in `docs/LABEL_STUDIO.md`, including `task`, source family, document/record IDs, section identifiers, and source hashes where available.
+Fields:
 
-## Sampling
+- `text` (required, non-empty): the exact text the annotator will highlight.
+- `task` (required): `indication` or `contraindication`.
+- `source_family` (optional, default `unknown`): e.g. `dailymed`, `faers`.
+- `source_document_id` / `source_record_id` (optional): stable upstream IDs; these drive
+  leakage-safe grouped splitting later, so fill them in whenever the source has a document
+  or case identity.
+- `section`, `source_uri`, `source_hash` (optional): extra provenance, preserved into the
+  imported task and the normalized dataset.
+
+Deriving rows from DAKP intermediates: pull section text from the DailyMed SPL inputs
+(contraindication sections `LOINC 34070-3`, indications-and-usage `LOINC 34067-9`) and
+indication strings from the FAERS case table, and write one row per text. No DAKP runtime
+is required — the file is plain JSONL and can come from a notebook, a SQL export, or a
+script against DAKP's intermediate artifacts.
+
+## Generation rules applied by `candidate_tasks`
+
+- Task IDs are deterministic: `medliner-<blake3(task + normalized text)[:16]>`, so re-running
+  over the same input reproduces the same import file and Label Studio re-imports are
+  recognizable.
+- Rows are deduplicated on normalized text + task; the first occurrence wins and the merged
+  task records a `duplicate_count` in its metadata.
+- Tasks are plain text only — no pre-annotations or `predictions` are generated.
+- Each task carries `generator_version` and `generated_at` in its `data` payload.
+- A `*.manifest.json` next to the import file records the BLAKE3 input hash and per-task /
+  per-family counts.
+
+## Sampling guidance
 
 - Keep `task=indication` and `task=contraindication` balanced enough for review and evaluation.
-- Deduplicate normalized FAERS indication strings, while retaining a count and representative source IDs in metadata.
 - Include positive examples and deliberately empty/no-entity examples.
-- Include short and long text, multiword qualified conditions, conjunctions, medication mentions, and dosage/route distractors.
+- Include short and long text, multiword qualified conditions, conjunctions, medication
+  mentions, and dosage/route distractors.
 - Keep repeated sentences from one source document together for later leakage-safe splitting.
 
-## Optional pre-annotations
+## Next step
 
-Existing DAKP gazetteer or GLiNER output may be included as Label Studio `predictions`. Predictions are useful for active-learning candidate selection and annotator speed, but they are never training gold by default. Human reviewers must accept, edit, delete, or add every final span. The reviewed `annotations` array—not `predictions`—is the only training input.
-
-## Provenance minimum
-
-Every candidate should carry:
-
-- stable task ID;
-- task kind (`indication` or `contraindication`);
-- source family and source document/record ID;
-- section or field name;
-- source URI/hash when available;
-- generator version and candidate-generation timestamp;
-- optional prediction model ID/revision.
-
-No raw DAKP runtime or database is required by MEDliNER. Once the export is reviewed, copy the export into the local ignored data directory and materialize it through Dagster.
+Materialize `label_studio_server` to serve these tasks in a browser; see
+`docs/LABEL_STUDIO.md`. Model suggestions, if ever added later, are suggestions only and
+never training gold.

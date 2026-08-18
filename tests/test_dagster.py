@@ -16,6 +16,9 @@ def test_definitions_expose_minimal_asset_graph():
     defs = definitions()
     keys = {key.to_user_string() for key in defs.resolve_all_asset_keys()}
     assert {
+        "raw_candidate_texts",
+        "candidate_tasks",
+        "label_studio_server",
         "label_studio_export",
         "normalized_dataset",
         "frozen_splits",
@@ -140,6 +143,52 @@ def test_training_run_exposes_a_smoke_run_config():
 
     assert TrainingRunConfig().smoke is False
     assert "smoke" in training_run.op.config_schema.config_type.fields
+
+
+def test_candidate_assets_materialize_an_import_file(tmp_path, monkeypatch):
+    from dagster import build_asset_context
+
+    from medliner.dagster_defs import candidate_tasks, candidate_tasks_are_nonempty, raw_candidate_texts
+
+    raw = tmp_path / "candidates.jsonl"
+    raw.write_text(
+        "\n".join(
+            json.dumps(row)
+            for row in [
+                {"text": "Indicated for asthma.", "task": "indication", "source_family": "dailymed"},
+                {"text": "Indicated for asthma.", "task": "indication", "source_family": "dailymed"},
+                {"text": "Contraindicated in asthma.", "task": "contraindication", "source_family": "faers"},
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MEDLINER_RAW_CANDIDATES", str(raw))
+    monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
+
+    assert raw_candidate_texts() == str(raw)
+    import_path = candidate_tasks(build_asset_context(), str(raw))
+    tasks = json.loads(Path(import_path).read_text(encoding="utf-8"))
+    assert len(tasks) == 2  # the duplicate indication text is merged
+    assert candidate_tasks_are_nonempty(import_path).passed is True
+    manifest = json.loads((Path(import_path).with_suffix(".manifest.json")).read_text(encoding="utf-8"))
+    assert manifest["task_counts"] == {"contraindication": 1, "indication": 1}
+    assert manifest["duplicates_merged"] == 1
+
+
+def test_raw_candidates_missing_file_is_an_explicit_error(monkeypatch, tmp_path):
+    from medliner.dagster_defs import raw_candidate_texts
+
+    monkeypatch.setenv("MEDLINER_RAW_CANDIDATES", str(tmp_path / "absent.jsonl"))
+    with pytest.raises(FileNotFoundError, match="MEDLINER_RAW_CANDIDATES"):
+        raw_candidate_texts()
+
+
+def test_label_studio_server_exposes_a_reimport_run_config():
+    from medliner.dagster_defs import LabelStudioServerConfig, label_studio_server
+
+    assert LabelStudioServerConfig().reimport is False
+    assert "reimport" in label_studio_server.op.config_schema.config_type.fields
 
 
 def test_missing_export_environment_is_an_explicit_error(monkeypatch):
