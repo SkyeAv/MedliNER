@@ -57,7 +57,7 @@ def _run_metadata(checkpoint_dir: Path) -> dict[str, Any]:
 def _write_training_config(checkpoint_dir: Path, fallback: Path, destination: Path) -> None:
     """Prefer the config the run actually used over whatever is in `configs/` today.
 
-    `medliner train --config` accepts any path, so copying the repository default would record a
+    `MEDLINER_TRAIN_CONFIG` accepts any path, so copying the repository default would record a
     configuration the checkpoint may never have seen. The effective config is captured verbatim
     in the run metadata; fall back to the file only when that metadata is absent.
     """

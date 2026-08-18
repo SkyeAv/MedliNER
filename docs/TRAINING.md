@@ -5,10 +5,10 @@ The first supported target is `urchade/gliner_small-v2.1`. This is deliberate; a
 ## Required sequence
 
 1. Materialize a reviewed dataset and frozen splits.
-2. Run `uv run medliner train ... --smoke` for one batch/one step.
+2. Materialize `training_run` with run config `{"smoke": true}` for one batch/one step.
 3. Confirm the checkpoint and loss are written.
-4. Run the bounded training configuration.
-5. Resume with the same output directory if interrupted; the trainer discovers the latest numbered `checkpoint-*` directory. `--smoke` never auto-resumes, so re-running it repeats the same one-step check instead of appending a step.
+4. Materialize `training_run` without the smoke flag for the bounded training configuration.
+5. Resume with the same output directory if interrupted; the trainer discovers the latest numbered `checkpoint-*` directory. Smoke runs never auto-resume, so re-running one repeats the same one-step check instead of appending a step.
 6. Evaluate the final/best checkpoint on reviewed validation/test data.
 
 The default configuration uses sequence length 384, micro-batch size 1, gradient accumulation 8, mixed precision on CUDA, gradient checkpointing where the encoder exposes it, five maximum epochs, and two retained checkpoints. Adjust sequence length downward before increasing batch size if VRAM is tight.

@@ -54,29 +54,27 @@ The checked-in `.envrc` exports:
 
 Print the resolved values with `make env`. For private local overrides, create the ignored `.envrc.local`; do not put secrets or machine-specific paths into the committed `.envrc`.
 
-Label Studio is intentionally not a MEDliNER dependency. Start the local Dagster deployment/UI with the phony `UP` target:
+Label Studio is intentionally not a MEDliNER dependency. The Dagster UI is the only pipeline
+entry point. Start the local deployment with the phony `UP` target:
 
 ```bash
 make UP
 # `make up` is a lowercase convenience alias.
 ```
 
-Materialize assets from the UI, or use the Makefile stages:
+Then open <http://localhost:3000> and materialize `export_bundle` from the UI; upstream
+assets (`label_studio_export` → `normalized_dataset` → `frozen_splits` → `training_run` →
+`evaluation_report`) materialize automatically in order.
 
-```bash
-make normalize
-make split
-make smoke     # required first GPU check
-make train
-make evaluate
-make bundle
-```
+The required first GPU check is a one-step smoke run of `training_run` using the same code
+path as full training: materialize that asset with run config `{"smoke": true}` from the
+launchpad (Shift-click "Materialize" to open it) before launching a full run.
 
 `make check` runs the tests, lint, format checks, and `dagster definitions validate`;
 `make coverage` adds a coverage report. `make UP` and `make validate` seed `$DAGSTER_HOME` from
 the committed `configs/dagster.yaml`, since the instance directory itself is gitignored.
 
-The smoke run performs one training step using the same code path as the full run. Override any environment path without editing files, for example:
+Override any environment path without editing files, for example:
 
 ```bash
 MEDLINER_LABEL_STUDIO_EXPORT=$PWD/data/label-studio/reviewed.json make UP
@@ -131,7 +129,7 @@ The tuned model must be compared with the untuned small checkpoint and the DAKP 
 
 ## Artifact bundle
 
-`medliner bundle` creates a standalone directory containing:
+The `export_bundle` asset creates a standalone directory containing:
 
 - `checkpoint/`;
 - `labels.json`;

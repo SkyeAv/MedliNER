@@ -55,7 +55,7 @@ token-alignment failure during GLiNER conversion.
 
 ## What the bundle records
 
-`medliner bundle` writes `provenance.json` with the raw export hash lineage: base model ID,
+The `export_bundle` asset writes `provenance.json` with the raw export hash lineage: base model ID,
 selected checkpoint, best validation strict F1, the normalized dataset SHA-256, the metrics
 SHA-256, the checkpoint tree hash, the split hash, and the held-out example IDs. `training_config.yaml`
 is reconstructed from the checkpoint's own run metadata rather than copied from `configs/`, so it

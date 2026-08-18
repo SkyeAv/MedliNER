@@ -1,12 +1,13 @@
 """Minimal local Dagster asset graph for MEDliNER."""
 
-from __future__ import annotations
+# No `from __future__ import annotations` here: this Dagster version cannot resolve
+# stringified annotations on pythonic Config classes (TrainingRunConfig) at decoration time.
 
 import json
 import os
 from pathlib import Path
 
-from dagster import AssetCheckResult, Definitions, asset, asset_check
+from dagster import AssetCheckResult, Config, Definitions, asset, asset_check
 
 from .dataset import hash_file, manifest_for, read_examples, write_examples, write_manifest
 from .evaluation import evaluate_checkpoint
@@ -71,12 +72,21 @@ def frozen_splits(context, normalized_dataset: str) -> str:
     return str(output_dir)
 
 
-@asset(description="Small-GLiNER fine-tuning output/checkpoint directory.")
-def training_run(context, frozen_splits: str) -> str:
+class TrainingRunConfig(Config):
+    """Set smoke=true in the launchpad for the required first one-step GPU check."""
+
+    smoke: bool = False
+
+
+@asset(
+    description="Small-GLiNER fine-tuning output/checkpoint directory. "
+    "Materialize with {'smoke': true} run config for the one-step GPU sanity check."
+)
+def training_run(context, config: TrainingRunConfig, frozen_splits: str) -> str:
     output = workdir() / "training"
     config_path = os.environ.get("MEDLINER_TRAIN_CONFIG", "configs/train-small.yaml")
-    result = train_from_split_directory(frozen_splits, output, config_path=config_path)
-    context.add_output_metadata({"path": str(result), "config": config_path})
+    result = train_from_split_directory(frozen_splits, output, config_path=config_path, smoke_test=config.smoke)
+    context.add_output_metadata({"path": str(result), "config": config_path, "smoke": config.smoke})
     return str(result)
 
 

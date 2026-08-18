@@ -90,6 +90,15 @@ def test_duplicate_task_ids_are_rejected(tmp_path):
         normalize_export(path)
 
 
+def test_unreviewed_tasks_are_blocked_by_default(tmp_path):
+    task = _task([])
+    task["data"]["annotation_status"] = "draft"
+    path = tmp_path / "export.json"
+    path.write_text(json.dumps([task]), encoding="utf-8")
+    with pytest.raises(LabelStudioExportError, match="unreviewed tasks cannot enter training"):
+        normalize_export(path)
+
+
 def test_jsonl_export_is_accepted(tmp_path):
     path = tmp_path / "export.jsonl"
     second = _task([])

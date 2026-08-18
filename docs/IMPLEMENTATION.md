@@ -17,7 +17,7 @@
 - `tests/test_gliner_data.py`: token conversion and the `max_len`/`max_width` budgets.
 - `tests/test_training.py`: training arguments, precision, collator, and checkpoint selection.
 - `tests/test_evaluation.py`: metrics, truncation reporting, and baseline fallbacks.
-- `tests/test_packaging.py`, `tests/test_cli.py`, `tests/test_dataset.py`, `tests/test_dagster.py`.
+- `tests/test_packaging.py`, `tests/test_dataset.py`, `tests/test_dagster.py`.
 
 ## Commands
 
@@ -37,11 +37,9 @@ print(torch.cuda.get_device_capability(), torch.cuda.get_arch_list())
 assert "sm_120" in torch.cuda.get_arch_list()
 PY
 
-# One-step smoke test
-uv run medliner train data/splits data/smoke-training --config configs/train-small.yaml --smoke
-
-# Local Dagster deployment/UI
+# Local Dagster deployment/UI — all pipeline stages run here
 make UP
+# One-step smoke test: materialize `training_run` with run config {"smoke": true}
 ```
 
 ## End-to-end gate

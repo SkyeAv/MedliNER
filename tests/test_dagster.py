@@ -57,13 +57,8 @@ def test_disjointness_check_detects_a_leaked_source_group(tmp_path):
     assert "doc-shared" in result.metadata["error"].value
 
 
-def test_assets_materialize_a_normalized_dataset_and_frozen_splits(tmp_path, monkeypatch):
-    from dagster import build_asset_context
-
-    from medliner.dagster_defs import frozen_splits, label_studio_export, normalized_dataset
-
-    export = tmp_path / "export.json"
-    export.write_text(
+def _write_reviewed_export(path: Path, count: int) -> None:
+    path.write_text(
         json.dumps(
             [
                 {
@@ -90,11 +85,20 @@ def test_assets_materialize_a_normalized_dataset_and_frozen_splits(tmp_path, mon
                         }
                     ],
                 }
-                for index in range(6)
+                for index in range(count)
             ]
         ),
         encoding="utf-8",
     )
+
+
+def test_assets_materialize_a_normalized_dataset_and_frozen_splits(tmp_path, monkeypatch):
+    from dagster import build_asset_context
+
+    from medliner.dagster_defs import frozen_splits, label_studio_export, normalized_dataset
+
+    export = tmp_path / "export.json"
+    _write_reviewed_export(export, 6)
     monkeypatch.setenv("MEDLINER_LABEL_STUDIO_EXPORT", str(export))
     monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
     monkeypatch.delenv("MEDLINER_REGRESSION_IDS", raising=False)
@@ -109,6 +113,33 @@ def test_assets_materialize_a_normalized_dataset_and_frozen_splits(tmp_path, mon
     assert normalized_dataset_is_nonempty(dataset_path).passed is True
     manifest = json.loads((Path(split_dir) / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["example_count"] == 6
+
+
+def test_frozen_splits_honor_regression_ids_from_environment(tmp_path, monkeypatch):
+    from dagster import build_asset_context
+
+    from medliner.dagster_defs import frozen_splits, normalized_dataset
+
+    export = tmp_path / "export.json"
+    _write_reviewed_export(export, 6)
+    regression = tmp_path / "regression.json"
+    regression.write_text(json.dumps(["t0"]), encoding="utf-8")
+    monkeypatch.setenv("MEDLINER_LABEL_STUDIO_EXPORT", str(export))
+    monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
+    monkeypatch.setenv("MEDLINER_REGRESSION_IDS", str(regression))
+
+    dataset_path = normalized_dataset(build_asset_context(), str(export))
+    split_dir = frozen_splits(build_asset_context(), dataset_path)
+    manifest = json.loads((Path(split_dir) / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["held_out_ids"] == ["t0"]
+    assert "t0" not in {item for ids in manifest["example_ids"].values() for item in ids}
+
+
+def test_training_run_exposes_a_smoke_run_config():
+    from medliner.dagster_defs import TrainingRunConfig, training_run
+
+    assert TrainingRunConfig().smoke is False
+    assert "smoke" in training_run.op.config_schema.config_type.fields
 
 
 def test_missing_export_environment_is_an_explicit_error(monkeypatch):
