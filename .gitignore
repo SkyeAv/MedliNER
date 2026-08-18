@@ -9,3 +9,6 @@ __pycache__/
 data/
 artifacts/
 *.pyc
+.coverage
+htmlcov/
+coverage.xml

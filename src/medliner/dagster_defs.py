@@ -12,7 +12,7 @@ from .dataset import hash_file, manifest_for, read_examples, write_examples, wri
 from .evaluation import evaluate_checkpoint
 from .label_studio import normalize_export
 from .packaging import build_export_bundle
-from .splits import assert_no_group_leakage, split_examples
+from .splits import assert_no_group_leakage, group_key, split_examples
 from .training import train_from_split_directory
 
 
@@ -49,16 +49,24 @@ def frozen_splits(context, normalized_dataset: str) -> str:
     examples = read_examples(normalized_dataset)
     regression_path = os.environ.get("MEDLINER_REGRESSION_IDS")
     regression_ids = set(json.loads(Path(regression_path).read_text(encoding="utf-8"))) if regression_path else set()
-    splits, manifest = split_examples(examples, regression_ids=regression_ids)
+    splits, manifest = split_examples(
+        examples, seed=int(os.environ.get("MEDLINER_SPLIT_SEED", "2026")), regression_ids=regression_ids
+    )
     assert_no_group_leakage(splits)
-    if len({item.source.grouping_key for item in examples}) >= 3 and (not splits["validation"] or not splits["test"]):
+    # Must be the splitter's own grouping, or this guard measures a different partition.
+    if len({group_key(item) for item in examples}) >= 3 and (not splits["validation"] or not splits["test"]):
         raise RuntimeError("at least three source groups require non-empty validation and test splits")
     output_dir.mkdir(parents=True, exist_ok=True)
     for name, members in splits.items():
         write_examples(members, output_dir / f"{name}.jsonl")
     (output_dir / "manifest.json").write_text(manifest.model_dump_json(indent=2) + "\n", encoding="utf-8")
     context.add_output_metadata(
-        {"path": str(output_dir), "split_hash": manifest.split_hash, "examples": manifest.example_count}
+        {
+            "path": str(output_dir),
+            "split_hash": manifest.split_hash,
+            "examples": manifest.example_count,
+            "held_out": len(manifest.held_out_ids),
+        }
     )
     return str(output_dir)
 

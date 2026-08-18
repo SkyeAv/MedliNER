@@ -7,19 +7,28 @@ requires-python = ">=3.12"
 dependencies = [
   "dagster>=1.9,<2",
   "dagster-webserver>=1.9,<2",
+  # accelerate backs the HF Trainer loop that gliner.training.Trainer extends.
   "accelerate>=1.1,<2",
-  "blake3>=1,<2",
   "gliner==0.2.28",
-  "loguru>=0.7,<1",
-  "polars>=1.30,<2",
+  # Imported directly (TrainerCallback, TrainingArguments); not left to gliner's transitive pin.
+  "transformers>=4.46",
   "torch>=2.9,<3",
   "pydantic>=2.8,<3",
   "pyyaml>=6,<7",
+  # Not imported by MEDliNER itself. `make_dakp_gazetteer_predictor` imports the sibling DAKP
+  # gazetteer into this process for the baseline comparison that gates checkpoint selection,
+  # and that import pulls in DAKP's own runtime dependencies. Keep them in sync with
+  # `dakp_pipeline.ner.ner`'s import chain; `medliner evaluate` reports the ImportError in
+  # `baselines.dakp_gazetteer_error` rather than failing when one is missing.
+  "blake3>=1,<2",
+  "loguru>=0.7,<1",
+  "polars>=1.30,<2",
 ]
 
 [dependency-groups]
 dev = [
   "pytest>=8,<9",
+  "pytest-cov>=5",
   "ruff>=0.8,<1",
 ]
 

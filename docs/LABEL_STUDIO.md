@@ -71,3 +71,12 @@ make UP
 ```
 
 The raw export is retained as provenance. MEDliNER converts it to its canonical schema and validates offsets, labels, overlap, task metadata, review status, and text slices before training.
+
+Two export details are worth knowing before the first review round:
+
+- **Whitespace.** Dragging across a phrase usually captures the following space. The importer
+  checks the exported offsets against the source text, then trims the edges and re-derives the
+  surface, so annotators do not have to be precise about it.
+- **Skipped tasks.** A task whose annotations are all `was_cancelled` is rejected rather than
+  imported as an empty example, because an empty example is a positive claim that the text has no
+  entity. Resolve or remove skipped tasks before exporting.

@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
+
+pytest.importorskip("dagster")
+
+from medliner.dagster_defs import definitions, frozen_splits_are_disjoint, normalized_dataset_is_nonempty  # noqa: E402
+from medliner.dataset import read_examples, write_examples  # noqa: E402
+from medliner.schema import Annotation, Example  # noqa: E402
 
 
 def test_definitions_expose_minimal_asset_graph():
-    pytest.importorskip("dagster")
-    from medliner.dagster_defs import definitions
-
     defs = definitions()
     keys = {key.to_user_string() for key in defs.resolve_all_asset_keys()}
     assert {
@@ -17,4 +23,105 @@ def test_definitions_expose_minimal_asset_graph():
         "evaluation_report",
         "export_bundle",
     } <= keys
-    assert not any("schedule" in repr(item).lower() for item in (getattr(defs, "schedules", None) or []))
+
+
+def test_graph_has_no_schedules_or_sensors():
+    defs = definitions()
+    assert not (getattr(defs, "schedules", None) or [])
+    assert not (getattr(defs, "sensors", None) or [])
+
+
+def _example(identifier: str, document: str) -> Example:
+    return Example(
+        id=identifier,
+        text="asthma",
+        task="indication",
+        source={"family": "dailymed", "document_id": document},
+        annotations=[Annotation(start=0, end=6, label="disease", text="asthma")],
+    )
+
+
+def test_nonempty_check_fails_on_an_empty_dataset(tmp_path):
+    path = tmp_path / "examples.jsonl"
+    write_examples([], path)
+    assert normalized_dataset_is_nonempty(str(path)).passed is False
+    write_examples([_example("a", "doc-a")], path)
+    assert normalized_dataset_is_nonempty(str(path)).passed is True
+
+
+def test_disjointness_check_detects_a_leaked_source_group(tmp_path):
+    for name in ("train", "validation", "test"):
+        write_examples([_example(f"{name}-1", "doc-shared")], tmp_path / f"{name}.jsonl")
+    result = frozen_splits_are_disjoint(str(tmp_path))
+    assert result.passed is False
+    assert "doc-shared" in result.metadata["error"].value
+
+
+def test_assets_materialize_a_normalized_dataset_and_frozen_splits(tmp_path, monkeypatch):
+    from dagster import build_asset_context
+
+    from medliner.dagster_defs import frozen_splits, label_studio_export, normalized_dataset
+
+    export = tmp_path / "export.json"
+    export.write_text(
+        json.dumps(
+            [
+                {
+                    "id": f"t{index}",
+                    "data": {
+                        "text": "Contraindicated in patients with asthma.",
+                        "task": "contraindication",
+                        "source_family": "dailymed",
+                        "source_document_id": f"doc-{index}",
+                    },
+                    "annotations": [
+                        {
+                            "id": index,
+                            "created_username": "annotator",
+                            "result": [
+                                {
+                                    "id": f"r{index}",
+                                    "type": "labels",
+                                    "from_name": "label",
+                                    "to_name": "text",
+                                    "value": {"start": 33, "end": 39, "text": "asthma", "labels": ["disease"]},
+                                }
+                            ],
+                        }
+                    ],
+                }
+                for index in range(6)
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MEDLINER_LABEL_STUDIO_EXPORT", str(export))
+    monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
+    monkeypatch.delenv("MEDLINER_REGRESSION_IDS", raising=False)
+
+    assert label_studio_export() == str(export)
+
+    dataset_path = normalized_dataset(build_asset_context(), str(export))
+    assert len(read_examples(dataset_path)) == 6
+
+    split_dir = frozen_splits(build_asset_context(), dataset_path)
+    assert frozen_splits_are_disjoint(split_dir).passed is True
+    assert normalized_dataset_is_nonempty(dataset_path).passed is True
+    manifest = json.loads((Path(split_dir) / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["example_count"] == 6
+
+
+def test_missing_export_environment_is_an_explicit_error(monkeypatch):
+    from medliner.dagster_defs import label_studio_export
+
+    monkeypatch.delenv("MEDLINER_LABEL_STUDIO_EXPORT", raising=False)
+    with pytest.raises(RuntimeError, match="MEDLINER_LABEL_STUDIO_EXPORT"):
+        label_studio_export()
+
+
+def test_export_path_must_exist(monkeypatch, tmp_path):
+    from medliner.dagster_defs import label_studio_export
+
+    monkeypatch.setenv("MEDLINER_LABEL_STUDIO_EXPORT", str(tmp_path / "absent.json"))
+    with pytest.raises(FileNotFoundError):
+        label_studio_export()

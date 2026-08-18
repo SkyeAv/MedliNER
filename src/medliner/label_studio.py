@@ -7,9 +7,12 @@ only accepts completed annotation exports and converts them into MEDliNER's cano
 from __future__ import annotations
 
 import json
+from collections import Counter
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
+
+from pydantic import ValidationError
 
 from .schema import ALLOWED_LABELS, ALLOWED_TASKS, Annotation, AnnotationStatus, Example, SourceMetadata
 
@@ -108,7 +111,15 @@ def _annotation_sets(task: dict[str, Any]) -> list[dict[str, Any]]:
         return []
     if not isinstance(sets, list) or any(not isinstance(item, dict) for item in sets):
         raise LabelStudioExportError(f"task {task.get('id', '<unknown>')!r} has malformed annotations")
-    return [item for item in sets if not item.get("was_cancelled", False)]
+    live = [item for item in sets if not item.get("was_cancelled", False)]
+    if sets and not live:
+        # Every annotation was skipped/cancelled in the UI. Treating that as a reviewed
+        # no-entity example would teach the model that this text contains nothing.
+        raise LabelStudioExportError(
+            f"task {task.get('id', '<unknown>')!r} has only cancelled/skipped annotations; "
+            "resolve or drop it before training"
+        )
+    return live
 
 
 def _select_annotation_set(task: dict[str, Any]) -> dict[str, Any] | None:
@@ -128,8 +139,23 @@ def _select_annotation_set(task: dict[str, Any]) -> dict[str, Any] | None:
     if status == AnnotationStatus.ADJUDICATED.value and len(adjudicated) == 1:
         return adjudicated[0]
     raise LabelStudioExportError(
-        f"task {task.get('id', '<unknown>')!r} has {len(sets)} annotation sets; provide final_annotation_id or adjudication metadata"
+        f"task {task.get('id', '<unknown>')!r} has {len(sets)} annotation sets; "
+        "provide final_annotation_id or adjudication metadata"
     )
+
+
+def _trim_span(text: str, start: int, end: int) -> tuple[int, int]:
+    """Drop whitespace a click-drag selection picked up at either edge of the phrase.
+
+    Highlighting by dragging routinely captures the trailing space after a word. Left in place
+    it becomes a token-alignment failure much later, during GLiNER conversion, so the offsets
+    are tightened here where the source text is still available to re-verify them.
+    """
+    while start < end and text[start].isspace():
+        start += 1
+    while end > start and text[end - 1].isspace():
+        end -= 1
+    return start, end
 
 
 def _result_annotations(task: dict[str, Any], annotation_set: dict[str, Any] | None) -> list[Annotation]:
@@ -169,20 +195,24 @@ def _result_annotations(task: dict[str, Any], annotation_set: dict[str, Any] | N
             raise LabelStudioExportError(
                 f"invalid character span [{start}, {end}) for task {task.get('id', '<unknown>')!r}"
             )
-        expected = text[start:end]
-        if expected != surface:
+        if text[start:end] != surface:
             raise LabelStudioExportError(
-                f"Label Studio span text mismatch at [{start}, {end}): export={surface!r}, source={expected!r}"
+                f"Label Studio span text mismatch at [{start}, {end}): export={surface!r}, source={text[start:end]!r}"
             )
-        annotation = Annotation(
+        start, end = _trim_span(text, start, end)
+        if start >= end:
+            raise LabelStudioExportError(
+                f"task {task.get('id', '<unknown>')!r} has a whitespace-only span labelled {label!r}"
+            )
+        annotation = _build_annotation(
+            task,
             id=str(result.get("id")) if result.get("id") is not None else None,
             start=start,
             end=end,
             label=label,
-            text=surface,
+            text=text[start:end],
             annotator=str(annotator) if annotator is not None else None,
             status=status,
-            provenance="adjudicated" if status == AnnotationStatus.ADJUDICATED else "human",
         )
         key = (start, end)
         prior = parsed.get(key)
@@ -191,6 +221,17 @@ def _result_annotations(task: dict[str, Any], annotation_set: dict[str, Any] | N
         # Exact duplicates with the same label are harmless export duplication and are collapsed.
         parsed[key] = annotation
     return sorted(parsed.values(), key=lambda item: (item.start, item.end, item.label))
+
+
+def _build_annotation(task: dict[str, Any], *, status: AnnotationStatus, **fields: Any) -> Annotation:
+    try:
+        return Annotation(
+            status=status,
+            provenance="adjudicated" if status == AnnotationStatus.ADJUDICATED else "human",
+            **fields,
+        )
+    except ValidationError as exc:
+        raise LabelStudioExportError(f"task {task.get('id', '<unknown>')!r} has an invalid span: {exc}") from exc
 
 
 def normalize_task(task: dict[str, Any], *, export_id: str | None = None) -> Example:
@@ -205,27 +246,34 @@ def normalize_task(task: dict[str, Any], *, export_id: str | None = None) -> Exa
         raise LabelStudioExportError(f"invalid annotation_status {status_value!r}")
     if annotation_set is not None and annotation_set.get("ground_truth") is True:
         status_value = AnnotationStatus.ADJUDICATED.value
-    return Example(
-        id=str(task_id),
-        text=_text(task),
-        task=_task_kind(task),
-        source=_source(task),
-        annotations=_result_annotations(task, annotation_set),
-        annotation_status=status_value,
-        annotation_set_id=str(annotation_set.get("id"))
-        if annotation_set and annotation_set.get("id") is not None
-        else None,
-        export_id=export_id,
-        metadata={
-            "label_studio_task_id": task_id,
-            "annotation_count": len(annotation_set.get("result", [])) if annotation_set else 0,
-        },
-    )
+    try:
+        return Example(
+            id=str(task_id),
+            text=_text(task),
+            task=_task_kind(task),
+            source=_source(task),
+            annotations=_result_annotations(task, annotation_set),
+            annotation_status=status_value,
+            annotation_set_id=str(annotation_set.get("id"))
+            if annotation_set and annotation_set.get("id") is not None
+            else None,
+            export_id=export_id,
+            metadata={
+                "label_studio_task_id": task_id,
+                "annotation_count": len(annotation_set.get("result", [])) if annotation_set else 0,
+            },
+        )
+    except ValidationError as exc:
+        # Overlap, offset, and policy violations are export problems, not internal errors.
+        raise LabelStudioExportError(f"task {task_id!r} is not a valid MEDliNER example: {exc}") from exc
 
 
 def normalize_export(path: str | Path, *, export_id: str | None = None, require_reviewed: bool = True) -> list[Example]:
     """Normalize an export; only reviewed/adjudicated examples are training candidates."""
     examples = [normalize_task(task, export_id=export_id or Path(path).name) for task in read_tasks(path)]
+    duplicates = sorted(item for item, count in Counter(item.id for item in examples).items() if count > 1)
+    if duplicates:
+        raise LabelStudioExportError(f"export contains duplicate task ids: {duplicates[:5]}")
     if require_reviewed:
         unreviewed = [
             item.id

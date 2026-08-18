@@ -11,14 +11,21 @@
 - `src/medliner/packaging.py`: standalone bundle.
 - `src/medliner/dagster_defs.py`: local asset graph.
 - `configs/label_studio_ner.xml`, `configs/train-small.yaml`: external annotation and training configuration.
-- `tests/`: contract, adapter, split, evaluation, and Dagster graph tests.
+- `tests/test_contracts.py`: canonical schema contracts and deterministic split behaviour.
+- `tests/test_label_studio.py`: export adapter, offsets, whitespace, overlap, and review status.
+- `tests/test_gliner_data.py`: token conversion and the `max_len`/`max_width` budgets.
+- `tests/test_training.py`: training arguments, precision, collator, and checkpoint selection.
+- `tests/test_evaluation.py`: metrics, truncation reporting, and baseline fallbacks.
+- `tests/test_packaging.py`, `tests/test_cli.py`, `tests/test_dataset.py`, `tests/test_dagster.py`.
 
 ## Commands
 
 ```bash
 direnv allow
 make sync
-make check
+make check       # tests, lint, format
+make coverage    # tests with a coverage report
+make env         # resolved pipeline environment
 
 # Verify the target CUDA wheel before training
 uv run python - <<'PY'
@@ -41,7 +48,7 @@ make UP
 2. Confirm annotators can highlight text without entering offsets.
 3. Run normalization and inspect rejected spans/errors.
 4. Materialize frozen splits and verify the split manifest hash.
-5. Run the one-step smoke test and confirm a checkpoint is loadable.
+5. Run the one-step smoke test and confirm `training/final/` is loadable with `GLiNER.from_pretrained` and records `selected_checkpoint`.
 6. Run bounded training with resume enabled.
 7. Evaluate tuned, untuned, gazetteer, and DAKP regression metrics.
 8. Build the standalone bundle and inspect its provenance/model-card files.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from collections import defaultdict
 from collections.abc import Callable, Iterable
@@ -11,9 +12,22 @@ from pathlib import Path
 from typing import Any
 
 from .dataset import read_examples
+from .gliner_data import split_words
 from .schema import ALLOWED_LABELS, Annotation, Example
 
 Predictor = Callable[[str], list[dict[str, Any]]]
+
+DEFAULT_DAKP_ROOT = "../DAKP"
+DAKP_BENCHMARK_RELPATH = Path("tests") / "eval" / "ner_gold.json"
+
+
+def dakp_root() -> Path:
+    """Sibling DAKP checkout, overridable because Dagster's working directory is not the repo."""
+    return Path(os.environ.get("MEDLINER_DAKP_ROOT", DEFAULT_DAKP_ROOT))
+
+
+def dakp_benchmark_path() -> Path:
+    return dakp_root() / DAKP_BENCHMARK_RELPATH
 
 
 @dataclass(frozen=True)
@@ -21,6 +35,9 @@ class Counts:
     tp: int
     fp: int
     fn: int
+
+    def __add__(self, other: Counts) -> Counts:
+        return Counts(self.tp + other.tp, self.fp + other.fp, self.fn + other.fn)
 
     @property
     def precision(self) -> float:
@@ -46,79 +63,106 @@ class Counts:
         }
 
 
-def _prediction_tuple(item: dict[str, Any], *, typed: bool) -> tuple[Any, ...]:
-    start = int(item["start"])
-    end = int(item["end"])
-    if typed:
-        label = str(item.get("label", item.get("type", ""))).strip().lower()
-        return start, end, label
-    return start, end
+@dataclass(frozen=True)
+class ExampleScore:
+    """Per-example counts, so each example is predicted exactly once per report."""
+
+    example: Example
+    strict: Counts
+    boundary: Counts
+    predicted_any: bool
+
+    @property
+    def is_negative(self) -> bool:
+        return not self.example.annotations
 
 
 def _score(predictions: set[tuple[Any, ...]], gold: set[tuple[Any, ...]]) -> Counts:
     return Counts(tp=len(predictions & gold), fp=len(predictions - gold), fn=len(gold - predictions))
 
 
-def _overall(predictor: Predictor, values: list[Example]) -> tuple[Counts, Counts, int, int]:
-    strict_total = Counts(0, 0, 0)
-    boundary_total = Counts(0, 0, 0)
-    negative_count = 0
-    negative_false_positive = 0
-    for example in values:
-        raw = predictor(example.text)
-        predicted = {
-            (int(item["start"]), int(item["end"]), str(item.get("label", item.get("type", ""))).lower())
-            for item in raw
-            if int(item["start"]) < int(item["end"])
-        }
-        gold_strict = {(annotation.start, annotation.end, annotation.label) for annotation in example.annotations}
-        predicted_boundary = {(start, end) for start, end, _label in predicted}
-        gold_boundary = {(annotation.start, annotation.end) for annotation in example.annotations}
-        strict = _score(predicted, gold_strict)
-        boundary = _score(predicted_boundary, gold_boundary)
-        strict_total = Counts(strict_total.tp + strict.tp, strict_total.fp + strict.fp, strict_total.fn + strict.fn)
-        boundary_total = Counts(
-            boundary_total.tp + boundary.tp, boundary_total.fp + boundary.fp, boundary_total.fn + boundary.fn
-        )
-        if not gold_strict:
-            negative_count += 1
-            negative_false_positive += bool(predicted)
-    return strict_total, boundary_total, negative_count, negative_false_positive
+def _normalize_prediction(item: dict[str, Any]) -> tuple[int, int, str] | None:
+    start = int(item["start"])
+    end = int(item["end"])
+    if start >= end:
+        return None
+    return start, end, str(item.get("label", item.get("type", ""))).strip().lower()
 
 
-def score_examples(predictor: Predictor, examples: Iterable[Example]) -> dict[str, Any]:
+def score_example(predictor: Predictor, example: Example) -> ExampleScore:
+    predicted = {span for span in (_normalize_prediction(item) for item in predictor(example.text)) if span is not None}
+    gold_strict = {(annotation.start, annotation.end, annotation.label) for annotation in example.annotations}
+    predicted_boundary = {(start, end) for start, end, _label in predicted}
+    gold_boundary = {(annotation.start, annotation.end) for annotation in example.annotations}
+    return ExampleScore(
+        example=example,
+        strict=_score(predicted, gold_strict),
+        boundary=_score(predicted_boundary, gold_boundary),
+        predicted_any=bool(predicted),
+    )
+
+
+def _aggregate(scores: Iterable[ExampleScore]) -> dict[str, Any]:
+    strict = Counts(0, 0, 0)
+    boundary = Counts(0, 0, 0)
+    count = 0
+    for score in scores:
+        strict += score.strict
+        boundary += score.boundary
+        count += 1
+    return {"strict": strict.as_dict(), "boundary_only": boundary.as_dict(), "examples": count}
+
+
+def _truncation_report(values: list[Example], max_words: int | None) -> dict[str, Any]:
+    """GLiNER truncates over-budget inputs with only a warning, which silently depresses recall."""
+    if not max_words:
+        return {"max_words": None, "checked": False}
+    over = [example.id for example in values if len(split_words(example.text)) > max_words]
+    return {"max_words": max_words, "checked": True, "over_budget_examples": len(over), "example_ids": over[:20]}
+
+
+def score_examples(
+    predictor: Predictor, examples: Iterable[Example], *, max_words: int | None = None
+) -> dict[str, Any]:
+    """Score once per example, then slice the same counts by task and source family."""
     values = list(examples)
-    strict_total, boundary_total, negative_count, negative_false_positive = _overall(predictor, values)
-    by_task: dict[str, list[Example]] = defaultdict(list)
-    by_source: dict[str, list[Example]] = defaultdict(list)
-    for example in values:
-        by_task[example.task].append(example)
-        by_source[example.source.family].append(example)
-
-    def grouped(items: list[Example]) -> dict[str, Any]:
-        strict, boundary, _negative, _false_positive = _overall(predictor, items)
-        return {"strict": strict.as_dict(), "boundary_only": boundary.as_dict()}
-
+    if max_words is None:
+        max_words = getattr(predictor, "max_words", None)
+    scores = [score_example(predictor, example) for example in values]
+    by_task: dict[str, list[ExampleScore]] = defaultdict(list)
+    by_source: dict[str, list[ExampleScore]] = defaultdict(list)
+    for score in scores:
+        by_task[score.example.task].append(score)
+        by_source[score.example.source.family].append(score)
+    negatives = [score for score in scores if score.is_negative]
+    false_positives = [score for score in negatives if score.predicted_any]
+    overall = _aggregate(scores)
     return {
-        "overall": {"strict": strict_total.as_dict(), "boundary_only": boundary_total.as_dict()},
-        "by_task": {key: grouped(items) for key, items in sorted(by_task.items())},
-        "by_source": {key: grouped(items) for key, items in sorted(by_source.items())},
+        "overall": {"strict": overall["strict"], "boundary_only": overall["boundary_only"]},
+        "by_task": {key: _aggregate(items) for key, items in sorted(by_task.items())},
+        "by_source": {key: _aggregate(items) for key, items in sorted(by_source.items())},
         "no_entity": {
-            "examples": negative_count,
-            "false_positive_examples": negative_false_positive,
-            "false_positive_rate": negative_false_positive / negative_count if negative_count else 0.0,
+            "examples": len(negatives),
+            "false_positive_examples": len(false_positives),
+            "false_positive_rate": len(false_positives) / len(negatives) if negatives else 0.0,
         },
+        "truncation": _truncation_report(values, max_words),
         "examples": len(values),
     }
 
 
-def make_gliner_predictor(checkpoint: str | Path, *, threshold: float = 0.3) -> Predictor:
-    from gliner import GLiNER
+class GLiNERPredictor:
+    """Callable wrapper that also advertises the model's word budget to the scorer."""
 
-    model = GLiNER.from_pretrained(str(checkpoint), map_location="cuda" if _cuda_available() else "cpu")
+    def __init__(self, model: Any, *, threshold: float, labels: Iterable[str] = ALLOWED_LABELS) -> None:
+        self.model = model
+        self.threshold = threshold
+        self.labels = list(labels)
+        max_len = getattr(getattr(model, "config", None), "max_len", None)
+        self.max_words: int | None = max_len if isinstance(max_len, int) else None
 
-    def predict(text: str) -> list[dict[str, Any]]:
-        result = model.predict_entities(text, list(ALLOWED_LABELS), threshold=threshold)
+    def __call__(self, text: str) -> list[dict[str, Any]]:
+        result = self.model.predict_entities(text, self.labels, threshold=self.threshold)
         return [
             {
                 "start": int(item["start"]),
@@ -130,13 +174,19 @@ def make_gliner_predictor(checkpoint: str | Path, *, threshold: float = 0.3) -> 
             for item in result
         ]
 
-    return predict
+
+def make_gliner_predictor(checkpoint: str | Path, *, threshold: float = 0.3) -> Predictor:
+    from gliner import GLiNER
+
+    model = GLiNER.from_pretrained(str(checkpoint), map_location="cuda" if _cuda_available() else "cpu")
+    model.eval()
+    return GLiNERPredictor(model, threshold=threshold)
 
 
-def make_dakp_gazetteer_predictor(dakp_root: str | Path = "../DAKP") -> Predictor:
+def make_dakp_gazetteer_predictor(root: str | Path | None = None) -> Predictor:
     """Load DAKP's deterministic offline gazetteer when the sibling checkout is available."""
-    root = Path(dakp_root).resolve()
-    src = root / "src"
+    resolved = Path(root).resolve() if root is not None else dakp_root().resolve()
+    src = resolved / "src"
     if str(src) not in sys.path:
         sys.path.insert(0, str(src))
     from dakp_pipeline.ner.ner import DiseaseNER
@@ -164,18 +214,26 @@ def _cuda_available() -> bool:
         return False
 
 
-def load_dakp_benchmark(path: str | Path = "../DAKP/tests/eval/ner_gold.json") -> list[Example]:
+def load_dakp_benchmark(path: str | Path | None = None) -> list[Example]:
     """Load DAKP's committed regression fixture without adding it to training."""
-    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    payload = json.loads(Path(path if path is not None else dakp_benchmark_path()).read_text(encoding="utf-8"))
     examples: list[Example] = []
     for item in payload["cases"]:
         text = str(item["text"])
         annotations: list[Annotation] = []
         for index, mention in enumerate(item["mentions"]):
             surface = str(mention["surface"])
-            if text.count(surface) != 1:
-                raise ValueError(f"benchmark surface is not unique: {surface!r}")
-            start = text.index(surface)
+            start = mention.get("start")
+            if start is None:
+                if text.count(surface) != 1:
+                    raise ValueError(
+                        f"benchmark case {item['id']!r} surface {surface!r} occurs {text.count(surface)} times; "
+                        "add an explicit 'start' offset to disambiguate it"
+                    )
+                start = text.index(surface)
+            start = int(start)
+            if text[start : start + len(surface)] != surface:
+                raise ValueError(f"benchmark case {item['id']!r} offset {start} does not contain {surface!r}")
             annotations.append(
                 Annotation(
                     id=f"{item['id']}-{index}",
@@ -205,16 +263,24 @@ def evaluate_checkpoint(
     output_path: str | Path,
     *,
     include_baselines: bool = True,
+    threshold: float = 0.3,
 ) -> dict[str, Any]:
     """Evaluate tuned, untuned, and available gazetteer systems."""
-    tuned_predictor = make_gliner_predictor(checkpoint)
+    tuned_predictor = make_gliner_predictor(checkpoint, threshold=threshold)
     split_dir = Path(split_dir)
     test_path = split_dir / "test.jsonl"
+    evaluated_split = "test" if test_path.exists() else "validation"
     values = read_examples(test_path if test_path.exists() else split_dir / "validation.jsonl")
-    result: dict[str, Any] = {"tuned": score_examples(tuned_predictor, values), "checkpoint": str(checkpoint)}
-    benchmark_path = Path("../DAKP/tests/eval/ner_gold.json")
-    if benchmark_path.exists():
-        result["tuned_dakp_regression"] = score_examples(tuned_predictor, load_dakp_benchmark(benchmark_path))
+    result: dict[str, Any] = {
+        "tuned": score_examples(tuned_predictor, values),
+        "checkpoint": str(checkpoint),
+        "evaluated_split": evaluated_split,
+        "threshold": threshold,
+    }
+    benchmark_path = dakp_benchmark_path()
+    benchmark = load_dakp_benchmark(benchmark_path) if benchmark_path.exists() else None
+    if benchmark is not None:
+        result["tuned_dakp_regression"] = score_examples(tuned_predictor, benchmark)
     if include_baselines:
         result["baselines"] = {}
         metadata_path = Path(checkpoint) / "medliner-training.json"
@@ -224,27 +290,35 @@ def evaluate_checkpoint(
             base_model_id = metadata.get("model_id")
         if base_model_id:
             try:
-                untuned = make_gliner_predictor(str(base_model_id))
+                untuned = make_gliner_predictor(str(base_model_id), threshold=threshold)
                 result["baselines"]["untuned_gliner"] = score_examples(untuned, values)
-                if benchmark_path.exists():
-                    result["baselines"]["untuned_gliner_dakp_regression"] = score_examples(
-                        untuned, load_dakp_benchmark(benchmark_path)
-                    )
-            except Exception as exc:
-                result["baselines"]["untuned_gliner_error"] = str(exc)
+                if benchmark is not None:
+                    result["baselines"]["untuned_gliner_dakp_regression"] = score_examples(untuned, benchmark)
+            except Exception as exc:  # noqa: BLE001 - a missing baseline must not void the tuned report
+                result["baselines"]["untuned_gliner_error"] = f"{type(exc).__name__}: {exc}"
         try:
             gazetteer = make_dakp_gazetteer_predictor()
             result["baselines"]["dakp_gazetteer"] = score_examples(gazetteer, values)
-            if benchmark_path.exists():
-                result["baselines"]["dakp_gazetteer_regression"] = score_examples(
-                    gazetteer, load_dakp_benchmark(benchmark_path)
-                )
-        except Exception as exc:
-            result["baselines"]["dakp_gazetteer_error"] = str(exc)
+            if benchmark is not None:
+                result["baselines"]["dakp_gazetteer_regression"] = score_examples(gazetteer, benchmark)
+        except Exception as exc:  # noqa: BLE001 - the sibling checkout is optional
+            result["baselines"]["dakp_gazetteer_error"] = f"{type(exc).__name__}: {exc}"
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return result
 
 
-__all__ = ["Counts", "evaluate_checkpoint", "load_dakp_benchmark", "make_gliner_predictor", "score_examples"]
+__all__ = [
+    "Counts",
+    "ExampleScore",
+    "GLiNERPredictor",
+    "dakp_benchmark_path",
+    "dakp_root",
+    "evaluate_checkpoint",
+    "load_dakp_benchmark",
+    "make_dakp_gazetteer_predictor",
+    "make_gliner_predictor",
+    "score_example",
+    "score_examples",
+]

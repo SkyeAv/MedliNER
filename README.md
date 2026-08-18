@@ -40,7 +40,19 @@ direnv allow
 make sync
 ```
 
-The checked-in `.envrc` exports `MEDLINER_LABEL_STUDIO_EXPORT`, `MEDLINER_WORKDIR`, `MEDLINER_TRAIN_CONFIG`, and `DAGSTER_HOME`. For private local overrides, create the ignored `.envrc.local`; do not put secrets or machine-specific paths into the committed `.envrc`.
+The checked-in `.envrc` exports:
+
+| Variable | Purpose |
+| --- | --- |
+| `MEDLINER_LABEL_STUDIO_EXPORT` | reviewed export that feeds the pipeline |
+| `MEDLINER_WORKDIR` | root for normalized data, splits, checkpoints, and reports |
+| `MEDLINER_TRAIN_CONFIG` | training configuration YAML |
+| `MEDLINER_DAKP_ROOT` | sibling DAKP checkout used for baselines and the regression fixture |
+| `MEDLINER_SPLIT_SEED` / `MEDLINER_REGRESSION_IDS` | split seed and IDs withheld from every split |
+| `DAGSTER_HOME` | local Dagster run storage |
+| `TRITON_LIBCUDA_PATH` | set automatically when the system has no `/sbin/ldconfig` (see [`docs/HARDWARE.md`](docs/HARDWARE.md)) |
+
+Print the resolved values with `make env`. For private local overrides, create the ignored `.envrc.local`; do not put secrets or machine-specific paths into the committed `.envrc`.
 
 Label Studio is intentionally not a MEDliNER dependency. Start the local Dagster deployment/UI with the phony `UP` target:
 
@@ -59,6 +71,8 @@ make train
 make evaluate
 make bundle
 ```
+
+`make check` runs the tests, lint, and format checks; `make coverage` adds a coverage report.
 
 The smoke run performs one training step using the same code path as the full run. Override any environment path without editing files, for example:
 
@@ -92,6 +106,13 @@ The default base model is `urchade/gliner_small-v2.1`. A smaller checkpoint is i
 
 GLiNER 0.2.28's training records use model tokens and inclusive token end indexes. MEDliNER preserves the original character-level annotations so this conversion is auditable and tested.
 
+Two GLiNER behaviours would otherwise discard supervision without saying so, and are turned into
+errors at conversion time: text beyond `max_len` (384 word tokens) is truncated with only a
+warning, and a gold span wider than `max_width` (12 word tokens) is never enumerated as a span
+candidate. The batch entity vocabulary is also pinned to the three labels, because a batch of
+purely no-entity examples otherwise has zero entity types and the loss fails outright. See
+[`docs/TRAINING.md`](docs/TRAINING.md).
+
 ## Evaluation gates
 
 Reports include:
@@ -101,7 +122,8 @@ Reports include:
 - indication versus contraindication metrics;
 - source-family metrics;
 - no-entity false-positive rate;
-- DAKP regression benchmark results when `../DAKP/tests/eval/ner_gold.json` is available.
+- DAKP regression benchmark results when `$MEDLINER_DAKP_ROOT/tests/eval/ner_gold.json` is available;
+- a truncation block naming any example over the model's word budget.
 
 The tuned model must be compared with the untuned small checkpoint and the DAKP gazetteer baseline before it is selected for packaging. The committed DAKP benchmark remains held out from training.
 
@@ -113,9 +135,14 @@ The tuned model must be compared with the untuned small checkpoint and the DAKP 
 - `labels.json`;
 - `annotation_policy.md`;
 - `dataset.jsonl` and split manifest;
-- training configuration and metadata;
+- `training_config.yaml` — the configuration the run actually used, taken from the checkpoint's
+  own metadata rather than the current contents of `configs/`;
 - `metrics.json`;
-- provenance/license notes;
+- `provenance.json` — base model, selected checkpoint, best validation F1, dataset/metrics/tree
+  hashes, split hash, and held-out example IDs;
 - model-card inputs.
+
+Rebuilding over a previous bundle is allowed; the build refuses to delete a non-empty directory
+that is not a bundle.
 
 Review licensing for source text and the base checkpoint before uploading anything publicly.

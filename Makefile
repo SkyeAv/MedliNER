@@ -4,9 +4,14 @@ SHELL := /usr/bin/env bash
 export MEDLINER_LABEL_STUDIO_EXPORT ?= $(CURDIR)/data/label-studio/reviewed.json
 export MEDLINER_WORKDIR ?= $(CURDIR)/data/materialized
 export MEDLINER_TRAIN_CONFIG ?= $(CURDIR)/configs/train-small.yaml
+export MEDLINER_DAKP_ROOT ?= $(CURDIR)/../DAKP
 export DAGSTER_HOME ?= $(CURDIR)/.dagster
 
-.PHONY: help UP up sync test lint format check normalize split smoke train evaluate bundle
+# Triton locates libcuda through /sbin/ldconfig; without a loader cache that call fails inside
+# the backward pass. An empty value is ignored by Triton, so this is safe on normal systems.
+export TRITON_LIBCUDA_PATH ?= $(shell test -x /sbin/ldconfig || for d in /run/opengl-driver/lib /usr/lib64 /usr/lib/x86_64-linux-gnu /usr/lib; do test -e $$d/libcuda.so.1 && echo $$d && break; done)
+
+.PHONY: help UP up sync test coverage lint format check clean env normalize split smoke train evaluate bundle
 
 help:
 	@printf '%s\n' \
@@ -14,6 +19,9 @@ help:
 		'  make UP       Start the local Dagster deployment/UI' \
 		'  make sync     Install or update the uv environment' \
 		'  make check    Run tests, lint, and formatting checks' \
+		'  make coverage Run the test suite with a coverage report' \
+		'  make clean    Remove caches and local build output' \
+		'  make env      Print the resolved pipeline environment' \
 		'  make normalize Normalize the reviewed Label Studio export' \
 		'  make split    Create deterministic train/validation/test splits' \
 		'  make smoke    Run a one-step GPU training smoke test' \
@@ -37,6 +45,9 @@ sync:
 test:
 	uv run pytest -q
 
+coverage:
+	uv run pytest -q --cov=medliner --cov-report=term-missing
+
 lint:
 	uv run ruff check src tests
 
@@ -44,6 +55,10 @@ format:
 	uv run ruff format --check src tests
 
 check: test lint format
+
+clean:
+	rm -rf .pytest_cache .ruff_cache .coverage htmlcov coverage.xml
+	find src tests -name __pycache__ -type d -prune -exec rm -rf {} +
 
 normalize:
 	uv run medliner normalize "$(MEDLINER_LABEL_STUDIO_EXPORT)" "$(MEDLINER_WORKDIR)/normalized/examples.jsonl"
@@ -62,3 +77,13 @@ evaluate: train
 
 bundle: evaluate
 	uv run medliner bundle "$(MEDLINER_WORKDIR)/training/final" "$(MEDLINER_WORKDIR)/evaluation/report.json" "$(MEDLINER_WORKDIR)/normalized/examples.jsonl" "$(MEDLINER_WORKDIR)/splits" "$(MEDLINER_WORKDIR)/bundle"
+
+# Print the resolved environment the pipeline stages will run under.
+env:
+	@printf '%s\n' \
+		'MEDLINER_LABEL_STUDIO_EXPORT=$(MEDLINER_LABEL_STUDIO_EXPORT)' \
+		'MEDLINER_WORKDIR=$(MEDLINER_WORKDIR)' \
+		'MEDLINER_TRAIN_CONFIG=$(MEDLINER_TRAIN_CONFIG)' \
+		'MEDLINER_DAKP_ROOT=$(MEDLINER_DAKP_ROOT)' \
+		'DAGSTER_HOME=$(DAGSTER_HOME)' \
+		'TRITON_LIBCUDA_PATH=$(TRITON_LIBCUDA_PATH)'

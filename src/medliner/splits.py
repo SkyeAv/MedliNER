@@ -46,6 +46,7 @@ def split_examples(
         raise ValueError("split ratios must be positive and sum to 1")
     regression_ids = regression_ids or set()
     kept = [example for example in values if example.id not in regression_ids]
+    held_out = sorted(example.id for example in values if example.id in regression_ids)
     groups = _ordered_groups(kept, seed)
     targets = {name: len(kept) * ratio for name, ratio in ratios.items()}
     counts = {name: 0 for name in ratios}
@@ -74,6 +75,7 @@ def split_examples(
         group_count=len(groups),
         example_count=len(kept),
         example_ids=ids,
+        held_out_ids=held_out,
         split_hash=split_hash,
     )
     return output, manifest

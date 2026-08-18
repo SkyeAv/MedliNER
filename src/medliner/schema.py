@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -17,6 +17,9 @@ SCHEMA_VERSION = "medliner.example.v1"
 ALLOWED_LABELS = ("disease", "phenotype", "drug")
 ALLOWED_TASKS = ("indication", "contraindication")
 REVIEWED_STATUSES = ("reviewed", "adjudicated")
+Provenance = Literal["human", "adjudicated", "model_suggestion"]
+# Derived so the runtime tuple and the annotated type cannot drift apart.
+PROVENANCE_VALUES = get_args(Provenance)
 
 
 class EntityLabel(StrEnum):
@@ -49,10 +52,6 @@ class SourceMetadata(BaseModel):
     source_uri: str | None = None
     source_hash: str | None = None
 
-    @property
-    def grouping_key(self) -> str:
-        return self.document_id or self.record_id or self.source_hash or self.source_uri or self.family
-
 
 class Annotation(BaseModel):
     """Half-open character span, matching Label Studio's exported offsets."""
@@ -66,7 +65,7 @@ class Annotation(BaseModel):
     text: str
     annotator: str | None = None
     status: AnnotationStatus = AnnotationStatus.REVIEWED
-    provenance: str = "human"
+    provenance: Provenance = "human"
 
     @field_validator("label")
     @classmethod
@@ -80,8 +79,6 @@ class Annotation(BaseModel):
     def valid_span(self) -> Annotation:
         if self.end <= self.start:
             raise ValueError("annotation end must be greater than start")
-        if self.provenance not in {"human", "adjudicated", "model_suggestion"}:
-            raise ValueError("provenance must be human, adjudicated, or model_suggestion")
         if self.provenance == "model_suggestion" and self.status in {
             AnnotationStatus.REVIEWED,
             AnnotationStatus.ADJUDICATED,
@@ -164,6 +161,7 @@ class SplitManifest(BaseModel):
     group_count: int
     example_count: int
     example_ids: dict[str, list[str]]
+    held_out_ids: list[str] = Field(default_factory=list)
     split_hash: str
 
 
@@ -175,6 +173,8 @@ __all__ = [
     "DatasetManifest",
     "EntityLabel",
     "Example",
+    "PROVENANCE_VALUES",
+    "Provenance",
     "SCHEMA_VERSION",
     "SourceMetadata",
     "SplitManifest",

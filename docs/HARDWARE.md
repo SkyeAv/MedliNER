@@ -16,3 +16,20 @@ PY
 ```
 
 If the assertion fails, do not start training. Install a Torch CUDA wheel with `sm_120` support and verify the NVIDIA driver first. MEDliNER detects this mismatch and falls back to CPU instead of triggering the kernel-image crash, but CPU is only suitable for data/evaluation checks, not the intended training run.
+
+## Triton and the libcuda lookup
+
+Torch's backward pass dispatches into Triton kernels, and Triton locates `libcuda.so.1` by
+shelling out to `/sbin/ldconfig`. On systems that ship no loader cache (this laptop included)
+that call fails with `FileNotFoundError: '/sbin/ldconfig'` — not at import time, but partway
+through the first `loss.backward()`, which makes it look like a training bug.
+
+Point Triton at the driver directory instead:
+
+```bash
+export TRITON_LIBCUDA_PATH=/run/opengl-driver/lib   # directory containing libcuda.so.1
+```
+
+`.envrc` and the `Makefile` both set this automatically when `/sbin/ldconfig` is absent and a
+`libcuda.so.1` is found; an empty value restores Triton's default lookup, so the setting is
+inert on systems with a normal loader cache. Check the resolved value with `make env`.

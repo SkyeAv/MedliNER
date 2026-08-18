@@ -1,106 +1,12 @@
+"""Canonical schema contracts and deterministic split behaviour."""
+
 from __future__ import annotations
 
-import json
-
 import pytest
+from pydantic import ValidationError
 
-from medliner.gliner_data import char_span_to_token_span, split_words, to_gliner_record
-from medliner.label_studio import LabelStudioExportError, normalize_export
 from medliner.schema import Annotation, Example
 from medliner.splits import assert_no_group_leakage, split_examples
-
-
-def _export(tmp_path):
-    text = "Contraindicated in patients with pulmonary hypertension and ibuprofen 400 mg orally."
-    start_condition = text.index("pulmonary hypertension")
-    start_drug = text.index("ibuprofen")
-    payload = [
-        {
-            "id": "task-1",
-            "data": {
-                "text": text,
-                "task": "contraindication",
-                "source_family": "dailymed",
-                "source_document_id": "doc-1",
-            },
-            "annotations": [
-                {
-                    "id": 11,
-                    "created_username": "annotator",
-                    "result": [
-                        {
-                            "id": "r1",
-                            "type": "labels",
-                            "from_name": "label",
-                            "to_name": "text",
-                            "value": {
-                                "start": start_condition,
-                                "end": start_condition + len("pulmonary hypertension"),
-                                "text": "pulmonary hypertension",
-                                "labels": ["disease"],
-                            },
-                        },
-                        {
-                            "id": "r2",
-                            "type": "labels",
-                            "from_name": "label",
-                            "to_name": "text",
-                            "value": {
-                                "start": start_drug,
-                                "end": start_drug + len("ibuprofen"),
-                                "text": "ibuprofen",
-                                "labels": ["drug"],
-                            },
-                        },
-                    ],
-                }
-            ],
-        },
-        {
-            "id": "task-empty",
-            "data": {
-                "text": "Contraindicated in women of childbearing potential.",
-                "task": "contraindication",
-                "source_family": "dailymed",
-            },
-            "annotations": [{"id": 12, "created_username": "annotator", "result": []}],
-        },
-    ]
-    path = tmp_path / "export.json"
-    path.write_text(json.dumps(payload), encoding="utf-8")
-    return path
-
-
-def test_label_studio_normalization_has_char_offsets_and_empty_examples(tmp_path):
-    examples = normalize_export(_export(tmp_path))
-    assert [example.id for example in examples] == ["task-1", "task-empty"]
-    assert [(item.text, item.label) for item in examples[0].annotations] == [
-        ("pulmonary hypertension", "disease"),
-        ("ibuprofen", "drug"),
-    ]
-    assert examples[1].annotations == []
-
-
-def test_label_studio_rejects_bad_export(tmp_path):
-    path = _export(tmp_path)
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    payload[0]["annotations"][0]["result"][0]["value"]["text"] = "hypertension"
-    path.write_text(json.dumps(payload), encoding="utf-8")
-    with pytest.raises(LabelStudioExportError, match="text mismatch"):
-        normalize_export(path)
-
-
-def test_token_conversion_uses_inclusive_end():
-    text = "severe pulmonary hypertension"
-    tokens = split_words(text)
-    assert char_span_to_token_span(text, 7, len(text), tokens) == (1, 2)
-    example = Example(
-        id="x",
-        text=text,
-        task="contraindication",
-        annotations=[Annotation(start=7, end=len(text), label="disease", text="pulmonary hypertension")],
-    )
-    assert to_gliner_record(example)["ner"] == [(1, 2, "disease")]
 
 
 def _example(identifier: str, document: str) -> Example:
@@ -131,3 +37,87 @@ def test_grouped_splits_are_deterministic_and_leakage_safe():
     assert_no_group_leakage(first)
     assert first["validation"] and first["test"]
     assert {item.id for item in first["train"] + first["validation"] + first["test"]} == {"a", "b", "c", "d", "e"}
+
+
+def test_split_ratios_must_be_positive_and_sum_to_one():
+    with pytest.raises(ValueError, match="must be positive and sum to 1"):
+        split_examples([_example("a", "doc-a")], train_ratio=0.9, validation_ratio=0.1, test_ratio=0.1)
+
+
+def test_regression_ids_are_withheld_and_recorded():
+    examples = [_example(name, f"doc-{name}") for name in "abcde"]
+    splits, manifest = split_examples(examples, seed=7, regression_ids={"a"})
+    assert manifest.held_out_ids == ["a"]
+    assert manifest.example_count == 4
+    assert "a" not in {item.id for members in splits.values() for item in members}
+
+
+def test_seed_changes_the_assignment_but_not_the_membership():
+    examples = [_example(name, f"doc-{name}") for name in "abcdefgh"]
+    first, manifest_a = split_examples(examples, seed=1)
+    second, manifest_b = split_examples(examples, seed=2)
+    assert manifest_a.split_hash != manifest_b.split_hash
+    assert {item.id for members in first.values() for item in members} == {
+        item.id for members in second.values() for item in members
+    }
+
+
+def test_examples_from_one_document_never_straddle_splits():
+    examples = [_example(f"{document}-{index}", document) for document in "abcd" for index in range(3)]
+    splits, _manifest = split_examples(examples, seed=3)
+    assert_no_group_leakage(splits)
+    placement = {item.id.split("-")[0]: name for name, members in splits.items() for item in members}
+    for name, members in splits.items():
+        for item in members:
+            assert placement[item.id.split("-")[0]] == name
+
+
+def test_overlapping_annotations_are_rejected_by_the_contract():
+    with pytest.raises(ValidationError, match="overlapping annotations"):
+        Example(
+            id="x",
+            text="pulmonary hypertension",
+            task="indication",
+            annotations=[
+                Annotation(start=0, end=22, label="disease", text="pulmonary hypertension"),
+                Annotation(start=10, end=22, label="disease", text="hypertension"),
+            ],
+        )
+
+
+def test_annotation_text_must_match_the_source_slice():
+    with pytest.raises(ValidationError, match="annotation text mismatch"):
+        Example(
+            id="x",
+            text="asthma",
+            task="indication",
+            annotations=[Annotation(start=0, end=6, label="disease", text="ashtma")],
+        )
+
+
+def test_reviewed_examples_cannot_carry_model_suggestions():
+    with pytest.raises(ValidationError, match="model suggestions"):
+        Example(
+            id="x",
+            text="asthma",
+            task="indication",
+            annotations=[
+                Annotation(
+                    start=0, end=6, label="disease", text="asthma", status="draft", provenance="model_suggestion"
+                )
+            ],
+        )
+
+
+def test_unsupported_label_and_task_values_are_rejected():
+    with pytest.raises(ValidationError, match="unsupported label"):
+        Annotation(start=0, end=6, label="gene", text="asthma")
+    with pytest.raises(ValidationError, match="unsupported task"):
+        Example(id="x", text="asthma", task="warning")
+
+
+def test_content_hash_is_stable_across_equal_examples():
+    first = _example("a", "doc-a")
+    second = _example("a", "doc-a")
+    assert first.content_hash() == second.content_hash()
+    assert first.content_hash() != _example("b", "doc-a").content_hash()
