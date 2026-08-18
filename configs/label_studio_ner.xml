@@ -1,0 +1,11 @@
+<View>
+  <Header value="MEDliNER medical NER" />
+  <Header value="Task: $task" />
+  <Header value="Source: $source_family" />
+  <Text name="text" value="$text" granularity="word" />
+  <Labels name="label" toName="text" choice="single" showInline="true">
+    <Label value="disease" background="#e74c3c" />
+    <Label value="phenotype" background="#3498db" />
+    <Label value="drug" background="#2ecc71" />
+  </Labels>
+</View>

@@ -1,0 +1,11 @@
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.venv/
+.direnv/
+.dagster/
+.label-studio-data/
+.envrc.local
+data/
+artifacts/
+*.pyc
