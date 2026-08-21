@@ -13,14 +13,8 @@ dependencies = [
   "torch>=2.9,<3",
   "pydantic>=2.8,<3",
   "pyyaml>=6,<7",
-  # Not imported by MEDliNER itself. `make_dakp_gazetteer_predictor` imports the sibling DAKP
-  # gazetteer into this process for the baseline comparison that gates checkpoint selection,
-  # and that import pulls in DAKP's own runtime dependencies. Keep them in sync with
-  # `dakp_pipeline.ner.ner`'s import chain; the `evaluation_report` asset reports the
-  # ImportError in `baselines.dakp_gazetteer_error` rather than failing when one is missing.
+  # blake3 backs the deterministic task IDs and file hashes in candidates.py and export ingest.
   "blake3>=1,<2",
-  "loguru>=0.7,<1",
-  "polars>=1.30,<2",
 ]
 
 [dependency-groups]

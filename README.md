@@ -2,7 +2,7 @@
 
 MEDliNER is a standalone, local pipeline for producing a reviewed medical NER dataset and fine-tuning a small GLiNER checkpoint. Its first use cases are extracting `disease`, `phenotype`, and `drug` mentions from `indication` and `contraindication` text.
 
-DAKP runtime integration is deliberately deferred. The only training input is a reviewed Label Studio export.
+MEDliNER consumes DAKP data only through its training-data export bundle (`make ingest`); no DAKP checkout or runtime is required. The only training input is a reviewed Label Studio export.
 
 ## Labels and tasks
 
@@ -48,7 +48,7 @@ The checked-in `.envrc` exports:
 | --- | --- |
 | `MEDLINER_EXPORT_BUNDLE` | DAKP training-data export bundle directory ingested by `make ingest` |
 | `MEDLINER_BENCHMARK` | NER gold benchmark materialized by `make ingest` |
-| `MEDLINER_RAW_CANDIDATES` | raw candidates JSONL you author from DAKP intermediates (see [`docs/CANDIDATE_TASKS.md`](docs/CANDIDATE_TASKS.md)) |
+| `MEDLINER_RAW_CANDIDATES` | raw candidates JSONL, ingested from the DAKP export bundle or authored manually (see [`docs/CANDIDATE_TASKS.md`](docs/CANDIDATE_TASKS.md)) |
 | `MEDLINER_LABEL_STUDIO_EXPORT` | reviewed export that feeds the pipeline |
 | `MEDLINER_WORKDIR` | root for normalized data, splits, checkpoints, and reports |
 | `MEDLINER_TRAIN_CONFIG` | training configuration YAML |
@@ -101,7 +101,7 @@ MEDLINER_LABEL_STUDIO_EXPORT=$PWD/data/label-studio/reviewed.json make pipeline
 The stages cover the whole workflow except the human annotation step itself:
 
 ```text
-raw candidates JSONL (authored from DAKP intermediates)
+raw candidates JSONL (ingested from the DAKP export bundle or authored manually)
         ↓
 Label Studio import tasks (validated, deduplicated)
         ↓
@@ -146,10 +146,10 @@ Reports include:
 - indication versus contraindication metrics;
 - source-family metrics;
 - no-entity false-positive rate;
-- DAKP regression benchmark results when `$MEDLINER_DAKP_ROOT/tests/eval/ner_gold.json` is available;
+- gold-benchmark regression results from the DAKP NER gold set ingested by `make ingest` (`$MEDLINER_BENCHMARK`);
 - a truncation block naming any example over the model's word budget.
 
-The tuned model must be compared with the untuned small checkpoint and the DAKP gazetteer baseline before it is selected for packaging. The committed DAKP benchmark remains held out from training.
+The tuned model must be compared with the untuned small checkpoint before it is selected for packaging. The ingested DAKP gold benchmark remains held out from training.
 
 ## Artifact bundle
 

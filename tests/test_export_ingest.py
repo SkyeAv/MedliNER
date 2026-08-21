@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from medliner.candidates import build_import_tasks, hash_candidates_file, read_candidates
-from medliner.evaluation import load_dakp_benchmark
+from medliner.evaluation import load_gold_benchmark
 from medliner.export_ingest import (
     BENCHMARK_SCHEMA_VERSION,
     EXPORT_SCHEMA_VERSION,
@@ -64,7 +64,7 @@ def test_ingest_export_materializes_the_committed_dakp_bundle(tmp_path):
     assert len(tasks) == len(candidates)  # the exporter already deduped
 
     # The gold file parses into canonical Examples through the evaluation parser.
-    examples = load_dakp_benchmark(ingested / "ner_gold.json")
+    examples = load_gold_benchmark(ingested / "ner_gold.json")
     assert len(examples) == bundle_manifest["files"]["ner_gold.json"]["cases"]
     assert all(isinstance(example, Example) for example in examples)
 

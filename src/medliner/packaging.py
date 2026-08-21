@@ -117,7 +117,6 @@ def build_export_bundle(
         "split_hash": split_manifest.get("split_hash"),
         "held_out_example_ids": split_manifest.get("held_out_ids", []),
         "license_notes": "Review source-data and base-checkpoint licenses before public upload.",
-        "dakp_runtime_integration": "deferred",
     }
     (output_dir / "provenance.json").write_text(
         json.dumps(provenance, indent=2, sort_keys=True) + "\n", encoding="utf-8"

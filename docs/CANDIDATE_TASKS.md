@@ -1,7 +1,9 @@
 # Candidate task creation
 
-Candidates start as a small JSONL file you author yourself, typically derived from
-intermediate DAKP inputs (DailyMed SPL section text, FAERS indication strings). Running
+The recommended source is the DAKP training-data export bundle: run `make ingest` and it
+materializes raw candidates at `$MEDLINER_WORKDIR/ingested/candidates.jsonl`. You can also
+author the small JSONL file yourself, typically derived from intermediate DAKP inputs
+(DailyMed SPL section text, FAERS indication strings). Running
 `make candidates` validates that file, deduplicates it,
 and converts it into the Label Studio import shape documented in `docs/LABEL_STUDIO.md`.
 Reviewed exports remain the only training input.

@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from .candidates import CandidateInputError, hash_candidates_file, read_candidates
-from .evaluation import load_dakp_benchmark
+from .evaluation import load_gold_benchmark
 
 EXPORT_SCHEMA_VERSION = "dakp.medliner.export.v1"
 BENCHMARK_SCHEMA_VERSION = "dakp.ner.gold.v1"
@@ -116,7 +116,7 @@ def ingest_export(bundle_dir: str | Path, *, workdir: str | Path | None = None) 
     except CandidateInputError as exc:
         raise ExportIngestError(f"{candidates_path}: {exc}") from exc
     try:
-        benchmark = load_dakp_benchmark(gold_path)
+        benchmark = load_gold_benchmark(gold_path)
     except (KeyError, TypeError, ValueError) as exc:
         raise ExportIngestError(f"{gold_path}: malformed gold case: {exc}") from exc
 

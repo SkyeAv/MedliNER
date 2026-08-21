@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from medliner.evaluation import dakp_benchmark_path, load_dakp_benchmark, score_examples
+from medliner.evaluation import load_gold_benchmark, score_examples
 from medliner.schema import Annotation, Example
 
 
@@ -105,12 +105,7 @@ def test_type_key_is_accepted_as_a_label_alias():
     assert report["overall"]["strict"]["tp"] == 1
 
 
-def test_dakp_root_follows_the_environment(monkeypatch, tmp_path):
-    monkeypatch.setenv("MEDLINER_DAKP_ROOT", str(tmp_path))
-    assert dakp_benchmark_path() == tmp_path / "tests" / "eval" / "ner_gold.json"
-
-
-def test_dakp_benchmark_rejects_an_ambiguous_surface(tmp_path):
+def test_gold_benchmark_rejects_an_ambiguous_surface(tmp_path):
     path = tmp_path / "ner_gold.json"
     path.write_text(
         json.dumps(
@@ -128,10 +123,10 @@ def test_dakp_benchmark_rejects_an_ambiguous_surface(tmp_path):
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="add an explicit 'start' offset"):
-        load_dakp_benchmark(path)
+        load_gold_benchmark(path)
 
 
-def test_dakp_benchmark_uses_an_explicit_offset_when_supplied(tmp_path):
+def test_gold_benchmark_uses_an_explicit_offset_when_supplied(tmp_path):
     path = tmp_path / "ner_gold.json"
     path.write_text(
         json.dumps(
@@ -148,7 +143,7 @@ def test_dakp_benchmark_uses_an_explicit_offset_when_supplied(tmp_path):
         ),
         encoding="utf-8",
     )
-    example = load_dakp_benchmark(path)[0]
+    example = load_gold_benchmark(path)[0]
     assert (example.annotations[0].start, example.annotations[0].end) == (11, 17)
     assert example.task == "indication"
 
@@ -173,6 +168,27 @@ def _gold(tmp_path):
     return _dataset(tmp_path, [example])
 
 
+def _write_gold(tmp_path):
+    """One gold case matching the `_gold` split example, so a perfect predictor scores f1=1.0."""
+    path = tmp_path / "ner_gold.json"
+    path.write_text(
+        json.dumps(
+            {
+                "cases": [
+                    {
+                        "id": "g1",
+                        "source": "faers",
+                        "text": "asthma",
+                        "mentions": [{"surface": "asthma", "type": "disease"}],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
 def test_evaluate_checkpoint_reports_tuned_and_baseline_systems(tmp_path, monkeypatch):
     from medliner import evaluation
 
@@ -185,14 +201,14 @@ def test_evaluate_checkpoint_reports_tuned_and_baseline_systems(tmp_path, monkey
         return lambda _text: [{"start": 0, "end": 6, "label": "disease"}]
 
     monkeypatch.setattr(evaluation, "make_gliner_predictor", perfect)
-    monkeypatch.setattr(evaluation, "make_dakp_gazetteer_predictor", lambda *a, **k: lambda _text: [])
-    monkeypatch.setenv("MEDLINER_DAKP_ROOT", str(tmp_path / "no-dakp"))
+    monkeypatch.setenv("MEDLINER_BENCHMARK", str(_write_gold(tmp_path)))
 
     report = evaluation.evaluate_checkpoint(checkpoint, split_dir, tmp_path / "report.json")
     assert report["evaluated_split"] == "test"
     assert report["tuned"]["overall"]["strict"]["f1"] == 1.0
+    assert report["tuned_gold_regression"]["overall"]["strict"]["f1"] == 1.0
     assert report["baselines"]["untuned_gliner"]["overall"]["strict"]["f1"] == 1.0
-    assert report["baselines"]["dakp_gazetteer"]["overall"]["strict"]["recall"] == 0.0
+    assert report["baselines"]["untuned_gliner_gold_regression"]["overall"]["strict"]["f1"] == 1.0
     assert json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))["checkpoint"] == str(checkpoint)
 
 
@@ -202,20 +218,19 @@ def test_a_missing_baseline_does_not_void_the_tuned_report(tmp_path, monkeypatch
     split_dir = _gold(tmp_path)
     checkpoint = tmp_path / "final"
     checkpoint.mkdir()
+    (checkpoint / "medliner-training.json").write_text(json.dumps({"model_id": "base"}), encoding="utf-8")
 
-    monkeypatch.setattr(
-        evaluation, "make_gliner_predictor", lambda *a, **k: lambda _text: [{"start": 0, "end": 6, "label": "disease"}]
-    )
+    def only_tuned_is_available(checkpoint_arg, *, threshold=0.3):
+        if str(checkpoint_arg) == "base":
+            raise ModuleNotFoundError("base checkpoint unavailable")
+        return lambda _text: [{"start": 0, "end": 6, "label": "disease"}]
 
-    def unavailable(*_args, **_kwargs):
-        raise ModuleNotFoundError("dakp_pipeline")
-
-    monkeypatch.setattr(evaluation, "make_dakp_gazetteer_predictor", unavailable)
-    monkeypatch.setenv("MEDLINER_DAKP_ROOT", str(tmp_path / "no-dakp"))
+    monkeypatch.setattr(evaluation, "make_gliner_predictor", only_tuned_is_available)
+    monkeypatch.setenv("MEDLINER_BENCHMARK", str(_write_gold(tmp_path)))
 
     report = evaluation.evaluate_checkpoint(checkpoint, split_dir, tmp_path / "report.json")
     assert report["tuned"]["overall"]["strict"]["f1"] == 1.0
-    assert "ModuleNotFoundError" in report["baselines"]["dakp_gazetteer_error"]
+    assert "ModuleNotFoundError" in report["baselines"]["untuned_gliner_error"]
 
 
 def test_validation_split_is_used_when_no_test_split_exists(tmp_path, monkeypatch):
@@ -228,11 +243,24 @@ def test_validation_split_is_used_when_no_test_split_exists(tmp_path, monkeypatc
         split_dir / "validation.jsonl",
     )
     monkeypatch.setattr(evaluation, "make_gliner_predictor", lambda *a, **k: lambda _text: [])
-    monkeypatch.setenv("MEDLINER_DAKP_ROOT", str(tmp_path / "no-dakp"))
+    monkeypatch.setenv("MEDLINER_BENCHMARK", str(_write_gold(tmp_path)))
 
     report = evaluation.evaluate_checkpoint(tmp_path, split_dir, tmp_path / "report.json", include_baselines=False)
     assert report["evaluated_split"] == "validation"
     assert "baselines" not in report
+
+
+def test_a_missing_benchmark_fails_loudly_with_an_ingest_hint(tmp_path, monkeypatch):
+    from medliner import evaluation
+
+    split_dir = _gold(tmp_path)
+    monkeypatch.setattr(
+        evaluation, "make_gliner_predictor", lambda *a, **k: lambda _text: [{"start": 0, "end": 6, "label": "disease"}]
+    )
+    monkeypatch.setenv("MEDLINER_BENCHMARK", str(tmp_path / "absent" / "ner_gold.json"))
+
+    with pytest.raises(RuntimeError, match="medliner ingest"):
+        evaluation.evaluate_checkpoint(tmp_path, split_dir, tmp_path / "report.json")
 
 
 def test_gliner_predictor_wrapper_normalizes_model_output():

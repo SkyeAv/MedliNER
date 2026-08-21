@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 from collections import defaultdict
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -17,17 +16,18 @@ from .schema import ALLOWED_LABELS, Annotation, Example
 
 Predictor = Callable[[str], list[dict[str, Any]]]
 
-DEFAULT_DAKP_ROOT = "../DAKP"
-DAKP_BENCHMARK_RELPATH = Path("tests") / "eval" / "ner_gold.json"
 
+def benchmark_path() -> Path:
+    """Path of the ingested gold benchmark: `$MEDLINER_BENCHMARK`, else the workdir default.
 
-def dakp_root() -> Path:
-    """Sibling DAKP checkout, overridable because the caller's working directory may not be the repo."""
-    return Path(os.environ.get("MEDLINER_DAKP_ROOT", DEFAULT_DAKP_ROOT))
-
-
-def dakp_benchmark_path() -> Path:
-    return dakp_root() / DAKP_BENCHMARK_RELPATH
+    Resolution matches ``cli.workdir()`` (``$MEDLINER_WORKDIR`` or ``data/materialized``).
+    No existence guarantee: callers decide how to report a missing file.
+    """
+    override = os.environ.get("MEDLINER_BENCHMARK")
+    if override:
+        return Path(override)
+    workdir = Path(os.environ.get("MEDLINER_WORKDIR", "data/materialized"))
+    return workdir / "ingested" / "ner_gold.json"
 
 
 @dataclass(frozen=True)
@@ -183,25 +183,6 @@ def make_gliner_predictor(checkpoint: str | Path, *, threshold: float = 0.3) -> 
     return GLiNERPredictor(model, threshold=threshold)
 
 
-def make_dakp_gazetteer_predictor(root: str | Path | None = None) -> Predictor:
-    """Load DAKP's deterministic offline gazetteer when the sibling checkout is available."""
-    resolved = Path(root).resolve() if root is not None else dakp_root().resolve()
-    src = resolved / "src"
-    if str(src) not in sys.path:
-        sys.path.insert(0, str(src))
-    from dakp_pipeline.ner.ner import DiseaseNER
-
-    ner = DiseaseNER(offline=True)
-
-    def predict(text: str) -> list[dict[str, Any]]:
-        return [
-            {"start": mention.start, "end": mention.end, "label": mention.type, "text": mention.text}
-            for mention in ner.extract(text)
-        ]
-
-    return predict
-
-
 def _cuda_available() -> bool:
     try:
         import torch
@@ -214,9 +195,9 @@ def _cuda_available() -> bool:
         return False
 
 
-def load_dakp_benchmark(path: str | Path | None = None) -> list[Example]:
-    """Load DAKP's committed regression fixture without adding it to training."""
-    payload = json.loads(Path(path if path is not None else dakp_benchmark_path()).read_text(encoding="utf-8"))
+def load_gold_benchmark(path: str | Path) -> list[Example]:
+    """Load the ingested DAKP gold benchmark without adding it to training."""
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
     examples: list[Example] = []
     for item in payload["cases"]:
         text = str(item["text"])
@@ -265,7 +246,7 @@ def evaluate_checkpoint(
     include_baselines: bool = True,
     threshold: float = 0.3,
 ) -> dict[str, Any]:
-    """Evaluate tuned, untuned, and available gazetteer systems."""
+    """Evaluate the tuned and untuned systems against the split and the ingested gold benchmark."""
     tuned_predictor = make_gliner_predictor(checkpoint, threshold=threshold)
     split_dir = Path(split_dir)
     test_path = split_dir / "test.jsonl"
@@ -277,10 +258,14 @@ def evaluate_checkpoint(
         "evaluated_split": evaluated_split,
         "threshold": threshold,
     }
-    benchmark_path = dakp_benchmark_path()
-    benchmark = load_dakp_benchmark(benchmark_path) if benchmark_path.exists() else None
-    if benchmark is not None:
-        result["tuned_dakp_regression"] = score_examples(tuned_predictor, benchmark)
+    gold_path = benchmark_path()
+    if not gold_path.exists():
+        raise RuntimeError(
+            f"gold benchmark not found at {gold_path}; run `medliner ingest` to materialize it "
+            "(or point $MEDLINER_BENCHMARK at an existing ner_gold.json)"
+        )
+    benchmark = load_gold_benchmark(gold_path)
+    result["tuned_gold_regression"] = score_examples(tuned_predictor, benchmark)
     if include_baselines:
         result["baselines"] = {}
         metadata_path = Path(checkpoint) / "medliner-training.json"
@@ -292,17 +277,9 @@ def evaluate_checkpoint(
             try:
                 untuned = make_gliner_predictor(str(base_model_id), threshold=threshold)
                 result["baselines"]["untuned_gliner"] = score_examples(untuned, values)
-                if benchmark is not None:
-                    result["baselines"]["untuned_gliner_dakp_regression"] = score_examples(untuned, benchmark)
+                result["baselines"]["untuned_gliner_gold_regression"] = score_examples(untuned, benchmark)
             except Exception as exc:  # noqa: BLE001 - a missing baseline must not void the tuned report
                 result["baselines"]["untuned_gliner_error"] = f"{type(exc).__name__}: {exc}"
-        try:
-            gazetteer = make_dakp_gazetteer_predictor()
-            result["baselines"]["dakp_gazetteer"] = score_examples(gazetteer, values)
-            if benchmark is not None:
-                result["baselines"]["dakp_gazetteer_regression"] = score_examples(gazetteer, benchmark)
-        except Exception as exc:  # noqa: BLE001 - the sibling checkout is optional
-            result["baselines"]["dakp_gazetteer_error"] = f"{type(exc).__name__}: {exc}"
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -313,11 +290,9 @@ __all__ = [
     "Counts",
     "ExampleScore",
     "GLiNERPredictor",
-    "dakp_benchmark_path",
-    "dakp_root",
+    "benchmark_path",
     "evaluate_checkpoint",
-    "load_dakp_benchmark",
-    "make_dakp_gazetteer_predictor",
+    "load_gold_benchmark",
     "make_gliner_predictor",
     "score_example",
     "score_examples",

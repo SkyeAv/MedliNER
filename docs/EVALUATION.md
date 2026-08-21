@@ -8,10 +8,10 @@ Also report:
 - **per-task metrics:** `indication` and `contraindication`;
 - **per-source metrics:** DailyMed, FAERS, and any later source family;
 - **no-entity false-positive rate:** fraction of reviewed empty examples receiving at least one prediction;
-- **baseline comparison:** tuned small GLiNER, untuned small GLiNER, and DAKP's deterministic gazetteer when the sibling checkout is available;
-- **DAKP regression:** the committed `../DAKP/tests/eval/ner_gold.json` remains held out from training.
+- **baseline comparison:** tuned small GLiNER versus untuned small GLiNER;
+- **gold-benchmark regression:** the DAKP NER gold benchmark ingested by `medliner ingest` remains held out from training.
 
-Do not select a checkpoint using training loss alone. The reviewed validation split is the selection set; the test split and DAKP regression fixture are reported after selection. For very small datasets, report counts alongside scores and avoid interpreting a single percentage as stable evidence.
+Do not select a checkpoint using training loss alone. The reviewed validation split is the selection set; the test split and gold benchmark are reported after selection. For very small datasets, report counts alongside scores and avoid interpreting a single percentage as stable evidence.
 
 ## Truncation
 
@@ -27,10 +27,9 @@ Each example is predicted exactly once per report. The per-task and per-source b
 those counts rather than re-running inference, which matters because the same scorer runs inside
 the training-time validation callback on every evaluation step.
 
-## Locating DAKP
+## Locating the gold benchmark
 
-The sibling checkout is found through `MEDLINER_DAKP_ROOT` (default `../DAKP`, set by `.envrc`
-and the `Makefile`). The relative default resolves against the process working directory, so
-set the variable explicitly when running the CLI from outside the repository root. When the
-checkout is absent, the gazetteer and regression sections are omitted and the tuned report is
-still written.
+Evaluation scores the regression set from the gold benchmark ingested by `medliner ingest`
+(`make ingest`). Its path is `$MEDLINER_BENCHMARK`, defaulting to
+`$MEDLINER_WORKDIR/ingested/ner_gold.json`. When the file is missing, evaluation fails with
+an error telling you to run `medliner ingest`; the regression set is never silently skipped.

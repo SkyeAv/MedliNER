@@ -48,15 +48,17 @@ SMOKE=1 make pipeline
 
 ## End-to-end gate
 
-0. Author `data/label-studio/candidates.jsonl` from intermediate DAKP inputs and run
-   `make label-studio`; confirm http://localhost:9030 shows the project with the imported tasks.
+0. Run `make ingest` to materialize the DAKP export bundle's candidates under
+   `$MEDLINER_WORKDIR/ingested/` (manual authoring of `data/label-studio/candidates.jsonl`
+   remains a fallback) and run `make label-studio`; confirm http://localhost:9030 shows the
+   project with the imported tasks.
 1. Annotate in the browser and export the reviewed JSON manually; confirm annotators can
    highlight text without entering offsets.
 2. Run `make pipeline` and inspect rejected spans/errors from the dataset stage.
 4. Verify the split manifest hash under `$MEDLINER_WORKDIR/splits/`.
 5. Run the one-step smoke run (`SMOKE=1 make pipeline`) and confirm `training/final/` is loadable with `GLiNER.from_pretrained` and records `selected_checkpoint`.
 6. Run full bounded training with resume enabled (`make pipeline`).
-7. Inspect the tuned, untuned, gazetteer, and DAKP regression metrics in the evaluation report.
+7. Inspect the tuned, untuned, and gold-regression metrics in the evaluation report.
 8. Inspect the standalone bundle's provenance/model-card files.
 
-The committed DAKP benchmark is a regression test only and must not appear in train, validation, or test training files.
+The ingested DAKP gold benchmark is a regression test only and must not appear in train, validation, or test training files.
