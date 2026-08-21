@@ -30,6 +30,7 @@ the training-time validation callback on every evaluation step.
 ## Locating DAKP
 
 The sibling checkout is found through `MEDLINER_DAKP_ROOT` (default `../DAKP`, set by `.envrc`
-and the `Makefile`). Dagster's working directory is not the repository root, so do not rely on
-the relative default when materializing assets from the UI. When the checkout is absent, the
-gazetteer and regression sections are omitted and the tuned report is still written.
+and the `Makefile`). The relative default resolves against the process working directory, so
+set the variable explicitly when running the CLI from outside the repository root. When the
+checkout is absent, the gazetteer and regression sections are omitted and the tuned report is
+still written.

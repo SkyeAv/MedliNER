@@ -1,6 +1,7 @@
 """Podman-hosted Label Studio server lifecycle and minimal REST client.
 
-Label Studio stays out of the MEDliNER Python environment: the Dagster asset launches the
+Label Studio stays out of the MEDliNER Python environment: the ``medliner label-studio``
+command launches the
 stock ``heartexlabs/label-studio`` image with podman, waits for health, ensures a project
 with ``configs/label_studio_ner.xml``, and imports candidate tasks. Annotation and export
 remain a manual browser step. Everything here is stdlib-only so no SDK dependency is added.

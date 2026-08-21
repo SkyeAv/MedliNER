@@ -24,7 +24,7 @@ Read [`docs/ANNOTATION_GUIDE.md`](docs/ANNOTATION_GUIDE.md) before annotation.
 ## Annotation
 
 Label Studio Community Edition is free to self-host locally and provides a browser UI. The
-pipeline runs it in a podman container via the `label_studio_server` asset — no separate
+pipeline runs it in a podman container via `make label-studio` — no separate
 install needed; see [`docs/LABEL_STUDIO.md`](docs/LABEL_STUDIO.md).
 
 Annotators do not count offsets:
@@ -54,53 +54,45 @@ The checked-in `.envrc` exports:
 | `MEDLINER_LABEL_STUDIO_PORT` / `_IMAGE` | podman Label Studio container port and image |
 | `MEDLINER_LABEL_STUDIO_USERNAME` / `_PASSWORD` / `_TOKEN` | Label Studio login created on first container boot, or an explicit API token |
 | `MEDLINER_SPLIT_SEED` / `MEDLINER_REGRESSION_IDS` | split seed and IDs withheld from every split |
-| `DAGSTER_HOME` | local Dagster run storage |
 | `TRITON_LIBCUDA_PATH` | set automatically when the system has no `/sbin/ldconfig` (see [`docs/HARDWARE.md`](docs/HARDWARE.md)) |
 
 Print the resolved values with `make env`. For private local overrides, create the ignored `.envrc.local`; do not put secrets or machine-specific paths into the committed `.envrc`.
 
 Label Studio runs in a podman container started by the pipeline; it is intentionally not a
-MEDliNER Python dependency. The Dagster UI is the only pipeline entry point. Start the local
-deployment with the phony `UP` target:
-
-```bash
-make UP
-# `make up` is a lowercase convenience alias.
-```
-
-Then open <http://localhost:3000>. The full flow is:
+MEDliNER Python dependency. The pipeline stages are Makefile targets wrapping the
+`medliner` CLI. The full flow is:
 
 1. Author `data/label-studio/candidates.jsonl` from intermediate DAKP inputs
    ([`docs/CANDIDATE_TASKS.md`](docs/CANDIDATE_TASKS.md)).
-2. Materialize `label_studio_server` — this builds the Label Studio import file
-   (`candidate_tasks`) and starts the annotation server with those tasks imported.
+2. `make label-studio` — builds the Label Studio import file (`make candidates` runs
+   automatically when needed) and starts the annotation server with those tasks imported.
 3. Annotate in the browser at <http://localhost:9030>, export the reviewed JSON manually,
    and point `MEDLINER_LABEL_STUDIO_EXPORT` at it (default
    `data/label-studio/reviewed.json`).
-4. Materialize `export_bundle`; the remaining assets (`label_studio_export` →
-   `normalized_dataset` → `frozen_splits` → `training_run` → `evaluation_report`)
-   materialize automatically in order.
+4. `make pipeline` — runs the remaining stages (`dataset` → `splits` → `train` →
+   `evaluate` → `bundle`) in order.
 
 Stop the annotation server with `make label-studio-stop`; annotations survive in the
 container's data volume directory under `$MEDLINER_WORKDIR/label-studio/server-data`.
 
-The required first GPU check is a one-step smoke run of `training_run` using the same code
-path as full training: materialize that asset with run config `{"smoke": true}` from the
-launchpad (Shift-click "Materialize" to open it) before launching a full run.
+The required first GPU check is a one-step smoke run of the training code path:
 
-`make check` runs the tests, lint, format checks, and `dagster definitions validate`;
-`make coverage` adds a coverage report. `make UP` and `make validate` seed `$DAGSTER_HOME` from
-the committed `configs/dagster.yaml`, since the instance directory itself is gitignored.
+```bash
+SMOKE=1 make pipeline   # run once before the full `make pipeline`
+```
+
+`make check` runs the tests, lint, and format checks; `make coverage` adds a coverage
+report.
 
 Override any environment path without editing files, for example:
 
 ```bash
-MEDLINER_LABEL_STUDIO_EXPORT=$PWD/data/label-studio/reviewed.json make UP
+MEDLINER_LABEL_STUDIO_EXPORT=$PWD/data/label-studio/reviewed.json make pipeline
 ```
 
-## Dagster graph
+## Pipeline
 
-The graph covers the whole workflow except the human annotation step itself:
+The stages cover the whole workflow except the human annotation step itself:
 
 ```text
 raw candidates JSONL (authored from DAKP intermediates)
@@ -124,7 +116,7 @@ evaluation report
 standalone export bundle
 ```
 
-There are no schedules, sensors, deployment services, or remote executors. Dagster records materializations and metadata under the local run storage. The source export, normalized JSONL, split manifest, training configuration, checkpoint, and evaluation report are all explicit artifacts.
+Every stage is a plain CLI command (`uv run medliner <stage>`) with a Makefile wrapper. The source export, normalized JSONL, split manifest, training configuration, checkpoint, and evaluation report are all explicit artifacts under `$MEDLINER_WORKDIR`.
 
 ## Training target
 
@@ -155,7 +147,7 @@ The tuned model must be compared with the untuned small checkpoint and the DAKP 
 
 ## Artifact bundle
 
-The `export_bundle` asset creates a standalone directory containing:
+`make pipeline` creates a standalone directory containing:
 
 - `checkpoint/`;
 - `labels.json`;

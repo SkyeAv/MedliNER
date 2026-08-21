@@ -1,9 +1,9 @@
 # Candidate task creation
 
 Candidates start as a small JSONL file you author yourself, typically derived from
-intermediate DAKP inputs (DailyMed SPL section text, FAERS indication strings). The
-`raw_candidate_texts` → `candidate_tasks` Dagster assets validate that file, deduplicate it,
-and convert it into the Label Studio import shape documented in `docs/LABEL_STUDIO.md`.
+intermediate DAKP inputs (DailyMed SPL section text, FAERS indication strings). Running
+`make candidates` validates that file, deduplicates it,
+and converts it into the Label Studio import shape documented in `docs/LABEL_STUDIO.md`.
 Reviewed exports remain the only training input.
 
 ## Raw candidates contract
@@ -34,7 +34,7 @@ indication strings from the FAERS case table, and write one row per text. No DAK
 is required — the file is plain JSONL and can come from a notebook, a SQL export, or a
 script against DAKP's intermediate artifacts.
 
-## Generation rules applied by `candidate_tasks`
+## Generation rules applied by `make candidates`
 
 - Task IDs are deterministic: `medliner-<blake3(task + normalized text)[:16]>`, so re-running
   over the same input reproduces the same import file and Label Studio re-imports are
@@ -56,6 +56,6 @@ script against DAKP's intermediate artifacts.
 
 ## Next step
 
-Materialize `label_studio_server` to serve these tasks in a browser; see
+Run `make label-studio` to serve these tasks in a browser; see
 `docs/LABEL_STUDIO.md`. Model suggestions, if ever added later, are suggestions only and
 never training gold.

@@ -22,7 +22,7 @@ DAKP_BENCHMARK_RELPATH = Path("tests") / "eval" / "ner_gold.json"
 
 
 def dakp_root() -> Path:
-    """Sibling DAKP checkout, overridable because Dagster's working directory is not the repo."""
+    """Sibling DAKP checkout, overridable because the caller's working directory may not be the repo."""
     return Path(os.environ.get("MEDLINER_DAKP_ROOT", DEFAULT_DAKP_ROOT))
 
 
