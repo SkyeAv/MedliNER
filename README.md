@@ -46,11 +46,12 @@ The checked-in `.envrc` exports:
 
 | Variable | Purpose |
 | --- | --- |
+| `MEDLINER_EXPORT_BUNDLE` | DAKP training-data export bundle directory ingested by `make ingest` |
+| `MEDLINER_BENCHMARK` | NER gold benchmark materialized by `make ingest` |
 | `MEDLINER_RAW_CANDIDATES` | raw candidates JSONL you author from DAKP intermediates (see [`docs/CANDIDATE_TASKS.md`](docs/CANDIDATE_TASKS.md)) |
 | `MEDLINER_LABEL_STUDIO_EXPORT` | reviewed export that feeds the pipeline |
 | `MEDLINER_WORKDIR` | root for normalized data, splits, checkpoints, and reports |
 | `MEDLINER_TRAIN_CONFIG` | training configuration YAML |
-| `MEDLINER_DAKP_ROOT` | sibling DAKP checkout used for baselines and the regression fixture |
 | `MEDLINER_LABEL_STUDIO_PORT` / `_IMAGE` | podman Label Studio container port and image |
 | `MEDLINER_LABEL_STUDIO_USERNAME` / `_PASSWORD` / `_TOKEN` | Label Studio login created on first container boot, or an explicit API token |
 | `MEDLINER_SPLIT_SEED` / `MEDLINER_REGRESSION_IDS` | split seed and IDs withheld from every split |
@@ -62,10 +63,15 @@ Label Studio runs in a podman container started by the pipeline; it is intention
 MEDliNER Python dependency. The pipeline stages are Makefile targets wrapping the
 `medliner` CLI. The full flow is:
 
-1. Author `data/label-studio/candidates.jsonl` from intermediate DAKP inputs
+1. `make ingest` — verifies the DAKP export bundle (`MEDLINER_EXPORT_BUNDLE`, default
+   `data/dakp-export`) and materializes its candidates and NER gold under
+   `$MEDLINER_WORKDIR/ingested/`. Alternatively author
+   `data/label-studio/candidates.jsonl` by hand
    ([`docs/CANDIDATE_TASKS.md`](docs/CANDIDATE_TASKS.md)).
 2. `make label-studio` — builds the Label Studio import file (`make candidates` runs
-   automatically when needed) and starts the annotation server with those tasks imported.
+   automatically when needed; for the ingested bundle pass
+   `--input $MEDLINER_WORKDIR/ingested/candidates.jsonl`) and starts the annotation server
+   with those tasks imported.
 3. Annotate in the browser at <http://localhost:9030>, export the reviewed JSON manually,
    and point `MEDLINER_LABEL_STUDIO_EXPORT` at it (default
    `data/label-studio/reviewed.json`).

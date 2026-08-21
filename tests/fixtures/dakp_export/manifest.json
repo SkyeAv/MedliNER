@@ -1,0 +1,28 @@
+{
+  "schema_version": "dakp.medliner.export.v1",
+  "candidate_schema": "medliner.candidates.v1",
+  "benchmark_schema": "dakp.ner.gold.v1",
+  "generated_at": "2026-08-21T20:28:47.992243+00:00",
+  "files": {
+    "candidates.jsonl": {
+      "blake3": "b3:158bf0f796e88a5aa32acdd9b101a10691f3c092350c461e462af256ac9833a3",
+      "rows": 8
+    },
+    "ner_gold.json": {
+      "blake3": "b3:41f10baa160eb8454e0d0403df415b4ea00451bd6ed67d626e23f0e41de3f670",
+      "cases": 34
+    }
+  },
+  "task_counts": {
+    "contraindication": 2,
+    "indication": 6
+  },
+  "family_counts": {
+    "dailymed": 5,
+    "faers": 3
+  },
+  "inputs": [
+    "b3:1cd99af3cb1cde150f3a770f708c754e6a531d9517c3b9b6e4c451d8034dfde9",
+    "b3:91b66e59f31ce8fdae833b3870e6420cb3e05fdce86af17e1764adee47660304"
+  ]
+}

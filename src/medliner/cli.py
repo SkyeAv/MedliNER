@@ -2,7 +2,8 @@
 
 The pipeline runs in three phases, each a subcommand (see the Makefile wrappers):
 
-- before Label Studio: ``candidates`` builds the validated import file;
+- before Label Studio: ``ingest`` materializes a DAKP export bundle (optional when
+  hand-authoring raw candidates), then ``candidates`` builds the validated import file;
 - Label Studio: ``label-studio``/``label-studio-stop`` manage the podman annotation server,
   annotation and export itself remain manual browser steps;
 - after Label Studio: ``dataset`` → ``splits`` → ``train`` → ``evaluate`` → ``bundle``
@@ -23,6 +24,7 @@ from pathlib import Path
 
 from .candidates import build_import_tasks, hash_candidates_file, import_manifest, read_candidates, write_import_file
 from .dataset import hash_file, manifest_for, read_examples, write_examples, write_manifest
+from .export_ingest import ingest_export
 from .label_studio import normalize_export
 from .label_studio_server import DEFAULT_IMAGE, DEFAULT_PORT, provision, stop_container
 from .packaging import build_export_bundle
@@ -53,6 +55,16 @@ def export_path(value: str | None = None) -> Path:
     path = Path(raw)
     if not path.exists():
         raise FileNotFoundError(path)
+    return path
+
+
+def bundle_path(value: str | None = None) -> Path:
+    raw = value or os.environ.get("MEDLINER_EXPORT_BUNDLE")
+    if not raw:
+        raise RuntimeError("set --bundle or MEDLINER_EXPORT_BUNDLE to a DAKP export bundle directory")
+    path = Path(raw)
+    if not path.is_dir():
+        raise FileNotFoundError(f"export bundle directory not found: {path} (--bundle / MEDLINER_EXPORT_BUNDLE)")
     return path
 
 
@@ -148,6 +160,15 @@ def run_bundle(checkpoint: Path, report: Path, dataset_path: Path, split_dir: Pa
     return result
 
 
+def cmd_ingest(args: argparse.Namespace) -> None:
+    result = ingest_export(bundle_path(args.bundle))
+    print(
+        f"ingest: {result['candidate_rows']} candidates {result['task_counts']}, "
+        f"{result['gold_cases']} gold cases {result['family_counts']} -> {result['candidates_path'].parent}"
+    )
+    print(f"next: medliner candidates --input {result['candidates_path']}")
+
+
 def cmd_candidates(args: argparse.Namespace) -> None:
     run_candidates(raw_candidates_path(args.input))
 
@@ -215,6 +236,10 @@ def cmd_pipeline(args: argparse.Namespace) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="medliner", description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
+
+    ingest = sub.add_parser("ingest", help="verify + materialize a DAKP export bundle")
+    ingest.add_argument("--bundle", help="DAKP export bundle directory (default: $MEDLINER_EXPORT_BUNDLE)")
+    ingest.set_defaults(func=cmd_ingest)
 
     candidates = sub.add_parser("candidates", help="build the Label Studio import file from raw candidates")
     candidates.add_argument("--input", help="raw candidates JSONL (default: $MEDLINER_RAW_CANDIDATES)")

@@ -7,6 +7,8 @@ from medliner import cli
 from medliner.dataset import read_examples, write_examples
 from medliner.schema import Annotation, Example
 
+DAKP_EXPORT_FIXTURE = Path(__file__).parent / "fixtures" / "dakp_export"
+
 
 def _example(identifier: str, document: str) -> Example:
     return Example(
@@ -66,6 +68,31 @@ def _write_reviewed_export(path: Path, count: int) -> None:
         ),
         encoding="utf-8",
     )
+
+
+def test_ingest_materializes_the_dakp_bundle(tmp_path, monkeypatch, capsys):
+    """The CLI stage turns a verified DAKP bundle into the ingested working set."""
+    monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
+    assert cli.main(["ingest", "--bundle", str(DAKP_EXPORT_FIXTURE)]) == 0
+    ingested = tmp_path / "work" / "ingested"
+    assert (ingested / "candidates.jsonl").exists()
+    assert (ingested / "ner_gold.json").exists()
+    assert (ingested / "ingest-manifest.json").exists()
+    out = capsys.readouterr().out
+    assert "8 candidates" in out  # the committed fixture manifest records 8 rows
+    assert str(ingested) in out
+    # The bundle directory also resolves from the environment when the flag is absent.
+    monkeypatch.setenv("MEDLINER_EXPORT_BUNDLE", str(DAKP_EXPORT_FIXTURE))
+    assert cli.main(["ingest"]) == 0
+
+
+def test_ingest_missing_bundle_is_an_explicit_error(monkeypatch, capsys):
+    """Neither flag nor env var set must name both in the error, like the other stages."""
+    monkeypatch.delenv("MEDLINER_EXPORT_BUNDLE", raising=False)
+    assert cli.main(["ingest"]) == 1
+    error = capsys.readouterr().err
+    assert "--bundle" in error
+    assert "MEDLINER_EXPORT_BUNDLE" in error
 
 
 def test_candidates_builds_an_import_file(tmp_path, monkeypatch, capsys):
