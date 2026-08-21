@@ -251,12 +251,15 @@ def test_validation_split_is_used_when_no_test_split_exists(tmp_path, monkeypatc
 
 
 def test_a_missing_benchmark_fails_loudly_with_an_ingest_hint(tmp_path, monkeypatch):
+    """WHY: the actionable ingest error must win before checkpoint loading can fail or do work."""
     from medliner import evaluation
 
     split_dir = _gold(tmp_path)
-    monkeypatch.setattr(
-        evaluation, "make_gliner_predictor", lambda *a, **k: lambda _text: [{"start": 0, "end": 6, "label": "disease"}]
-    )
+
+    def predictor_factory_must_not_run(*args, **kwargs):
+        raise AssertionError("model loading must not run before missing-gold validation")
+
+    monkeypatch.setattr(evaluation, "make_gliner_predictor", predictor_factory_must_not_run)
     monkeypatch.setenv("MEDLINER_BENCHMARK", str(tmp_path / "absent" / "ner_gold.json"))
 
     with pytest.raises(RuntimeError, match="medliner ingest"):

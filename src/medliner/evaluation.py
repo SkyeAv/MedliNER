@@ -246,7 +246,17 @@ def evaluate_checkpoint(
     include_baselines: bool = True,
     threshold: float = 0.3,
 ) -> dict[str, Any]:
-    """Evaluate the tuned and untuned systems against the split and the ingested gold benchmark."""
+    """Evaluate systems after validating gold, so an actionable ingest error wins model failures."""
+    # Validate and load gold before model or split work: a missing benchmark is actionable, while
+    # model loading can fail for unrelated reasons and would otherwise mask the ingest hint.
+    gold_path = benchmark_path()
+    if not gold_path.exists():
+        raise RuntimeError(
+            f"gold benchmark not found at {gold_path}; run `medliner ingest` to materialize it "
+            "(or point $MEDLINER_BENCHMARK at an existing ner_gold.json)"
+        )
+    benchmark = load_gold_benchmark(gold_path)
+
     tuned_predictor = make_gliner_predictor(checkpoint, threshold=threshold)
     split_dir = Path(split_dir)
     test_path = split_dir / "test.jsonl"
@@ -258,13 +268,6 @@ def evaluate_checkpoint(
         "evaluated_split": evaluated_split,
         "threshold": threshold,
     }
-    gold_path = benchmark_path()
-    if not gold_path.exists():
-        raise RuntimeError(
-            f"gold benchmark not found at {gold_path}; run `medliner ingest` to materialize it "
-            "(or point $MEDLINER_BENCHMARK at an existing ner_gold.json)"
-        )
-    benchmark = load_gold_benchmark(gold_path)
     result["tuned_gold_regression"] = score_examples(tuned_predictor, benchmark)
     if include_baselines:
         result["baselines"] = {}
