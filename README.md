@@ -69,9 +69,9 @@ MEDliNER Python dependency. The pipeline stages are Makefile targets wrapping th
    `data/label-studio/candidates.jsonl` by hand
    ([`docs/CANDIDATE_TASKS.md`](docs/CANDIDATE_TASKS.md)).
 2. `make label-studio` — builds the Label Studio import file (`make candidates` runs
-   automatically when needed; for the ingested bundle pass
-   `--input $MEDLINER_WORKDIR/ingested/candidates.jsonl`) and starts the annotation server
-   with those tasks imported.
+   automatically when needed) and starts the annotation server. For the ingested bundle,
+   pass `INPUT=$MEDLINER_WORKDIR/ingested/candidates.jsonl`; add `REIMPORT=1` to replace
+   existing project tasks.
 3. Annotate in the browser at <http://localhost:9030>, export the reviewed JSON manually,
    and point `MEDLINER_LABEL_STUDIO_EXPORT` at it (default
    `data/label-studio/reviewed.json`).

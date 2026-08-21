@@ -46,7 +46,7 @@ candidates:
 # --- Label Studio ---
 
 label-studio:
-	uv run medliner label-studio $(if $(REIMPORT),--reimport,)
+	uv run medliner label-studio $(if $(INPUT),--input $(INPUT),) $(if $(REIMPORT),--reimport,)
 
 # The Label Studio database lives in $MEDLINER_WORKDIR/label-studio/server-data, so
 # annotations survive this.

@@ -114,6 +114,52 @@ def test_verify_bundle_rejects_an_unknown_schema_version(tmp_path):
         verify_bundle(bundle)
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("candidate_schema", "medliner.candidates.v0", "candidate_schema"),
+        ("benchmark_schema", "dakp.ner.gold.v0", "benchmark_schema"),
+    ],
+)
+def test_verify_bundle_rejects_manifest_schema_mismatches(tmp_path, field, value, message):
+    """WHY: both producer schema declarations must match the payload contracts."""
+    bundle = _copy_bundle(tmp_path)
+    manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
+    manifest[field] = value
+    _write_json(bundle / "manifest.json", manifest)
+    with pytest.raises(ExportIngestError, match=message):
+        verify_bundle(bundle)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (lambda manifest: manifest["files"]["candidates.jsonl"].update(rows=7), "row count mismatch"),
+        (lambda manifest: manifest["task_counts"].update(indication=5), "task_counts mismatch"),
+        (lambda manifest: manifest["family_counts"].update(faers=2), "family_counts mismatch"),
+        (lambda manifest: manifest["files"]["ner_gold.json"].update(cases=33), "case count mismatch"),
+    ],
+)
+def test_verify_bundle_rejects_manifest_count_mismatches(tmp_path, mutation, message):
+    """WHY: manifest counts must describe payload contents rather than trusted claims."""
+    bundle = _copy_bundle(tmp_path)
+    manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
+    mutation(manifest)
+    _write_json(bundle / "manifest.json", manifest)
+    with pytest.raises(ExportIngestError, match=message):
+        verify_bundle(bundle)
+
+
+def test_verify_bundle_rejects_non_exact_file_entries(tmp_path):
+    """WHY: exact file count fields prevent omitted or unverified payload metadata."""
+    bundle = _copy_bundle(tmp_path)
+    manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
+    manifest["files"]["candidates.jsonl"]["unexpected"] = 1
+    _write_json(bundle / "manifest.json", manifest)
+    with pytest.raises(ExportIngestError, match=r"files\.candidates\.jsonl"):
+        verify_bundle(bundle)
+
+
 def test_verify_bundle_rejects_a_corrupted_payload(tmp_path):
     """Any byte-level drift in a payload file is caught by the manifest hash check."""
     bundle = _copy_bundle(tmp_path)
@@ -194,4 +240,44 @@ def test_ingest_export_rejects_a_malformed_gold_case(tmp_path):
     _write_json(bundle / "ner_gold.json", gold)
     _rehash(bundle, "ner_gold.json")
     with pytest.raises(ExportIngestError, match="malformed gold case"):
+        ingest_export(bundle, workdir=tmp_path / "work")
+
+
+def test_verify_bundle_normalizes_directory_payload_errors(tmp_path):
+    """WHY: directory payloads must not leak IsADirectoryError through the public ingest API."""
+    bundle = _copy_bundle(tmp_path)
+    candidates = bundle / "candidates.jsonl"
+    candidates.unlink()
+    candidates.mkdir()
+    with pytest.raises(ExportIngestError, match=r"candidates\.jsonl"):
+        verify_bundle(bundle)
+
+
+def test_verify_bundle_normalizes_invalid_utf8_errors(tmp_path):
+    """WHY: invalid candidate bytes must remain an ExportIngestError with the payload path."""
+    bundle = _copy_bundle(tmp_path)
+    candidates = bundle / "candidates.jsonl"
+    candidates.write_bytes(b"\xff\n")
+    _rehash(bundle, "candidates.jsonl")
+    with pytest.raises(ExportIngestError, match=r"candidates\.jsonl"):
+        verify_bundle(bundle)
+
+
+def test_verify_bundle_normalizes_invalid_gold_utf8_errors(tmp_path):
+    """WHY: invalid gold bytes must remain an ExportIngestError with the payload path."""
+    bundle = _copy_bundle(tmp_path)
+    gold = bundle / "ner_gold.json"
+    gold.write_bytes(b"\xff\n")
+    _rehash(bundle, "ner_gold.json")
+    with pytest.raises(ExportIngestError, match=r"ner_gold\.json"):
+        verify_bundle(bundle)
+
+
+def test_ingest_export_normalizes_output_copy_errors(tmp_path):
+    """WHY: output filesystem failures must identify the affected materialized path."""
+    bundle = _copy_bundle(tmp_path)
+    output_dir = tmp_path / "work" / "ingested"
+    output_dir.mkdir(parents=True)
+    (output_dir / "candidates.jsonl").mkdir()
+    with pytest.raises(ExportIngestError, match=r"candidates\.jsonl"):
         ingest_export(bundle, workdir=tmp_path / "work")

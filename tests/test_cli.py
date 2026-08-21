@@ -137,8 +137,9 @@ def test_label_studio_provisions_with_the_import_file(tmp_path, monkeypatch, cap
         return {"url": "http://127.0.0.1:9030", "container": "medliner-label-studio", "tasks_in_project": 2}
 
     monkeypatch.setattr(cli, "provision", fake_provision)
-    assert cli.main(["label-studio"]) == 0
+    assert cli.main(["label-studio", "--input", str(raw), "--reimport"]) == 0
     assert Path(calls["import_file"]).name.startswith("import-")
+    assert calls["reimport"] is True
     assert "http://127.0.0.1:9030" in capsys.readouterr().out
 
 
