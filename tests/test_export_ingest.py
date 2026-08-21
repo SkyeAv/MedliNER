@@ -47,6 +47,23 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
+def _rewrite_candidate_line(bundle: Path, index: int, row: dict) -> None:
+    """Replace one candidate row (0-based) and re-hash so row validation itself fires."""
+    candidates = bundle / "candidates.jsonl"
+    lines = candidates.read_text(encoding="utf-8").splitlines()
+    lines[index] = json.dumps(row, ensure_ascii=False)
+    candidates.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    _rehash(bundle, "candidates.jsonl")
+
+
+def _faers_row() -> dict:
+    return json.loads((FIXTURE / "candidates.jsonl").read_text(encoding="utf-8").splitlines()[2])
+
+
+def _dailymed_row() -> dict:
+    return json.loads((FIXTURE / "candidates.jsonl").read_text(encoding="utf-8").splitlines()[0])
+
+
 def test_end_to_end_ingested_bundle_becomes_label_studio_import(tmp_path):
     """Prove the cross-repo export→ingest contract entirely offline with the committed fixture."""
     result = ingest_export(FIXTURE, workdir=tmp_path)
@@ -150,6 +167,67 @@ def test_verify_bundle_rejects_manifest_count_mismatches(tmp_path, mutation, mes
         verify_bundle(bundle)
 
 
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        # WHY: generated_at is required metadata; a bundle without it is not self-describing.
+        (None, "generated_at"),  # manifest.get() yields None when the key is absent
+        # WHY: non-strings and unparseable strings are not ISO-8601 timestamps.
+        (20260821, "generated_at"),
+        ("not-a-timestamp", "not a valid ISO-8601"),
+        # WHY: a naive stamp is ambiguous; the exporter always emits timezone-aware UTC.
+        ("2026-08-21T20:28:47", "timezone-aware"),
+        # WHY: a non-zero offset is not UTC, which the exporter never emits.
+        ("2026-08-21T20:28:47+01:00", "must be UTC"),
+    ],
+)
+def test_verify_bundle_rejects_malformed_generated_at(tmp_path, value, message):
+    """WHY: generated_at must be a parseable timezone-aware UTC ISO-8601 string."""
+    bundle = _copy_bundle(tmp_path)
+    manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
+    if value is None:
+        del manifest["generated_at"]
+    else:
+        manifest["generated_at"] = value
+    _write_json(bundle / "manifest.json", manifest)
+    with pytest.raises(ExportIngestError, match=message):
+        verify_bundle(bundle)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        # WHY: inputs records the consumed interim tables; a bundle without them hides
+        # its provenance, and the exporter errors loudly rather than emitting none.
+        (lambda manifest: manifest.pop("inputs"), "inputs"),
+        (lambda manifest: manifest.update(inputs=[]), "non-empty"),
+        (lambda manifest: manifest.update(inputs="b3:only-one"), "non-empty list"),
+        # WHY: blank or non-string entries cannot identify any consumed table.
+        (lambda manifest: manifest.update(inputs=["", "b3:second"]), "non-blank strings"),
+        (lambda manifest: manifest.update(inputs=[123, "b3:second"]), "non-blank strings"),
+        # WHY: order must be deterministic so identical inputs produce identical manifests.
+        (lambda manifest: manifest.update(inputs=list(reversed(manifest["inputs"]))), "sorted"),
+    ],
+)
+def test_verify_bundle_rejects_malformed_inputs(tmp_path, mutation, message):
+    """WHY: inputs must be a non-empty, sorted list of non-blank artifact ids."""
+    bundle = _copy_bundle(tmp_path)
+    manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
+    mutation(manifest)
+    _write_json(bundle / "manifest.json", manifest)
+    with pytest.raises(ExportIngestError, match=message):
+        verify_bundle(bundle)
+
+
+def test_verify_bundle_accepts_a_zulu_generated_at(tmp_path):
+    """WHY: ``Z`` is the canonical ISO-8601 UTC suffix and must be accepted like ``+00:00``."""
+    bundle = _copy_bundle(tmp_path)
+    manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
+    manifest["generated_at"] = manifest["generated_at"].replace("+00:00", "Z")
+    _write_json(bundle / "manifest.json", manifest)
+    assert verify_bundle(bundle)["schema_version"] == EXPORT_SCHEMA_VERSION
+
+
 def test_verify_bundle_rejects_non_exact_file_entries(tmp_path):
     """WHY: exact file count fields prevent omitted or unverified payload metadata."""
     bundle = _copy_bundle(tmp_path)
@@ -225,11 +303,80 @@ def test_ingest_export_surfaces_invalid_row_line_numbers(tmp_path):
     """Rows are re-validated by MEDliNER's own rules; the line number must reach the user."""
     bundle = _copy_bundle(tmp_path)
     candidates = bundle / "candidates.jsonl"
-    bad_row = json.dumps({"text": "Some observed use.", "task": "diagnosis", "source_family": "faers"})
+    bad_row = json.dumps(
+        {
+            "text": "Some observed use.",
+            "task": "diagnosis",
+            "source_family": "faers",
+            "source_record_id": "9999",
+            "source_uri": "https://fis.fda.gov/content/Exports/faers_ascii_2024q3.zip",
+        }
+    )
     candidates.write_text(candidates.read_text(encoding="utf-8") + bad_row + "\n", encoding="utf-8")
     _rehash(bundle, "candidates.jsonl")  # hashes stay valid so row validation itself fires
     with pytest.raises(ExportIngestError, match=r"candidates\.jsonl: invalid candidate at line 9"):
         ingest_export(bundle, workdir=tmp_path / "work")
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        # WHY: Pydantic silently ignores extra fields, so an unknown key must be rejected
+        # here — the exporter promises no fields MEDliNER ignores.
+        lambda row: row | {"source_hash": "b3:deadbeef"},
+        # WHY: DailyMed provenance is required, not optional — CandidateText's defaults
+        # apply to manual candidates only, never to the export bundle.
+        lambda row: {key: value for key, value in row.items() if key != "section"},
+        lambda row: {key: value for key, value in row.items() if key != "source_document_id"},
+        # WHY: wrong family-specific field — a DailyMed row cannot carry the FAERS record id.
+        lambda row: {**{k: v for k, v in row.items() if k != "source_document_id"}, "source_record_id": "9999"},
+    ],
+)
+def test_verify_bundle_rejects_dailymed_rows_violating_the_wire_contract(tmp_path, mutation):
+    """WHY: the export contract forbids extras and requires DailyMed provenance fields."""
+    bundle = _copy_bundle(tmp_path)
+    _rewrite_candidate_line(bundle, 0, mutation(_dailymed_row()))
+    with pytest.raises(ExportIngestError, match=r"candidates\.jsonl: line 1"):
+        verify_bundle(bundle)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        # WHY: unknown/extra fields are forbidden even when otherwise well-formed.
+        lambda row: row | {"source_hash": "b3:deadbeef"},
+        # WHY: FAERS provenance (source_record_id / source_uri) is required, not optional.
+        lambda row: {key: value for key, value in row.items() if key != "source_record_id"},
+        lambda row: {key: value for key, value in row.items() if key != "source_uri"},
+        # WHY: wrong family-specific field — a FAERS row cannot carry a DailyMed section.
+        lambda row: {**{k: v for k, v in row.items() if k != "source_record_id"}, "section": "34067-9"},
+    ],
+)
+def test_verify_bundle_rejects_faers_rows_violating_the_wire_contract(tmp_path, mutation):
+    """WHY: FAERS rows must carry exactly their five contract fields."""
+    bundle = _copy_bundle(tmp_path)
+    _rewrite_candidate_line(bundle, 2, mutation(_faers_row()))
+    with pytest.raises(ExportIngestError, match=r"candidates\.jsonl: line 3"):
+        verify_bundle(bundle)
+
+
+@pytest.mark.parametrize(
+    ("line", "message"),
+    [
+        # WHY: an unknown family has no defined wire shape and must never be ingested.
+        (json.dumps({"text": "x", "task": "indication", "source_family": "unknown"}), r"source_family 'unknown'"),
+        # WHY: a non-object JSONL line is not a candidate row at all.
+        ('["text", "task"]', "must be a JSON object"),
+    ],
+)
+def test_verify_bundle_rejects_unknown_families_and_non_object_lines(tmp_path, line, message):
+    """WHY: malformed rows must name the file and line, like read_candidates does."""
+    bundle = _copy_bundle(tmp_path)
+    candidates = bundle / "candidates.jsonl"
+    candidates.write_text(candidates.read_text(encoding="utf-8") + line + "\n", encoding="utf-8")
+    _rehash(bundle, "candidates.jsonl")
+    with pytest.raises(ExportIngestError, match=message):
+        verify_bundle(bundle)
 
 
 def test_ingest_export_rejects_a_malformed_gold_case(tmp_path):
@@ -240,6 +387,19 @@ def test_ingest_export_rejects_a_malformed_gold_case(tmp_path):
     _write_json(bundle / "ner_gold.json", gold)
     _rehash(bundle, "ner_gold.json")
     with pytest.raises(ExportIngestError, match="malformed gold case"):
+        ingest_export(bundle, workdir=tmp_path / "work")
+
+
+def test_ingest_export_rejects_an_overflowing_gold_offset(tmp_path):
+    """WHY: an overflowing numeric offset (e.g. 1e999 → inf) escapes the ValueError family
+    as OverflowError; it must still surface as ExportIngestError naming ner_gold.json."""
+    bundle = _copy_bundle(tmp_path)
+    gold = json.loads((bundle / "ner_gold.json").read_text(encoding="utf-8"))
+    gold["cases"][0]["mentions"][0]["start"] = float("1e999")  # inf; int(inf) overflows
+    # json.dumps emits the ``Infinity`` token, which json.loads round-trips back to inf.
+    _write_json(bundle / "ner_gold.json", gold)
+    _rehash(bundle, "ner_gold.json")
+    with pytest.raises(ExportIngestError, match=r"ner_gold\.json: malformed gold case"):
         ingest_export(bundle, workdir=tmp_path / "work")
 
 
