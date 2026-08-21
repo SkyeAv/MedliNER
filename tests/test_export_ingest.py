@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from medliner.candidates import build_import_tasks, hash_candidates_file, read_candidates
-from medliner.evaluation import load_gold_benchmark
+from medliner.evaluation import load_gold_benchmark, score_examples
 from medliner.export_ingest import (
     BENCHMARK_SCHEMA_VERSION,
     EXPORT_SCHEMA_VERSION,
@@ -47,8 +47,8 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
-def test_ingest_export_materializes_the_committed_dakp_bundle(tmp_path):
-    """The real DAKP bundle must pass MEDliNER's own candidate rules and gold parser."""
+def test_end_to_end_ingested_bundle_becomes_label_studio_import(tmp_path):
+    """Prove the cross-repo export→ingest contract entirely offline with the committed fixture."""
     result = ingest_export(FIXTURE, workdir=tmp_path)
     bundle_manifest = json.loads((FIXTURE / "manifest.json").read_text(encoding="utf-8"))
 
@@ -62,11 +62,19 @@ def test_ingest_export_materializes_the_committed_dakp_bundle(tmp_path):
     assert len(candidates) == bundle_manifest["files"]["candidates.jsonl"]["rows"]
     tasks = build_import_tasks(candidates)
     assert len(tasks) == len(candidates)  # the exporter already deduped
+    assert all(task["id"].startswith("medliner-") for task in tasks)
+    assert all({"text", "task", "source_family", "generator_version"} <= task["data"].keys() for task in tasks)
+    assert sum(task["data"].get("duplicate_count", 1) - 1 for task in tasks) == 0
 
-    # The gold file parses into canonical Examples through the evaluation parser.
+    # The gold file parses into canonical Examples through the evaluation parser and can be
+    # scored without a model or network access, proving the benchmark side of the contract too.
     examples = load_gold_benchmark(ingested / "ner_gold.json")
     assert len(examples) == bundle_manifest["files"]["ner_gold.json"]["cases"]
     assert all(isinstance(example, Example) for example in examples)
+    report = score_examples(lambda _text: [], examples)
+    assert report["examples"] == len(examples)
+    assert report["overall"]["strict"]["tp"] == 0
+    assert report["overall"]["strict"]["fn"] > 0
 
     # Counts and hashes round-trip through the ingest manifest.
     ingest_manifest = json.loads((ingested / "ingest-manifest.json").read_text(encoding="utf-8"))
