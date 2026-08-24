@@ -39,15 +39,15 @@ assert "sm_120" in torch.cuda.get_arch_list()
 PY
 
 # Pipeline stages run through the Makefile/CLI
-make data
+make prepare
 make annotate
 # One-step smoke run of the whole post-annotation chain before full training
-SMOKE=1 make train
+uv run medliner pipeline --smoke
 ```
 
 ## End-to-end gate
 
-0. Run `make data` to build the sampled import batch from the export
+0. Run `make prepare` to build the sampled import batch from the export
    (`$MEDLINER_RAW_CANDIDATES`, default `data/label-studio/candidates.ndjson`; set it in the ignored `.envrc.local` for a ready export)
    and run `make annotate`; confirm http://localhost:9030 shows the
    project with the imported tasks.
@@ -55,7 +55,7 @@ SMOKE=1 make train
    highlight text without entering offsets.
 2. Run `make train` and inspect rejected spans/errors from the dataset stage.
 4. Verify the split manifest hash under `$MEDLINER_WORKDIR/splits/`.
-5. Run the one-step smoke run (`SMOKE=1 make train`) and confirm `training/final/` is loadable with `GLiNER.from_pretrained` and records `selected_checkpoint`.
+5. Run the one-step smoke run (`uv run medliner pipeline --smoke`) and confirm `training/final/` is loadable with `GLiNER.from_pretrained` and records `selected_checkpoint`.
 6. Run full bounded training with resume enabled (`make train`).
 7. Inspect the tuned, untuned, and gold-regression metrics in the evaluation report.
 8. Inspect the standalone bundle's provenance/model-card files.

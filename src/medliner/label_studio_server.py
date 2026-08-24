@@ -323,6 +323,7 @@ def provision(
                 continue
             client.create_user(username=annotator_username, password=annotator_password)
             annotators_created += 1
+    usernames = sorted(str(user.get("username")) for user in client.list_users() if user.get("username"))
     return {
         "url": base_url,
         "container": container,
@@ -333,6 +334,7 @@ def provision(
         "publish_host": publish_host,
         "annotators_created": annotators_created,
         "prelabeled": bool(prelabel_model_version),
+        "usernames": usernames,
     }
 
 

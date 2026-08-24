@@ -8,7 +8,7 @@ dependency.
 
 `make annotate` starts the stock `heartexlabs/label-studio` image with podman,
 waits for health, creates the `MedliNER` project from
-`configs/label_studio_ner.xml`, and imports the tasks built by `make data` (run
+`configs/label_studio_ner.xml`, and imports the tasks built by `make prepare` (run
 automatically when the import file for the current input hash and sampling config is
 missing; see the sampling table in `docs/CANDIDATE_TASKS.md` for the `MEDLINER_SAMPLE_*`
 variables that bound the import to ~5K mostly-edge-case, balanced, staggered tasks):
@@ -29,60 +29,50 @@ Behavior notes:
   project remains in the server data directory, unused.
 - Re-running `make annotate` reuses a running container and an existing project, and skips
   the import when the project already has tasks. To replace project tasks, run
-  `REIMPORT=1 make annotate`.
+  `uv run medliner label-studio --reimport`.
 - If the default-account login ever fails (e.g. image behavior changes), create an account in
   the browser, copy an access token from Account & Settings, and set
   `MEDLINER_LABEL_STUDIO_TOKEN` in `.envrc.local`; the client then sends it as a Bearer
   credential and skips the login form. (Legacy `Token` API auth is disabled by default in
   Label Studio ≥ 1.23, which is why the default path uses session login.)
-- Stop the server with `make annotate-stop` (removes the container, keeps the data dir).
+- Stop the server with `make stop` (removes the container, keeps the data dir).
 
-## Gated annotator onboarding
+## Optional annotator onboarding (presentation mode)
 
-The repository adds a rubric gate on top of Label Studio CE. It creates a separate `Onboarding`
-project on the same local server. The project contains ten answer-free benchmark tasks; the gold
-spans are kept in a versioned sidecar under `$MEDLINER_WORKDIR/onboarding/`. Each annotator gets a
-deterministic four-task attempt. At least three of four tasks must be exactly correct (character
-boundaries and label included) before promotion.
+The repository ships a separate `Onboarding` project on the same local server for qualifying
+annotators during a live session — for example, onboarding everyone at once during a
+presentation. It is fully optional; production training runs fine without it.
 
-Run the operator sequence:
+The project contains ten answer-free benchmark tasks; the gold spans are kept in a versioned
+sidecar under `$MEDLINER_WORKDIR/onboarding/`. Each annotator account gets a deterministic
+four-task attempt. At least three of four tasks must be exactly correct (character boundaries and
+label included) before promotion.
+
+Two commands cover the whole flow — nobody is ever named on the command line:
 
 ```bash
 make setup
-make onboarding ANNOTATORS="alice:pw-a,bob:pw-b"
-make onboarding-start USER=alice
-# Alice annotates the four printed task IDs in the Onboarding project.
-make onboarding-export
-make onboarding-evaluate USER=alice
-make onboarding-promote USER=alice       # only after a 3/4 or 4/4 pass
-
-# Retries are unlimited; each start creates a new four-task selection.
-make onboarding-start USER=alice
-make onboarding-export
-make onboarding-evaluate USER=alice
+export MEDLINER_LABEL_STUDIO_ANNOTATORS="alice:pw-a,bob:pw-b"
+make onboarding            # provisions the project and assigns a quiz to EVERY account at once
+# everyone annotates their four assigned tasks in the Onboarding project
+make onboarding-promote    # exports, scores every attempt, promotes everyone passing (≥3/4)
 ```
 
-After promotion, run the unchanged production preparation flow:
+Rerun `make onboarding` for another round; each round selects a new four-task subset per user from
+the ten-case bank. After promotion, run the unchanged production flow (`make annotate`,
+`make export`, `make train`). To accept only production annotations from promoted users, set
+`MEDLINER_ONBOARDING_REQUIRED=1` before `make train`.
 
-```bash
-make data
-make annotate ANNOTATORS="alice:pw-a,bob:pw-b"
-# annotate the MedliNER project
-make export
-MEDLINER_ONBOARDING_REQUIRED=1 make train
-```
-
-`make onboarding-status USER=alice` shows attempt history and passing users. The test-bank and
-attempt files include benchmark/config hashes, so changing the benchmark starts a new onboarding
-version and old passes do not unlock it. Reports are append-only and non-promoted production
-annotations are retained under the onboarding audit directory rather than entering the normalized
-dataset.
+The test-bank and attempt files include benchmark/config hashes, so changing the benchmark starts
+a new onboarding version and old passes do not unlock it. Reports are append-only and non-promoted
+production annotations are retained under the onboarding audit directory rather than entering the
+normalized dataset.
 
 **Community Edition limitation:** CE does not provide per-user project visibility or task
-assignment. The separate `Onboarding` and `MedliNER` projects are a robust operational workflow,
-but a user who already has access to the shared CE instance may technically open the production
-project. The repository gate prevents non-promoted annotations from being accepted downstream; a
-hard UI/API access barrier would require a custom proxy/frontend or a separate production instance.
+assignment. A user who already has access to the shared CE instance may technically open the
+production project. When `MEDLINER_ONBOARDING_REQUIRED=1`, the repository gate prevents
+non-promoted annotations from being accepted downstream; a hard UI/API access barrier would
+require a custom proxy/frontend or a separate production instance.
 
 ## Group annotation sessions (e.g. a presentation)
 
@@ -95,17 +85,17 @@ on the shared instance sees every project. The managed flow supports a group ses
    `http://<this-machine>:$MEDLINER_LABEL_STUDIO_PORT` from the same LAN; the CLI prints a
    reminder when the bind address is public.
 2. **Pre-create annotator accounts** so nobody registers during the session:
-   `ANNOTATORS="alice:pw-a,bob:pw-b" make annotate` (repeatable `--annotator user:pass`
-   flags, or `MEDLINER_LABEL_STUDIO_ANNOTATORS` comma-separated). Accounts are created via
-   `POST /api/users` and existing usernames are skipped, so the command stays idempotent.
+   `MEDLINER_LABEL_STUDIO_ANNOTATORS="alice:pw-a,bob:pw-b" make annotate`. Accounts are created
+   via `POST /api/users` and existing usernames are skipped, so the command stays idempotent.
 3. **Avoid collisions**: CE lets two annotators open the same task, and tasks are served in
    queue order. For a short session either assign each person a slice of the task list, or
    rely on the natural staggering of the sequential queue — both work with this pipeline
    because exports keep per-annotation authorship.
-4. **Use gated onboarding** with `make onboarding` rather than the old presenter-only warm-up
-   when annotator qualification matters. The onboarding sequence above keeps answers private and
-   records each annotator's score. `WARMUP=1 make annotate` remains available as an informal demo;
-   its gold spans are intentionally visible to the presenter and it is not a qualification gate.
+4. **Use onboarding** with `make onboarding` when annotator qualification matters: it assigns
+   everyone their quiz at once and `make onboarding-promote` records each annotator's score and
+   promotes the passing ones. `uv run medliner label-studio --warmup` remains available as an
+   informal demo; its gold spans are intentionally visible to the presenter and it is not a
+   qualification gate.
 5. **Speed up labeling** with the hotkeys baked into `configs/label_studio_ner.xml`:
    `1` = disease, `2` = phenotype after selecting a span.
 
@@ -115,7 +105,7 @@ Download the reviewed annotations over the API instead of the browser:
 
 ```bash
 make export            # writes $MEDLINER_LABEL_STUDIO_EXPORT
-OUTPUT=/tmp/reviewed.json make export
+MEDLINER_LABEL_STUDIO_EXPORT=/tmp/reviewed.json make export
 ```
 
 The command finds the `MedliNER` project by title, downloads the JSON export,
@@ -133,7 +123,7 @@ make train
 
 ## Import task JSON
 
-Candidate tasks come from `make data` (see `docs/CANDIDATE_TASKS.md`). Each
+Candidate tasks come from `make prepare` (see `docs/CANDIDATE_TASKS.md`). Each
 task exposes at least:
 
 ```json
@@ -172,7 +162,7 @@ podman run --rm -it -p 9030:8080 \
 
 Then create a local account/project, paste the contents of `configs/label_studio_ner.xml`
 into the project's labeling configuration, and import the JSON file written by
-`make data` (its path is printed to stdout).
+`make prepare` (its path is printed to stdout).
 
 ## Annotator workflow
 
@@ -187,12 +177,12 @@ There is no manual offset counting. Label Studio records the highlighted phrase 
 
 ## Pre-annotations
 
-Annotators are far faster correcting a span than drawing one, so `make data` also runs
+Annotators are far faster correcting a span than drawing one, so `make prepare` also runs
 `medliner prelabel` to attach model suggestions to the import file before the session starts:
 
 ```bash
-make data                              # candidates + prelabel: import-<hash>.prelabeled.json + manifests
-make annotate PRELABEL=1 REIMPORT=1
+make prepare                          # candidates + prelabel: import-<hash>.prelabeled.json + manifests
+make annotate                         # serves the pre-labeled file with prediction pre-fill on
 ```
 
 The suggestions come from `gliner-community/gliner_large-v2.5` prompted with `disease` and

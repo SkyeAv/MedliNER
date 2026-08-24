@@ -7,7 +7,7 @@ older DAKP bundle layout is still supported via
 `$MEDLINER_WORKDIR/ingested/candidates.ndjson`. You can also
 author the small NDJSON file yourself, typically derived from intermediate DAKP inputs
 (DailyMed SPL section text, FAERS indication strings). Running
-`make data` validates that file, deduplicates it,
+`make prepare` validates that file, deduplicates it,
 and converts it into the Label Studio import shape documented in `docs/LABEL_STUDIO.md`.
 Reviewed exports remain the only training input.
 
@@ -39,7 +39,7 @@ indication strings from the FAERS case table, and write one row per text. No DAK
 is required — the file is plain NDJSON and can come from a notebook, a SQL export, or a
 script against DAKP's intermediate artifacts.
 
-## Generation rules applied by `make data`
+## Generation rules applied by `make prepare`
 
 - Task IDs are deterministic: `medliner-<blake3(task + normalized text)[:16]>`, so re-running
   over the same input reproduces the same import file and Label Studio re-imports are
@@ -47,7 +47,7 @@ script against DAKP's intermediate artifacts.
 - Rows are deduplicated on normalized text + task; the first occurrence wins and the merged
   task records a `duplicate_count` in its metadata.
 - Tasks are plain text only. The candidates stage never runs a model; pre-annotations are a
-  separate step (`make data` also runs `medliner prelabel`; see `docs/LABEL_STUDIO.md`) so
+  separate step (`make prepare` also runs `medliner prelabel`; see `docs/LABEL_STUDIO.md`) so
   candidate selection stays deterministic, offline, and free of ML dependencies.
 - Each task carries `generator_version` and `generated_at` in its `data` payload.
 - A `*.manifest.json` next to the import file records the BLAKE3 input hash and per-task /
@@ -55,7 +55,7 @@ script against DAKP's intermediate artifacts.
 
 ## Sampling and task staggering (import build)
 Full candidate pools are usually far larger than the annotation budget (the first DAKP export
-held 93,328 rows), so `make data` samples a bounded, balanced subset and interleaves it
+held 93,328 rows), so `make prepare` samples a bounded, balanced subset and interleaves it
 before import. Configuration is environment-only:
 
 | Variable | Default | Meaning |
@@ -109,8 +109,8 @@ make llm-stop
 matching the server's `-np 2 -cb`), every rewrite is validated (non-empty, actually shorter),
 and failures keep the original text and are counted in the manifest. Rows the model judges
 to contain no condition mention are recorded as `empty_hints` — a review signal only, never
-a drop decision. Use `make shorten LIMIT=8` for a trial run, then point
-`MEDLINER_RAW_CANDIDATES` at the shortened file before `make data` if the manifest looks
+a drop decision. Use `uv run medliner shorten --limit 8` for a trial run, then point
+`MEDLINER_RAW_CANDIDATES` at the shortened file before `make prepare` if the manifest looks
 right. `MEDLINER_LLM_URL` overrides the server address (default `http://127.0.0.1:8080`).
 
 ## Raw-pool authoring guidance
@@ -124,6 +124,6 @@ right. `MEDLINER_LLM_URL` overrides the server address (default `http://127.0.0.
 
 ## Next step
 
-`make data` also attaches GLiNER suggestions (`medliner prelabel`), then `make annotate`
-(with `PRELABEL=1` to import the pre-labeled file) serves these tasks in a browser; see
+`make prepare` also attaches GLiNER suggestions (`medliner prelabel`), then `make annotate`
+serves these tasks in a browser (the pre-labeled file is picked up automatically); see
 `docs/LABEL_STUDIO.md`. Model suggestions are suggestions only and never training gold.
