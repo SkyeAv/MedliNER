@@ -57,7 +57,7 @@ def repo_root() -> Path:
 
 
 def raw_candidates_path(value: str | None = None) -> Path:
-    raw = value or os.environ.get("MEDLINER_RAW_CANDIDATES", "data/label-studio/candidates.jsonl")
+    raw = value or os.environ.get("MEDLINER_RAW_CANDIDATES", "data/label-studio/candidates.ndjson")
     path = Path(raw)
     if not path.exists():
         raise FileNotFoundError(f"raw candidates file not found: {path} (MEDLINER_RAW_CANDIDATES)")
@@ -329,11 +329,11 @@ def build_parser() -> argparse.ArgumentParser:
     ingest.set_defaults(func=cmd_ingest)
 
     candidates = sub.add_parser("candidates", help="build the Label Studio import file from raw candidates")
-    candidates.add_argument("--input", help="raw candidates JSONL (default: $MEDLINER_RAW_CANDIDATES)")
+    candidates.add_argument("--input", help="raw candidates NDJSON (default: $MEDLINER_RAW_CANDIDATES)")
     candidates.set_defaults(func=cmd_candidates)
 
     server = sub.add_parser("label-studio", help="start the podman Label Studio server with tasks imported")
-    server.add_argument("--input", help="raw candidates JSONL (default: $MEDLINER_RAW_CANDIDATES)")
+    server.add_argument("--input", help="raw candidates NDJSON (default: $MEDLINER_RAW_CANDIDATES)")
     server.add_argument("--reimport", action="store_true", help="replace existing project tasks")
     server.add_argument("--port", type=int, help="host port (default: $MEDLINER_LABEL_STUDIO_PORT)")
     server.add_argument("--image", help="container image (default: $MEDLINER_LABEL_STUDIO_IMAGE)")

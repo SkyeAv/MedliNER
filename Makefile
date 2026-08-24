@@ -3,7 +3,7 @@ SHELL := /usr/bin/env bash
 
 export MEDLINER_EXPORT_BUNDLE ?= $(CURDIR)/data/dakp-export
 export MEDLINER_BENCHMARK ?= $(CURDIR)/data/materialized/ingested/ner_gold.json
-export MEDLINER_RAW_CANDIDATES ?= $(CURDIR)/data/label-studio/candidates.jsonl
+export MEDLINER_RAW_CANDIDATES ?= $(CURDIR)/data/label-studio/candidates.ndjson
 export MEDLINER_LABEL_STUDIO_EXPORT ?= $(CURDIR)/data/label-studio/reviewed.json
 export MEDLINER_WORKDIR ?= $(CURDIR)/data/materialized
 export MEDLINER_TRAIN_CONFIG ?= $(CURDIR)/configs/train-small.yaml

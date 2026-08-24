@@ -48,7 +48,7 @@ The checked-in `.envrc` exports:
 | --- | --- |
 | `MEDLINER_EXPORT_BUNDLE` | DAKP training-data export bundle directory ingested by `make ingest` |
 | `MEDLINER_BENCHMARK` | NER gold benchmark materialized by `make ingest` |
-| `MEDLINER_RAW_CANDIDATES` | raw candidates JSONL, ingested from the DAKP export bundle or authored manually (see [`docs/CANDIDATE_TASKS.md`](docs/CANDIDATE_TASKS.md)) |
+| `MEDLINER_RAW_CANDIDATES` | raw candidates NDJSON, ingested from the DAKP export bundle or authored manually (see [`docs/CANDIDATE_TASKS.md`](docs/CANDIDATE_TASKS.md)) |
 | `MEDLINER_LABEL_STUDIO_EXPORT` | reviewed export that feeds the pipeline |
 | `MEDLINER_WORKDIR` | root for normalized data, splits, checkpoints, and reports |
 | `MEDLINER_TRAIN_CONFIG` | training configuration YAML |
@@ -66,11 +66,11 @@ MEDliNER Python dependency. The pipeline stages are Makefile targets wrapping th
 1. `make ingest` — verifies the DAKP export bundle (`MEDLINER_EXPORT_BUNDLE`, default
    `data/dakp-export`) and materializes its candidates and NER gold under
    `$MEDLINER_WORKDIR/ingested/`. Alternatively author
-   `data/label-studio/candidates.jsonl` by hand
+   `data/label-studio/candidates.ndjson` by hand
    ([`docs/CANDIDATE_TASKS.md`](docs/CANDIDATE_TASKS.md)).
 2. `make label-studio` — builds the Label Studio import file (`make candidates` runs
    automatically when needed) and starts the annotation server. For the ingested bundle,
-   pass `INPUT=$MEDLINER_WORKDIR/ingested/candidates.jsonl`; add `REIMPORT=1` to replace
+   pass `INPUT=$MEDLINER_WORKDIR/ingested/candidates.ndjson`; add `REIMPORT=1` to replace
    existing project tasks.
 3. Annotate in the browser at <http://localhost:9030> (span hotkeys: `1` disease, `2`
    phenotype, `3` drug), then `make label-studio-export` downloads the reviewed JSON to
@@ -104,7 +104,7 @@ MEDLINER_LABEL_STUDIO_EXPORT=$PWD/data/label-studio/reviewed.json make pipeline
 The stages cover the whole workflow except the human annotation step itself:
 
 ```text
-raw candidates JSONL (ingested from the DAKP export bundle or authored manually)
+raw candidates NDJSON (ingested from the DAKP export bundle or authored manually)
         ↓
 Label Studio import tasks (validated, deduplicated)
         ↓

@@ -3,7 +3,7 @@
 ## Files
 
 - `src/medliner/schema.py`: canonical contracts and policy enums.
-- `src/medliner/candidates.py`: raw candidate JSONL validation, BLAKE3 task IDs, dedupe, and Label Studio import generation.
+- `src/medliner/candidates.py`: raw candidate NDJSON validation, BLAKE3 task IDs, dedupe, and Label Studio import generation.
 - `src/medliner/label_studio_server.py`: podman container lifecycle and stdlib Label Studio REST client (project + task import).
 - `src/medliner/label_studio.py`: reviewed Label Studio JSON/JSONL adapter.
 - `src/medliner/gliner_data.py`: character-to-token span conversion.
@@ -49,7 +49,7 @@ SMOKE=1 make pipeline
 ## End-to-end gate
 
 0. Run `make ingest` to materialize the DAKP export bundle's candidates under
-   `$MEDLINER_WORKDIR/ingested/` (manual authoring of `data/label-studio/candidates.jsonl`
+   `$MEDLINER_WORKDIR/ingested/` (manual authoring of `data/label-studio/candidates.ndjson`
    remains a fallback) and run `make label-studio`; confirm http://localhost:9030 shows the
    project with the imported tasks.
 1. Annotate in the browser and export the reviewed JSON manually; confirm annotators can

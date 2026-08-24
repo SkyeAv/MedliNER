@@ -4,7 +4,7 @@
   "benchmark_schema": "dakp.ner.gold.v1",
   "generated_at": "2026-08-21T20:28:47.992243+00:00",
   "files": {
-    "candidates.jsonl": {
+    "candidates.ndjson": {
       "blake3": "b3:158bf0f796e88a5aa32acdd9b101a10691f3c092350c461e462af256ac9833a3",
       "rows": 8
     },

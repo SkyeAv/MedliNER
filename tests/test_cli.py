@@ -75,7 +75,7 @@ def test_ingest_materializes_the_dakp_bundle(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
     assert cli.main(["ingest", "--bundle", str(DAKP_EXPORT_FIXTURE)]) == 0
     ingested = tmp_path / "work" / "ingested"
-    assert (ingested / "candidates.jsonl").exists()
+    assert (ingested / "candidates.ndjson").exists()
     assert (ingested / "ner_gold.json").exists()
     assert (ingested / "ingest-manifest.json").exists()
     out = capsys.readouterr().out
@@ -96,7 +96,7 @@ def test_ingest_missing_bundle_is_an_explicit_error(monkeypatch, capsys):
 
 
 def test_candidates_builds_an_import_file(tmp_path, monkeypatch, capsys):
-    raw = tmp_path / "candidates.jsonl"
+    raw = tmp_path / "candidates.ndjson"
     _write_raw_candidates(raw)
     monkeypatch.setenv("MEDLINER_RAW_CANDIDATES", str(raw))
     monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
@@ -117,7 +117,7 @@ def test_candidates_missing_input_is_an_explicit_error(tmp_path, monkeypatch, ca
 
 
 def test_candidates_empty_input_fails(tmp_path, monkeypatch, capsys):
-    raw = tmp_path / "candidates.jsonl"
+    raw = tmp_path / "candidates.ndjson"
     raw.write_text("", encoding="utf-8")
     monkeypatch.setenv("MEDLINER_RAW_CANDIDATES", str(raw))
     monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
@@ -126,7 +126,7 @@ def test_candidates_empty_input_fails(tmp_path, monkeypatch, capsys):
 
 
 def test_label_studio_provisions_with_the_import_file(tmp_path, monkeypatch, capsys):
-    raw = tmp_path / "candidates.jsonl"
+    raw = tmp_path / "candidates.ndjson"
     _write_raw_candidates(raw)
     monkeypatch.setenv("MEDLINER_RAW_CANDIDATES", str(raw))
     monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
@@ -144,7 +144,7 @@ def test_label_studio_provisions_with_the_import_file(tmp_path, monkeypatch, cap
 
 
 def test_label_studio_annotator_flag_parses_pairs(tmp_path, monkeypatch, capsys):
-    raw = tmp_path / "candidates.jsonl"
+    raw = tmp_path / "candidates.ndjson"
     _write_raw_candidates(raw)
     monkeypatch.setenv("MEDLINER_RAW_CANDIDATES", str(raw))
     monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
@@ -162,7 +162,7 @@ def test_label_studio_annotator_flag_parses_pairs(tmp_path, monkeypatch, capsys)
 
 
 def test_label_studio_annotator_env_and_validation(tmp_path, monkeypatch, capsys):
-    raw = tmp_path / "candidates.jsonl"
+    raw = tmp_path / "candidates.ndjson"
     _write_raw_candidates(raw)
     monkeypatch.setenv("MEDLINER_RAW_CANDIDATES", str(raw))
     monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
@@ -184,7 +184,7 @@ def test_label_studio_annotator_env_and_validation(tmp_path, monkeypatch, capsys
 
 
 def test_label_studio_warmup_provisions_the_separate_project(tmp_path, monkeypatch, capsys):
-    raw = tmp_path / "candidates.jsonl"
+    raw = tmp_path / "candidates.ndjson"
     _write_raw_candidates(raw)
     monkeypatch.setenv("MEDLINER_RAW_CANDIDATES", str(raw))
     monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
@@ -208,7 +208,7 @@ def test_label_studio_warmup_provisions_the_separate_project(tmp_path, monkeypat
 
 
 def test_label_studio_warmup_requires_the_gold_benchmark(tmp_path, monkeypatch, capsys):
-    raw = tmp_path / "candidates.jsonl"
+    raw = tmp_path / "candidates.ndjson"
     _write_raw_candidates(raw)
     monkeypatch.setenv("MEDLINER_RAW_CANDIDATES", str(raw))
     monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))

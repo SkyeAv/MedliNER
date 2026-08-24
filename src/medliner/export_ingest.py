@@ -30,7 +30,7 @@ BENCHMARK_SCHEMA_VERSION = "dakp.ner.gold.v1"
 INGEST_SCHEMA_VERSION = "medliner.ingest.v1"
 
 MANIFEST_FILENAME = "manifest.json"
-CANDIDATES_FILENAME = "candidates.jsonl"
+CANDIDATES_FILENAME = "candidates.ndjson"
 GOLD_FILENAME = "ner_gold.json"
 PAYLOAD_FILES = (CANDIDATES_FILENAME, GOLD_FILENAME)
 
@@ -100,7 +100,7 @@ def _validate_bundle_rows(path: Path) -> None:
         try:
             row = json.loads(line)
         except json.JSONDecodeError as exc:
-            raise ExportIngestError(f"{path}: invalid JSONL at line {line_number}: {exc}") from exc
+            raise ExportIngestError(f"{path}: invalid NDJSON at line {line_number}: {exc}") from exc
         if not isinstance(row, dict):
             raise ExportIngestError(f"{path}: line {line_number} must be a JSON object")
         family = row.get("source_family")
@@ -257,7 +257,7 @@ def _default_workdir() -> Path:
 def ingest_export(bundle_dir: str | Path, *, workdir: str | Path | None = None) -> dict[str, Any]:
     """Verify the bundle, validate it with MEDliNER's own rules, materialize it under ``workdir``.
 
-    Writes ``<workdir>/ingested/{candidates.jsonl, ner_gold.json, ingest-manifest.json}``
+    Writes ``<workdir>/ingested/{candidates.ndjson, ner_gold.json, ingest-manifest.json}``
     (byte copies of the verified payload) and returns the paths plus the manifest counts.
     """
     bundle_dir = Path(bundle_dir)

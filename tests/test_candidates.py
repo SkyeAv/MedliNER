@@ -30,7 +30,7 @@ def _row(text: str = "Indicated for asthma.", task: str = "indication", **extra)
 
 
 def test_read_candidates_parses_jsonl_and_skips_blank_lines(tmp_path):
-    path = _write(tmp_path / "candidates.jsonl", [_row(), _row("Contraindicated in asthma.", "contraindication")])
+    path = _write(tmp_path / "candidates.ndjson", [_row(), _row("Contraindicated in asthma.", "contraindication")])
     path.write_text(path.read_text(encoding="utf-8") + "\n\n", encoding="utf-8")
     candidates = read_candidates(path)
     assert len(candidates) == 2
@@ -39,7 +39,7 @@ def test_read_candidates_parses_jsonl_and_skips_blank_lines(tmp_path):
 
 
 def test_read_candidates_reports_malformed_jsonl_line(tmp_path):
-    path = tmp_path / "candidates.jsonl"
+    path = tmp_path / "candidates.ndjson"
     path.write_text('{"text": "ok", "task": "indication"}\nnot-json\n', encoding="utf-8")
     with pytest.raises(CandidateInputError, match="line 2"):
         read_candidates(path)
@@ -53,7 +53,7 @@ def test_candidate_text_rejects_blank_text_and_unknown_task():
 
 
 def test_read_candidates_reports_validation_line_number(tmp_path):
-    path = _write(tmp_path / "candidates.jsonl", [_row(), _row(task="diagnosis")])
+    path = _write(tmp_path / "candidates.ndjson", [_row(), _row(task="diagnosis")])
     with pytest.raises(CandidateInputError, match="line 2"):
         read_candidates(path)
 
@@ -96,7 +96,7 @@ def test_import_tasks_dedupe_normalized_text_and_count_duplicates():
 
 def test_import_manifest_counts_and_hashes_input(tmp_path):
     path = _write(
-        tmp_path / "candidates.jsonl",
+        tmp_path / "candidates.ndjson",
         [
             _row("Indicated for asthma.", source_family="dailymed"),
             _row("Indicated for hypertension.", source_family="faers"),
@@ -122,7 +122,7 @@ def test_write_import_file_round_trips_through_the_label_studio_reader(tmp_path)
 
 
 def test_empty_candidates_produce_an_empty_import(tmp_path):
-    path = tmp_path / "candidates.jsonl"
+    path = tmp_path / "candidates.ndjson"
     path.write_text("", encoding="utf-8")
     assert read_candidates(path) == []
     assert build_import_tasks([]) == []

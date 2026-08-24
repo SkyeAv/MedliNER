@@ -1,6 +1,6 @@
 """Candidate task generation for Label Studio imports.
 
-The user authors a small JSONL file of raw candidate texts — typically derived from
+The user authors a small NDJSON file of raw candidate texts — typically derived from
 intermediate DAKP inputs such as DailyMed section text or FAERS indication strings. This
 module validates that file, deduplicates it, and emits the plain-text Label Studio import
 shape documented in ``docs/LABEL_STUDIO.md``. Pre-annotations are intentionally not
@@ -57,7 +57,7 @@ class CandidateText(BaseModel):
 
 
 def read_candidates(path: str | Path) -> list[CandidateText]:
-    """Read a JSONL file of raw candidate rows, with line-numbered errors."""
+    """Read an NDJSON file of raw candidate rows, with line-numbered errors."""
     candidates: list[CandidateText] = []
     for line_number, line in enumerate(Path(path).read_text(encoding="utf-8").splitlines(), start=1):
         if not line.strip():
@@ -67,7 +67,7 @@ def read_candidates(path: str | Path) -> list[CandidateText]:
         except ValidationError as exc:
             raise CandidateInputError(f"invalid candidate at line {line_number}: {exc}") from exc
         except json.JSONDecodeError as exc:
-            raise CandidateInputError(f"invalid JSONL at line {line_number}: {exc}") from exc
+            raise CandidateInputError(f"invalid NDJSON at line {line_number}: {exc}") from exc
     return candidates
 
 

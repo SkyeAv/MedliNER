@@ -1,8 +1,8 @@
 # Candidate task creation
 
 The recommended source is the DAKP training-data export bundle: run `make ingest` and it
-materializes raw candidates at `$MEDLINER_WORKDIR/ingested/candidates.jsonl`. You can also
-author the small JSONL file yourself, typically derived from intermediate DAKP inputs
+materializes raw candidates at `$MEDLINER_WORKDIR/ingested/candidates.ndjson`. You can also
+author the small NDJSON file yourself, typically derived from intermediate DAKP inputs
 (DailyMed SPL section text, FAERS indication strings). Running
 `make candidates` validates that file, deduplicates it,
 and converts it into the Label Studio import shape documented in `docs/LABEL_STUDIO.md`.
@@ -11,7 +11,7 @@ Reviewed exports remain the only training input.
 ## Raw candidates contract
 
 One JSON object per line, at `$MEDLINER_RAW_CANDIDATES` (default
-`data/label-studio/candidates.jsonl`):
+`data/label-studio/candidates.ndjson`):
 
 ```json
 {"text": "Contraindicated in patients with pulmonary hypertension.", "task": "contraindication", "source_family": "dailymed", "source_document_id": "spl-document-001", "section": "34070-3"}
@@ -33,7 +33,7 @@ Fields:
 Deriving rows from DAKP intermediates: pull section text from the DailyMed SPL inputs
 (contraindication sections `LOINC 34070-3`, indications-and-usage `LOINC 34067-9`) and
 indication strings from the FAERS case table, and write one row per text. No DAKP runtime
-is required — the file is plain JSONL and can come from a notebook, a SQL export, or a
+is required — the file is plain NDJSON and can come from a notebook, a SQL export, or a
 script against DAKP's intermediate artifacts.
 
 ## Generation rules applied by `make candidates`

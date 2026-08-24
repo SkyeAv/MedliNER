@@ -49,19 +49,19 @@ def _write_json(path: Path, payload: dict) -> None:
 
 def _rewrite_candidate_line(bundle: Path, index: int, row: dict) -> None:
     """Replace one candidate row (0-based) and re-hash so row validation itself fires."""
-    candidates = bundle / "candidates.jsonl"
+    candidates = bundle / "candidates.ndjson"
     lines = candidates.read_text(encoding="utf-8").splitlines()
     lines[index] = json.dumps(row, ensure_ascii=False)
     candidates.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    _rehash(bundle, "candidates.jsonl")
+    _rehash(bundle, "candidates.ndjson")
 
 
 def _faers_row() -> dict:
-    return json.loads((FIXTURE / "candidates.jsonl").read_text(encoding="utf-8").splitlines()[2])
+    return json.loads((FIXTURE / "candidates.ndjson").read_text(encoding="utf-8").splitlines()[2])
 
 
 def _dailymed_row() -> dict:
-    return json.loads((FIXTURE / "candidates.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    return json.loads((FIXTURE / "candidates.ndjson").read_text(encoding="utf-8").splitlines()[0])
 
 
 def test_end_to_end_ingested_bundle_becomes_label_studio_import(tmp_path):
@@ -71,12 +71,12 @@ def test_end_to_end_ingested_bundle_becomes_label_studio_import(tmp_path):
 
     ingested = tmp_path / "ingested"
     # Payload lands as byte copies; the ingest manifest is the only new file.
-    assert (ingested / "candidates.jsonl").read_bytes() == (FIXTURE / "candidates.jsonl").read_bytes()
+    assert (ingested / "candidates.ndjson").read_bytes() == (FIXTURE / "candidates.ndjson").read_bytes()
     assert (ingested / "ner_gold.json").read_bytes() == (FIXTURE / "ner_gold.json").read_bytes()
 
     # Rows validate through MEDliNER's own CandidateText rules and feed Label Studio directly.
-    candidates = read_candidates(ingested / "candidates.jsonl")
-    assert len(candidates) == bundle_manifest["files"]["candidates.jsonl"]["rows"]
+    candidates = read_candidates(ingested / "candidates.ndjson")
+    assert len(candidates) == bundle_manifest["files"]["candidates.ndjson"]["rows"]
     tasks = build_import_tasks(candidates)
     assert len(tasks) == len(candidates)  # the exporter already deduped
     assert all(task["id"].startswith("medliner-") for task in tasks)
@@ -100,7 +100,7 @@ def test_end_to_end_ingested_bundle_becomes_label_studio_import(tmp_path):
     assert ingest_manifest["task_counts"] == bundle_manifest["task_counts"]
     assert ingest_manifest["family_counts"] == bundle_manifest["family_counts"]
     assert sum(ingest_manifest["task_counts"].values()) == len(candidates)
-    assert ingest_manifest["candidates_blake3"] == hash_candidates_file(ingested / "candidates.jsonl")
+    assert ingest_manifest["candidates_blake3"] == hash_candidates_file(ingested / "candidates.ndjson")
     assert ingest_manifest["gold_blake3"] == hash_candidates_file(ingested / "ner_gold.json")
     assert result["candidate_rows"] == len(candidates)
     assert result["gold_cases"] == len(examples)
@@ -110,7 +110,7 @@ def test_ingest_export_defaults_to_the_medliner_workdir(tmp_path, monkeypatch):
     """Without an explicit workdir the stage resolves $MEDLINER_WORKDIR like every other stage."""
     monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
     result = ingest_export(FIXTURE)
-    assert result["candidates_path"] == tmp_path / "work" / "ingested" / "candidates.jsonl"
+    assert result["candidates_path"] == tmp_path / "work" / "ingested" / "candidates.ndjson"
 
 
 def test_ingest_export_is_idempotent(tmp_path):
@@ -151,7 +151,7 @@ def test_verify_bundle_rejects_manifest_schema_mismatches(tmp_path, field, value
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [
-        (lambda manifest: manifest["files"]["candidates.jsonl"].update(rows=7), "row count mismatch"),
+        (lambda manifest: manifest["files"]["candidates.ndjson"].update(rows=7), "row count mismatch"),
         (lambda manifest: manifest["task_counts"].update(indication=5), "task_counts mismatch"),
         (lambda manifest: manifest["family_counts"].update(faers=2), "family_counts mismatch"),
         (lambda manifest: manifest["files"]["ner_gold.json"].update(cases=33), "case count mismatch"),
@@ -232,18 +232,18 @@ def test_verify_bundle_rejects_non_exact_file_entries(tmp_path):
     """WHY: exact file count fields prevent omitted or unverified payload metadata."""
     bundle = _copy_bundle(tmp_path)
     manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
-    manifest["files"]["candidates.jsonl"]["unexpected"] = 1
+    manifest["files"]["candidates.ndjson"]["unexpected"] = 1
     _write_json(bundle / "manifest.json", manifest)
-    with pytest.raises(ExportIngestError, match=r"files\.candidates\.jsonl"):
+    with pytest.raises(ExportIngestError, match=r"files\.candidates\.ndjson"):
         verify_bundle(bundle)
 
 
 def test_verify_bundle_rejects_a_corrupted_payload(tmp_path):
     """Any byte-level drift in a payload file is caught by the manifest hash check."""
     bundle = _copy_bundle(tmp_path)
-    candidates = bundle / "candidates.jsonl"
+    candidates = bundle / "candidates.ndjson"
     candidates.write_text(candidates.read_text(encoding="utf-8") + "tampered\n", encoding="utf-8")
-    with pytest.raises(ExportIngestError, match=r"candidates\.jsonl: blake3 mismatch"):
+    with pytest.raises(ExportIngestError, match=r"candidates\.ndjson: blake3 mismatch"):
         verify_bundle(bundle)
 
 
@@ -302,7 +302,7 @@ def test_verify_bundle_ignores_extra_files(tmp_path):
 def test_ingest_export_surfaces_invalid_row_line_numbers(tmp_path):
     """Rows are re-validated by MEDliNER's own rules; the line number must reach the user."""
     bundle = _copy_bundle(tmp_path)
-    candidates = bundle / "candidates.jsonl"
+    candidates = bundle / "candidates.ndjson"
     bad_row = json.dumps(
         {
             "text": "Some observed use.",
@@ -313,8 +313,8 @@ def test_ingest_export_surfaces_invalid_row_line_numbers(tmp_path):
         }
     )
     candidates.write_text(candidates.read_text(encoding="utf-8") + bad_row + "\n", encoding="utf-8")
-    _rehash(bundle, "candidates.jsonl")  # hashes stay valid so row validation itself fires
-    with pytest.raises(ExportIngestError, match=r"candidates\.jsonl: invalid candidate at line 9"):
+    _rehash(bundle, "candidates.ndjson")  # hashes stay valid so row validation itself fires
+    with pytest.raises(ExportIngestError, match=r"candidates\.ndjson: invalid candidate at line 9"):
         ingest_export(bundle, workdir=tmp_path / "work")
 
 
@@ -336,7 +336,7 @@ def test_verify_bundle_rejects_dailymed_rows_violating_the_wire_contract(tmp_pat
     """WHY: the export contract forbids extras and requires DailyMed provenance fields."""
     bundle = _copy_bundle(tmp_path)
     _rewrite_candidate_line(bundle, 0, mutation(_dailymed_row()))
-    with pytest.raises(ExportIngestError, match=r"candidates\.jsonl: line 1"):
+    with pytest.raises(ExportIngestError, match=r"candidates\.ndjson: line 1"):
         verify_bundle(bundle)
 
 
@@ -356,7 +356,7 @@ def test_verify_bundle_rejects_faers_rows_violating_the_wire_contract(tmp_path, 
     """WHY: FAERS rows must carry exactly their five contract fields."""
     bundle = _copy_bundle(tmp_path)
     _rewrite_candidate_line(bundle, 2, mutation(_faers_row()))
-    with pytest.raises(ExportIngestError, match=r"candidates\.jsonl: line 3"):
+    with pytest.raises(ExportIngestError, match=r"candidates\.ndjson: line 3"):
         verify_bundle(bundle)
 
 
@@ -365,16 +365,16 @@ def test_verify_bundle_rejects_faers_rows_violating_the_wire_contract(tmp_path, 
     [
         # WHY: an unknown family has no defined wire shape and must never be ingested.
         (json.dumps({"text": "x", "task": "indication", "source_family": "unknown"}), r"source_family 'unknown'"),
-        # WHY: a non-object JSONL line is not a candidate row at all.
+        # WHY: a non-object NDJSON line is not a candidate row at all.
         ('["text", "task"]', "must be a JSON object"),
     ],
 )
 def test_verify_bundle_rejects_unknown_families_and_non_object_lines(tmp_path, line, message):
     """WHY: malformed rows must name the file and line, like read_candidates does."""
     bundle = _copy_bundle(tmp_path)
-    candidates = bundle / "candidates.jsonl"
+    candidates = bundle / "candidates.ndjson"
     candidates.write_text(candidates.read_text(encoding="utf-8") + line + "\n", encoding="utf-8")
-    _rehash(bundle, "candidates.jsonl")
+    _rehash(bundle, "candidates.ndjson")
     with pytest.raises(ExportIngestError, match=message):
         verify_bundle(bundle)
 
@@ -406,20 +406,20 @@ def test_ingest_export_rejects_an_overflowing_gold_offset(tmp_path):
 def test_verify_bundle_normalizes_directory_payload_errors(tmp_path):
     """WHY: directory payloads must not leak IsADirectoryError through the public ingest API."""
     bundle = _copy_bundle(tmp_path)
-    candidates = bundle / "candidates.jsonl"
+    candidates = bundle / "candidates.ndjson"
     candidates.unlink()
     candidates.mkdir()
-    with pytest.raises(ExportIngestError, match=r"candidates\.jsonl"):
+    with pytest.raises(ExportIngestError, match=r"candidates\.ndjson"):
         verify_bundle(bundle)
 
 
 def test_verify_bundle_normalizes_invalid_utf8_errors(tmp_path):
     """WHY: invalid candidate bytes must remain an ExportIngestError with the payload path."""
     bundle = _copy_bundle(tmp_path)
-    candidates = bundle / "candidates.jsonl"
+    candidates = bundle / "candidates.ndjson"
     candidates.write_bytes(b"\xff\n")
-    _rehash(bundle, "candidates.jsonl")
-    with pytest.raises(ExportIngestError, match=r"candidates\.jsonl"):
+    _rehash(bundle, "candidates.ndjson")
+    with pytest.raises(ExportIngestError, match=r"candidates\.ndjson"):
         verify_bundle(bundle)
 
 
@@ -438,6 +438,6 @@ def test_ingest_export_normalizes_output_copy_errors(tmp_path):
     bundle = _copy_bundle(tmp_path)
     output_dir = tmp_path / "work" / "ingested"
     output_dir.mkdir(parents=True)
-    (output_dir / "candidates.jsonl").mkdir()
-    with pytest.raises(ExportIngestError, match=r"candidates\.jsonl"):
+    (output_dir / "candidates.ndjson").mkdir()
+    with pytest.raises(ExportIngestError, match=r"candidates\.ndjson"):
         ingest_export(bundle, workdir=tmp_path / "work")
