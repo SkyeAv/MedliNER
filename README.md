@@ -103,26 +103,17 @@ MEDLINER_LABEL_STUDIO_EXPORT=$PWD/data/label-studio/reviewed.json make pipeline
 
 The stages cover the whole workflow except the human annotation step itself:
 
-```text
-raw candidates NDJSON (ingested from the DAKP export bundle or authored manually)
-        ↓
-Label Studio import tasks (validated, deduplicated)
-        ↓
-Label Studio server (podman container + project + import)
-        ↓
-[human annotation in the browser → manual JSON export]
-        ↓
-Label Studio export
-        ↓
-validated/normalized dataset
-        ↓
-frozen grouped splits
-        ↓
-small-GLiNER training run
-        ↓
-evaluation report
-        ↓
-standalone export bundle
+```mermaid
+flowchart TD
+    A["raw candidates NDJSON<br/>(ingested from DAKP export bundle or authored manually)"] --> B["Label Studio import tasks<br/>(validated, deduplicated)"]
+    B --> C["Label Studio server<br/>(podman container + project + import)"]
+    C --> D["human annotation in the browser"]
+    D --> E["Label Studio export"]
+    E --> F["validated/normalized dataset"]
+    F --> G["frozen grouped splits"]
+    G --> H["small-GLiNER training run"]
+    H --> I["evaluation report"]
+    I --> J["standalone export bundle"]
 ```
 
 Every stage is a plain CLI command (`uv run medliner <stage>`) with a Makefile wrapper. The source export, normalized JSONL, split manifest, training configuration, checkpoint, and evaluation report are all explicit artifacts under `$MEDLINER_WORKDIR`.
