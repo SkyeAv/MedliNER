@@ -24,8 +24,8 @@ from typing import Any
 DEFAULT_CONTAINER = "medliner-label-studio"
 DEFAULT_IMAGE = "docker.io/heartexlabs/label-studio:latest"
 DEFAULT_PORT = 9030
-DEFAULT_PROJECT_TITLE = "MedliNER medical NER"
-WARMUP_PROJECT_TITLE = "MedliNER medical NER — Warm-up"
+DEFAULT_PROJECT_TITLE = "MedliNER"
+WARMUP_PROJECT_TITLE = "MedliNER — Warm-up"
 HEALTH_TIMEOUT_S = 300.0
 
 

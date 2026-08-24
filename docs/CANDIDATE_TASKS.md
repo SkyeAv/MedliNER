@@ -50,12 +50,44 @@ script against DAKP's intermediate artifacts.
 - A `*.manifest.json` next to the import file records the BLAKE3 input hash and per-task /
   per-family counts.
 
-## Sampling guidance
+## Sampling and task staggering (import build)
+Full candidate pools are usually far larger than the annotation budget (the first DAKP export
+held 93,328 rows), so `make candidates` samples a bounded, balanced subset and interleaves it
+before import. Configuration is environment-only:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `MEDLINER_SAMPLE_TASKS` | `indication:6000,contraindication:4000` | `task:count` pairs. Unlisted tasks are dropped; empty or `all` disables sampling entirely. |
+| `MEDLINER_SAMPLE_SEED` | `2026` | Seed folded into the per-task `blake3` rank; changing it picks a different subset. |
+| `MEDLINER_SAMPLE_MAX_WORDS` | `300` | Drops texts longer than this many whitespace words. `0` disables the cap. |
+| `MEDLINER_SAMPLE_MAX_RUN` | `3` | Cap on consecutive tasks sharing one task value in the import order. |
+
+Behavior:
+
+- The 6,000/4,000 default yields ~10K tasks with more indications than contraindications —
+  closer to the real-world mix than the raw 81/19 pool while still boosting the minority task
+  for fine-tuning. Adjust the pair to rebalance.
+- Sampling happens **after** deduplication, so repeated FAERS strings cannot burn multiple slots.
+- Within a task, selection is stratified across `source_family` proportionally (indications
+  split dailymed/faers at the pool's ratio), so both families stay represented.
+- Texts over `max_words` are dropped before selection: GLiNER conversion refuses examples
+  beyond `max_length` (`configs/train-small.yaml`), so annotating them is wasted effort.
+- Selection and ordering are deterministic (`blake3` ranks) — same input + same env always
+  reproduce the same import file, and the import filename is keyed on the input hash **and**
+  the sampling config, so changing the config cannot silently reuse a stale import.
+- Ordering interleaves task values *and* families so labelers working top-to-bottom see a mix;
+  when one task type outnumbers the others by more than `max_run`, an unbounded tail of the
+  majority type is unavoidable after the others are exhausted.
+- The manifest records a `sampling` block (targets, seed, caps, and the pre-sampling pool
+  counts) for auditability.
+
+## Raw-pool authoring guidance
 
 - Keep `task=indication` and `task=contraindication` balanced enough for review and evaluation.
 - Include positive examples and deliberately empty/no-entity examples.
-- Include short and long text, multiword qualified conditions, conjunctions, medication
-  mentions, and dosage/route distractors.
+- Include short and long text, multiword qualified conditions, and conjunctions. Medication
+  names and dosage/route phrases are useful precisely because they are distractors: they get
+  no span (`docs/ANNOTATION_GUIDE.md` rule 4), so the model has to learn to leave them alone.
 - Keep repeated sentences from one source document together for later leakage-safe splitting.
 
 ## Next step

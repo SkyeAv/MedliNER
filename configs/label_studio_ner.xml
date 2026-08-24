@@ -1,5 +1,5 @@
 <View>
-  <Header value="MedliNER medical NER" />
+  <Header value="MedliNER" />
   <Header value="Task: $task" />
   <Header value="Source: $source_family" />
   <Text name="text" value="$text" granularity="word" />

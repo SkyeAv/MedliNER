@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -14,8 +15,11 @@ from medliner.candidates import (
     build_import_tasks,
     build_warmup_tasks,
     hash_candidates_file,
+    import_file_name,
     import_manifest,
     read_candidates,
+    sample_tasks,
+    stagger_tasks,
     write_import_file,
 )
 
@@ -112,6 +116,118 @@ def test_import_manifest_counts_and_hashes_input(tmp_path):
     assert manifest["task_counts"] == {"contraindication": 1, "indication": 2}
     assert manifest["family_counts"] == {"dailymed": 2, "faers": 1}
     assert manifest["duplicates_merged"] == 0
+    assert "sampling" not in manifest
+
+
+def test_import_manifest_records_the_sampling_block(tmp_path):
+    path = _write(tmp_path / "candidates.ndjson", [_row(), _row("Contraindicated in asthma.", "contraindication")])
+    tasks = build_import_tasks(read_candidates(path))
+    sampling = {
+        "targets": {"indication": 1},
+        "seed": 7,
+        "max_words": 300,
+        "max_run": 2,
+        "pool_task_counts": {"indication": 1},
+    }
+    manifest = import_manifest(tasks, input_path=path, sampling=sampling)
+    assert manifest["sampling"] == sampling
+
+
+def _pool(counts: dict[tuple[str, str], int]) -> list[dict]:
+    """Build deduplicated import tasks from ``(task, family) -> n`` counts."""
+    rows = []
+    for (task, family), number in counts.items():
+        for index in range(number):
+            rows.append(_row(f"{task} {family} number {index}.", task, source_family=family))
+    return build_import_tasks([CandidateText.model_validate(row) for row in rows])
+
+
+def test_sample_tasks_stratifies_families_and_reproduces_deterministically():
+    tasks = _pool({("indication", "dailymed"): 6, ("indication", "faers"): 4, ("contraindication", "dailymed"): 5})
+    sampled = sample_tasks(tasks, {"indication": 5, "contraindication": 3}, seed=2026)
+    assert len(sampled) == 8
+    families = Counter((task["data"]["task"], task["data"]["source_family"]) for task in sampled)
+    # Largest-remainder split of the indication target across a 6/4 family pool.
+    assert families == Counter(
+        {("indication", "dailymed"): 3, ("indication", "faers"): 2, ("contraindication", "dailymed"): 3}
+    )
+    # Same input and configuration always reproduce the same subset.
+    assert sample_tasks(tasks, {"indication": 5, "contraindication": 3}, seed=2026) == sampled
+    assert sample_tasks(tasks, {"indication": 5, "contraindication": 3}, seed=7) != sampled
+
+
+def test_sample_tasks_drop_long_texts_unlisted_tasks_and_honors_zero_targets():
+    tasks = _pool({("indication", "dailymed"): 2, ("contraindication", "dailymed"): 2})
+    tasks.append(build_import_tasks([CandidateText(text=" ".join(["word"] * 301), task="indication")])[0])
+    capped = sample_tasks(tasks, {"indication": 10, "contraindication": 10}, max_words=300)
+    assert len(capped) == 4  # the 301-word text is filtered out
+    assert all(len(task["data"]["text"].split()) <= 300 for task in capped)
+    whitelist = sample_tasks(tasks, {"indication": 10})
+    assert {task["data"]["task"] for task in whitelist} == {"indication"}
+    zeroed = sample_tasks(tasks, {"indication": 10, "contraindication": 0})
+    assert {task["data"]["task"] for task in zeroed} == {"indication"}
+    assert sample_tasks(tasks, {}) == tasks  # empty targets disable sampling
+
+
+def test_sample_tasks_rejects_unknown_or_negative_targets():
+    tasks = _pool({("indication", "dailymed"): 1})
+    with pytest.raises(ValueError, match="unknown sampling task"):
+        sample_tasks(tasks, {"indications": 5})
+    with pytest.raises(ValueError, match="non-negative"):
+        sample_tasks(tasks, {"indication": -1})
+
+
+def _max_task_run(kinds: list[str]) -> int:
+    longest = current = 1
+    for previous, item in zip(kinds, kinds[1:], strict=False):  # deliberately off-by-one pairing
+        current = current + 1 if item == previous else 1
+        longest = max(longest, current)
+    return longest
+
+
+def test_stagger_tasks_bounds_task_runs_and_preserves_membership():
+    tasks = _pool({("indication", "dailymed"): 10, ("indication", "faers"): 5, ("contraindication", "dailymed"): 5})
+    staggered = stagger_tasks(tasks, max_run=3)
+    kinds = [task["data"]["task"] for task in staggered]
+    assert len(staggered) == len(tasks)
+    assert {task["id"] for task in staggered} == {task["id"] for task in tasks}
+    # 15 indications around 5 contraindications needs runs of 3 (ceil(15/6)); the cap holds
+    # across the whole sequence at max_run=3, including the tail.
+    assert _max_task_run(kinds) <= 3
+    # Early positions mix families as well as task types.
+    families = [task["data"]["source_family"] for task in staggered[:6]]
+    assert len(set(families)) >= 2
+    assert stagger_tasks(tasks, max_run=3) == staggered  # deterministic
+
+
+def test_stagger_task_runs_only_bound_while_multiple_task_types_remain():
+    tasks = _pool({("indication", "dailymed"): 8, ("contraindication", "dailymed"): 2})
+    staggered = stagger_tasks(tasks, max_run=2)
+    kinds = [task["data"]["task"] for task in staggered]
+    last_minority = max(index for index, kind in enumerate(kinds) if kind == "contraindication")
+    assert _max_task_run(kinds[: last_minority + 1]) <= 2
+    assert kinds.count("indication") == 8 and kinds.count("contraindication") == 2
+
+
+def test_stagger_tasks_rejects_invalid_max_run():
+    tasks = _pool({("indication", "dailymed"): 2})
+    with pytest.raises(ValueError, match="at least 1"):
+        stagger_tasks(tasks, max_run=0)
+    assert stagger_tasks([]) == []
+    assert stagger_tasks(tasks[:1], max_run=1) == tasks[:1]
+
+
+def test_import_file_name_legacy_and_sampling_aware():
+    digest = "a" * 64
+    assert import_file_name(input_hash=digest) == f"import-{digest[:16]}.json"
+    sampled = import_file_name(input_hash=digest, sampling="tasks=indication:6000;seed=2026;max_words=300;max_run=3")
+    assert sampled.startswith("import-") and sampled != import_file_name(input_hash=digest)
+    other = import_file_name(input_hash=digest, sampling="tasks=indication:5000;seed=2026;max_words=300;max_run=3")
+    assert other != sampled  # the configuration is part of the cache key
+    assert (
+        import_file_name(input_hash=digest, sampling="tasks=indication:6000;seed=2026;max_words=300;max_run=3")
+        == sampled
+    )
 
 
 def test_write_import_file_round_trips_through_the_label_studio_reader(tmp_path):
