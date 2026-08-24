@@ -198,8 +198,8 @@ def test_label_studio_warmup_provisions_the_separate_project(tmp_path, monkeypat
     monkeypatch.setattr(cli, "provision", fake_provision)
     assert cli.main(["label-studio", "--input", str(raw), "--warmup", "--warmup-limit", "3"]) == 0
     assert len(calls) == 2
-    assert calls[0]["project_title"] == "MEDliNER medical NER"
-    assert calls[1]["project_title"] == "MEDliNER medical NER — Warm-up"
+    assert calls[0]["project_title"] == "MedliNER medical NER"
+    assert calls[1]["project_title"] == "MedliNER medical NER — Warm-up"
     warmup_tasks = json.loads(Path(calls[1]["import_file"]).read_text(encoding="utf-8"))
     assert len(warmup_tasks) == 3
     assert all(task["data"]["source_family"] == "gold-warmup" for task in warmup_tasks)

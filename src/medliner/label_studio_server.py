@@ -1,6 +1,6 @@
 """Podman-hosted Label Studio server lifecycle and minimal REST client.
 
-Label Studio stays out of the MEDliNER Python environment: the ``medliner label-studio``
+Label Studio stays out of the MedliNER Python environment: the ``medliner label-studio``
 command launches the
 stock ``heartexlabs/label-studio`` image with podman, waits for health, ensures a project
 with ``configs/label_studio_ner.xml``, and imports candidate tasks. Annotation happens in
@@ -24,8 +24,8 @@ from typing import Any
 DEFAULT_CONTAINER = "medliner-label-studio"
 DEFAULT_IMAGE = "docker.io/heartexlabs/label-studio:latest"
 DEFAULT_PORT = 9030
-DEFAULT_PROJECT_TITLE = "MEDliNER medical NER"
-WARMUP_PROJECT_TITLE = "MEDliNER medical NER — Warm-up"
+DEFAULT_PROJECT_TITLE = "MedliNER medical NER"
+WARMUP_PROJECT_TITLE = "MedliNER medical NER — Warm-up"
 HEALTH_TIMEOUT_S = 300.0
 
 

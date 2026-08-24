@@ -122,7 +122,7 @@ def build_export_bundle(
         json.dumps(provenance, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     (output_dir / "MODEL_CARD_INPUTS.md").write_text(
-        "# MEDliNER model-card inputs\n\n"
+        "# MedliNER model-card inputs\n\n"
         "- Labels: disease, phenotype, drug\n"
         "- Tasks: indication and contraindication context NER\n"
         "- Base checkpoint and training parameters: see `checkpoint/medliner-training.json` and `training_config.yaml`.\n"

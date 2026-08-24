@@ -1,7 +1,7 @@
 """Label Studio export adapter.
 
 Label Studio records character offsets; GLiNER training uses model-token indexes. This module
-only accepts completed annotation exports and converts them into MEDliNER's canonical schema.
+only accepts completed annotation exports and converts them into MedliNER's canonical schema.
 """
 
 from __future__ import annotations
@@ -265,7 +265,7 @@ def normalize_task(task: dict[str, Any], *, export_id: str | None = None) -> Exa
         )
     except ValidationError as exc:
         # Overlap, offset, and policy violations are export problems, not internal errors.
-        raise LabelStudioExportError(f"task {task_id!r} is not a valid MEDliNER example: {exc}") from exc
+        raise LabelStudioExportError(f"task {task_id!r} is not a valid MedliNER example: {exc}") from exc
 
 
 def normalize_export(path: str | Path, *, export_id: str | None = None, require_reviewed: bool = True) -> list[Example]:

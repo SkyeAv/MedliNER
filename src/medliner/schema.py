@@ -1,4 +1,4 @@
-"""Canonical MEDliNER contracts.
+"""Canonical MedliNER contracts.
 
 Label Studio is an input UI. These Pydantic models are the stable, reviewable contract used
 by normalization, splitting, evaluation, and packaging.
@@ -41,7 +41,7 @@ class AnnotationStatus(StrEnum):
 
 
 class SourceMetadata(BaseModel):
-    """Traceability for a task without coupling MEDliNER to DAKP runtime objects."""
+    """Traceability for a task without coupling MedliNER to DAKP runtime objects."""
 
     model_config = ConfigDict(extra="allow")
 

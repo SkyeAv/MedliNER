@@ -74,7 +74,7 @@ def test_end_to_end_ingested_bundle_becomes_label_studio_import(tmp_path):
     assert (ingested / "candidates.ndjson").read_bytes() == (FIXTURE / "candidates.ndjson").read_bytes()
     assert (ingested / "ner_gold.json").read_bytes() == (FIXTURE / "ner_gold.json").read_bytes()
 
-    # Rows validate through MEDliNER's own CandidateText rules and feed Label Studio directly.
+    # Rows validate through MedliNER's own CandidateText rules and feed Label Studio directly.
     candidates = read_candidates(ingested / "candidates.ndjson")
     assert len(candidates) == bundle_manifest["files"]["candidates.ndjson"]["rows"]
     tasks = build_import_tasks(candidates)
@@ -300,7 +300,7 @@ def test_verify_bundle_ignores_extra_files(tmp_path):
 
 
 def test_ingest_export_surfaces_invalid_row_line_numbers(tmp_path):
-    """Rows are re-validated by MEDliNER's own rules; the line number must reach the user."""
+    """Rows are re-validated by MedliNER's own rules; the line number must reach the user."""
     bundle = _copy_bundle(tmp_path)
     candidates = bundle / "candidates.ndjson"
     bad_row = json.dumps(
@@ -322,7 +322,7 @@ def test_ingest_export_surfaces_invalid_row_line_numbers(tmp_path):
     "mutation",
     [
         # WHY: Pydantic silently ignores extra fields, so an unknown key must be rejected
-        # here — the exporter promises no fields MEDliNER ignores.
+        # here — the exporter promises no fields MedliNER ignores.
         lambda row: row | {"source_hash": "b3:deadbeef"},
         # WHY: DailyMed provenance is required, not optional — CandidateText's defaults
         # apply to manual candidates only, never to the export bundle.

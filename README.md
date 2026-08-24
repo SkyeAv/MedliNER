@@ -1,8 +1,8 @@
-# MEDliNER
+# MedliNER
 
-MEDliNER is a standalone, local pipeline for producing a reviewed medical NER dataset and fine-tuning a small GLiNER checkpoint. Its first use cases are extracting `disease`, `phenotype`, and `drug` mentions from `indication` and `contraindication` text.
+MedliNER is a standalone, local pipeline for producing a reviewed medical NER dataset and fine-tuning a small GLiNER checkpoint. Its first use cases are extracting `disease`, `phenotype`, and `drug` mentions from `indication` and `contraindication` text.
 
-MEDliNER consumes DAKP data only through its training-data export bundle (`make ingest`); no DAKP checkout or runtime is required. The only training input is a reviewed Label Studio export.
+MedliNER consumes DAKP data only through its training-data export bundle (`make ingest`); no DAKP checkout or runtime is required. The only training input is a reviewed Label Studio export.
 
 ## Labels and tasks
 
@@ -31,9 +31,9 @@ Annotators do not count offsets:
 
 > open task → click-drag/highlight condition or drug phrase → choose label → submit
 
-Label Studio records character offsets automatically. MEDliNER validates those offsets and converts them to GLiNER token spans.
+Label Studio records character offsets automatically. MedliNER validates those offsets and converts them to GLiNER token spans.
 
-## Install and run MEDliNER
+## Install and run MedliNER
 
 Review the safe example paths in `.envrc`, then enable direnv:
 
@@ -60,7 +60,7 @@ The checked-in `.envrc` exports:
 Print the resolved values with `make env`. For private local overrides, create the ignored `.envrc.local`; do not put secrets or machine-specific paths into the committed `.envrc`.
 
 Label Studio runs in a podman container started by the pipeline; it is intentionally not a
-MEDliNER Python dependency. The pipeline stages are Makefile targets wrapping the
+MedliNER Python dependency. The pipeline stages are Makefile targets wrapping the
 `medliner` CLI. The full flow is:
 
 1. `make ingest` — verifies the DAKP export bundle (`MEDLINER_EXPORT_BUNDLE`, default
@@ -131,7 +131,7 @@ Every stage is a plain CLI command (`uv run medliner <stage>`) with a Makefile w
 
 The default base model is `urchade/gliner_small-v2.1`. A smaller checkpoint is intentional: full training of a large GLiNER checkpoint is not required for this project and may exceed 12 GB VRAM. The configuration uses batch size 1, gradient accumulation, bounded sequence length, mixed precision when supported, checkpointing, and resume behavior. Large-checkpoint training is an optional later comparison. See [`docs/HARDWARE.md`](docs/HARDWARE.md): the RTX 5070 Ti requires a Torch wheel containing `sm_120` kernels.
 
-GLiNER 0.2.28's training records use model tokens and inclusive token end indexes. MEDliNER preserves the original character-level annotations so this conversion is auditable and tested.
+GLiNER 0.2.28's training records use model tokens and inclusive token end indexes. MedliNER preserves the original character-level annotations so this conversion is auditable and tested.
 
 Two GLiNER behaviours would otherwise discard supervision without saying so, and are turned into
 errors at conversion time: text beyond `max_len` (384 word tokens) is truncated with only a

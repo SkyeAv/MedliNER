@@ -1,4 +1,4 @@
-"""MEDliNER: reviewed medical NER data and GLiNER fine-tuning."""
+"""MedliNER: reviewed medical NER data and GLiNER fine-tuning."""
 
 from .schema import ALLOWED_LABELS, ALLOWED_TASKS, Annotation, Example, SourceMetadata
 

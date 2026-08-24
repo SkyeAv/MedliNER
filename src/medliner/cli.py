@@ -1,4 +1,4 @@
-"""Command-line interface for the MEDliNER pipeline stages.
+"""Command-line interface for the MedliNER pipeline stages.
 
 The pipeline runs in three phases, each a subcommand (see the Makefile wrappers):
 

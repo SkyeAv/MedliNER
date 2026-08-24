@@ -1,13 +1,13 @@
 # Label Studio Community Edition workflow
 
 Label Studio Community Edition is a free, locally self-hosted browser UI for this project. It
-runs in a podman container managed by the MEDliNER CLI; it is not a MEDliNER Python
+runs in a podman container managed by the MedliNER CLI; it is not a MedliNER Python
 dependency.
 
 ## Managed server (default)
 
 `make label-studio` starts the stock `heartexlabs/label-studio` image with podman,
-waits for health, creates the `MEDliNER medical NER` project from
+waits for health, creates the `MedliNER medical NER` project from
 `configs/label_studio_ner.xml`, and imports the tasks built by `make candidates` (run
 automatically when the import file for the current input hash is missing):
 
@@ -51,7 +51,7 @@ on the shared instance sees every project. The managed flow supports a group ses
    rely on the natural staggering of the sequential queue — both work with this pipeline
    because exports keep per-annotation authorship.
 4. **Seed a warm-up round** with `WARMUP=1 make label-studio`: gold-benchmark cases are
-   imported into a *separate* project (`MEDliNER medical NER — Warm-up`, `--warmup-limit`
+   imported into a *separate* project (`MedliNER medical NER — Warm-up`, `--warmup-limit`
    tasks, default 10) so annotators can practice and compare against known answers without
    gold leaking into the main queue. The gold spans travel with each task in its
    `gold_mentions` data field (visible in the Data Manager). The warm-up project needs the
@@ -68,7 +68,7 @@ make label-studio-export            # writes $MEDLINER_LABEL_STUDIO_EXPORT
 OUTPUT=/tmp/reviewed.json make label-studio-export
 ```
 
-The command finds the `MEDliNER medical NER` project by title, downloads the JSON export,
+The command finds the `MedliNER medical NER` project by title, downloads the JSON export,
 and prints the annotated/total task counts. The manual browser route still works: export as
 JSON from the project UI and save it anywhere, then override `MEDLINER_LABEL_STUDIO_EXPORT`
 in the ignored `.envrc.local` if the path differs from the example in `.envrc`.
@@ -105,7 +105,7 @@ The task and source fields are displayed for context and are preserved when expo
 If you prefer not to use the managed container, install Label Studio separately:
 
 ```bash
-# Dedicated environment, separate from MEDliNER
+# Dedicated environment, separate from MedliNER
 python -m venv .label-studio-venv
 source .label-studio-venv/bin/activate
 pip install label-studio
@@ -137,11 +137,11 @@ There is no manual offset counting. Label Studio records the highlighted phrase 
 
 ## Pre-annotations
 
-Optional model suggestions may be imported using Label Studio's prediction format. They must be visibly treated as predictions and reviewed by a human. The MEDliNER adapter rejects a model-only prediction set as training gold unless the completed annotation has human provenance/status.
+Optional model suggestions may be imported using Label Studio's prediction format. They must be visibly treated as predictions and reviewed by a human. The MedliNER adapter rejects a model-only prediction set as training gold unless the completed annotation has human provenance/status.
 
 ## Export details worth knowing
 
-The raw export is retained as provenance. MEDliNER converts it to its canonical schema and validates offsets, labels, overlap, task metadata, review status, and text slices before training. JSONL is also accepted by MEDliNER when one task object is stored per line.
+The raw export is retained as provenance. MedliNER converts it to its canonical schema and validates offsets, labels, overlap, task metadata, review status, and text slices before training. JSONL is also accepted by MedliNER when one task object is stored per line.
 
 Two export details are worth knowing before the first review round:
 

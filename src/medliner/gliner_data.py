@@ -26,7 +26,7 @@ class ModelLimits:
 
     ``max_len`` truncates the token sequence (``UserWarning`` only), and ``max_width`` bounds
     the enumerated span candidates, so a gold span wider than ``max_width`` is never assigned a
-    label at all. MEDliNER refuses to build such a record instead of training on silent holes.
+    label at all. MedliNER refuses to build such a record instead of training on silent holes.
     """
 
     max_len: int | None = None

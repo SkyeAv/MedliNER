@@ -64,7 +64,7 @@ def test_overlapping_spans_raise_the_adapter_error(tmp_path):
             _span(start, start + len("pulmonary"), "phenotype", result_id="r2"),
         ]
     )
-    with pytest.raises(LabelStudioExportError, match="not a valid MEDliNER example"):
+    with pytest.raises(LabelStudioExportError, match="not a valid MedliNER example"):
         normalize_task(task)
 
 

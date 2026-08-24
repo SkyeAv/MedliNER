@@ -1,4 +1,4 @@
-# MEDliNER annotation guide
+# MedliNER annotation guide
 
 ## Goal
 
@@ -20,7 +20,7 @@ Allowed labels:
 6. **No entity is valid.** Submit an empty annotation for text that contains no allowed entity, including population-only and dosage-only examples.
 7. **No nested or overlapping spans.** Choose one maximal span. If a generic head and a qualified term both appear, annotate only the maximal term supported by the text.
 8. **Punctuation and whitespace are excluded** unless they are genuinely part of a medication name. Label Studio's word granularity helps avoid accidental partial-word spans, and the importer trims any leading/trailing whitespace a drag selection picked up.
-9. **Keep spans at most 12 words.** GLiNER only enumerates span candidates up to its `max_width`; a longer gold span is silently unlearnable, so MEDliNER rejects it at conversion time. If a concept genuinely needs more than 12 words, record it for adjudication instead of annotating it.
+9. **Keep spans at most 12 words.** GLiNER only enumerates span candidates up to its `max_width`; a longer gold span is silently unlearnable, so MedliNER rejects it at conversion time. If a concept genuinely needs more than 12 words, record it for adjudication instead of annotating it.
 10. **Skip means skip.** If a task cannot be annotated, skip it in the UI rather than submitting an empty annotation. An empty submission is a positive claim that the text contains no entity; a skipped task is rejected at import so it never becomes silent negative training signal.
 
 ## Review rules

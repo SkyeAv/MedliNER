@@ -2,7 +2,7 @@
 
 The target laptop GPU reports compute capability `sm_120`. The Torch wheel must include `sm_120` kernels. The sibling DAKP environment currently uses Torch `2.8.0+cu126`, whose architecture list stops at `sm_90`; attempting to move a GLiNER model to CUDA there fails with `CUDA error: no kernel image is available for execution on the device`.
 
-MEDliNER pins the Torch dependency range and selects the PyTorch cu130 index in `pyproject.toml` for the target laptop. Recreate/sync the MEDliNER environment rather than reusing the DAKP virtualenv:
+MedliNER pins the Torch dependency range and selects the PyTorch cu130 index in `pyproject.toml` for the target laptop. Recreate/sync the MedliNER environment rather than reusing the DAKP virtualenv:
 
 ```bash
 uv sync
@@ -15,7 +15,7 @@ assert "sm_120" in torch.cuda.get_arch_list()
 PY
 ```
 
-If the assertion fails, do not start training. Install a Torch CUDA wheel with `sm_120` support and verify the NVIDIA driver first. MEDliNER detects this mismatch and falls back to CPU instead of triggering the kernel-image crash, but CPU is only suitable for data/evaluation checks, not the intended training run.
+If the assertion fails, do not start training. Install a Torch CUDA wheel with `sm_120` support and verify the NVIDIA driver first. MedliNER detects this mismatch and falls back to CPU instead of triggering the kernel-image crash, but CPU is only suitable for data/evaluation checks, not the intended training run.
 
 ## Triton and the libcuda lookup
 

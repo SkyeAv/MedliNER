@@ -28,7 +28,7 @@ Training uses the GLiNER 0.2.28 bundled trainer API with canonical records conve
 ## Fixed label vocabulary
 
 GLiNER normally derives each batch's entity vocabulary from the gold labels that happen to be
-present, plus sampled negatives. That interacts badly with two MEDliNER decisions: reviewed
+present, plus sampled negatives. That interacts badly with two MedliNER decisions: reviewed
 no-entity examples are first-class training signal, and the micro-batch size is 1. A batch whose
 only example has no annotations then has *zero* entity types, and the loss fails on
 `scores.view(BS, -1, CL)` with `CL == 0`.
@@ -40,7 +40,7 @@ if the schema ever changes.
 
 ## Conversion budgets
 
-GLiNER discards supervision silently in two places, so MEDliNER refuses the record instead:
+GLiNER discards supervision silently in two places, so MedliNER refuses the record instead:
 
 - text longer than `config.max_len` (384 word tokens) is truncated with only a `UserWarning`;
 - a gold span wider than `config.max_width` (12 word tokens) is never enumerated as a span
@@ -56,7 +56,7 @@ candidate text upstream, or raise `max_length` if VRAM allows.
 (`model.token_rep_layer.*`); every key mismatches, so the reload is a silent no-op that leaves
 the last step's weights in place — the opposite of selecting on validation F1.
 
-Instead, `metric_for_best_model="eval_strict_f1"` records `best_model_checkpoint`, and MEDliNER
+Instead, `metric_for_best_model="eval_strict_f1"` records `best_model_checkpoint`, and MedliNER
 copies that checkpoint into `final/` after training, dropping optimizer/scheduler/RNG state. The
 selected path is recorded as `selected_checkpoint` in `final/medliner-training.json` alongside
 `best_validation_strict_f1`.

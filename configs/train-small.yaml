@@ -39,7 +39,7 @@ bf16: true
 gradient_checkpointing: true
 freeze_text_encoder: false
 
-# Entity vocabulary pinned for every batch. Defaults to the three MEDliNER labels.
+# Entity vocabulary pinned for every batch. Defaults to the three MedliNER labels.
 labels:
   - disease
   - phenotype

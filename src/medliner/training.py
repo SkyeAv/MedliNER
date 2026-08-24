@@ -32,7 +32,7 @@ class ListDataset:
 
 
 class FixedLabelCollator:
-    """Pin GLiNER's per-batch entity vocabulary to MEDliNER's closed label schema.
+    """Pin GLiNER's per-batch entity vocabulary to MedliNER's closed label schema.
 
     GLiNER otherwise derives the batch's entity types from the gold labels that happen to be
     present, plus sampled negatives. A batch containing only no-entity examples then has zero

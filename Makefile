@@ -21,7 +21,7 @@ export TRITON_LIBCUDA_PATH ?= $(shell test -x /sbin/ldconfig || for d in /run/op
 
 help:
 	@printf '%s\n' \
-		'MEDliNER pipeline (run in order):' \
+		'MedliNER pipeline (run in order):' \
 		'  make ingest             Verify + materialize the DAKP export bundle (BUNDLE=<dir> overrides)' \
 		'  make candidates         Build the Label Studio import file from raw candidates' \
 		'  make label-studio       Start the podman Label Studio server with tasks imported (REIMPORT=1 replaces tasks)' \

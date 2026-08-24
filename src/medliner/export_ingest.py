@@ -1,7 +1,7 @@
 """Ingest of the DAKP training-data export bundle (``dakp.medliner.export.v1``).
 
 The bundle is produced by ``dakp export-medliner`` and is self-describing: a manifest with
-per-file BLAKE3 hashes, candidate rows in MEDliNER's raw-candidate shape, and the NER gold
+per-file BLAKE3 hashes, candidate rows in MedliNER's raw-candidate shape, and the NER gold
 benchmark. This module verifies the bundle on disk — no DAKP checkout required — enforces
 the exact per-family wire contract of ``dakp.medliner.export.v1`` (which is stricter than
 :class:`~medliner.candidates.CandidateText`, since Pydantic ignores unknown fields and
@@ -255,7 +255,7 @@ def _default_workdir() -> Path:
 
 
 def ingest_export(bundle_dir: str | Path, *, workdir: str | Path | None = None) -> dict[str, Any]:
-    """Verify the bundle, validate it with MEDliNER's own rules, materialize it under ``workdir``.
+    """Verify the bundle, validate it with MedliNER's own rules, materialize it under ``workdir``.
 
     Writes ``<workdir>/ingested/{candidates.ndjson, ner_gold.json, ingest-manifest.json}``
     (byte copies of the verified payload) and returns the paths plus the manifest counts.
