@@ -1,0 +1,8 @@
+{
+  "schema_version": "medliner.onboarding.config.v1",
+  "project_title": "Onboarding",
+  "test_bank_size": 10,
+  "questions_per_attempt": 4,
+  "pass_threshold": 0.75,
+  "selection_seed": 2026
+}

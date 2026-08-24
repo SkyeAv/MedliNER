@@ -3,10 +3,12 @@
 The pipeline runs in three phases, each a subcommand (see the Makefile wrappers):
 
 - before Label Studio: ``ingest`` materializes a DAKP export bundle (optional when
-  hand-authoring raw candidates), ``candidates`` builds the validated import file, and the
-  optional ``prelabel`` attaches GLiNER suggestions to it;
+  hand-authoring raw candidates), ``candidates`` builds the validated import file, the
+  optional ``shorten`` rewrites over-long candidate texts through the local LLM
+  (opt-in only), and the optional ``prelabel`` attaches GLiNER suggestions to it;
 - Label Studio: ``label-studio``/``label-studio-stop`` manage the podman annotation server
   (LAN exposure, annotator accounts, and a gold warm-up project for group sessions);
+  ``onboarding*`` provisions and scores the answer-free qualification project;
   ``label-studio-export`` downloads the reviewed annotations over the API;
 - after Label Studio: ``dataset`` → ``splits`` → ``train`` → ``evaluate`` → ``bundle``
   (or all five via ``pipeline``).
@@ -47,10 +49,34 @@ from .label_studio_server import (
     DEFAULT_IMAGE,
     DEFAULT_PORT,
     DEFAULT_PROJECT_TITLE,
+    ONBOARDING_PROJECT_TITLE,
     WARMUP_PROJECT_TITLE,
     export_project,
     provision,
     stop_container,
+)
+from .onboarding import (
+    DEFAULT_CONFIG_PATH as ONBOARDING_CONFIG_PATH,
+)
+from .onboarding import (
+    OnboardingError,
+    build_onboarding_tasks,
+    build_test_bank,
+    filter_production_export,
+    promoted_users,
+    read_attempts,
+    read_reports,
+    start_attempt,
+    versioned_bank_path,
+    write_current_bank_pointer,
+    write_report,
+    write_test_bank,
+)
+from .onboarding import (
+    load_config as load_onboarding_config,
+)
+from .onboarding import (
+    promote as promote_onboarding_user,
 )
 from .packaging import build_export_bundle
 from .splits import assert_no_group_leakage, group_key, split_examples
@@ -65,10 +91,12 @@ def repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-DEFAULT_SAMPLE_TARGETS = "indication:6000,contraindication:4000"
+DEFAULT_SAMPLE_TARGETS = "indication:3000,contraindication:2000"
 DEFAULT_SAMPLE_SEED = 2026
 DEFAULT_SAMPLE_MAX_WORDS = 300
 DEFAULT_SAMPLE_MAX_RUN = 3
+#: Share of each sampling stratum filled with the hardest texts; the rest stays hash-random.
+DEFAULT_SAMPLE_EDGE_FRACTION = 0.8
 
 
 @dataclass(frozen=True)
@@ -79,6 +107,7 @@ class SamplingSettings:
     seed: int
     max_words: int
     max_run: int
+    edge_fraction: float
 
     @property
     def config(self) -> str | None:
@@ -86,14 +115,19 @@ class SamplingSettings:
         if not self.targets:
             return None
         spec = ",".join(f"{name}:{self.targets[name]}" for name in sorted(self.targets))
-        return f"tasks={spec};seed={self.seed};max_words={self.max_words};max_run={self.max_run}"
+        return (
+            f"tasks={spec};seed={self.seed};max_words={self.max_words};"
+            f"max_run={self.max_run};edge_fraction={self.edge_fraction}"
+        )
 
 
 def sampling_settings() -> SamplingSettings:
     """Parse the ``MEDLINER_SAMPLE_*`` environment; an empty/all task list disables sampling."""
     raw = os.environ.get("MEDLINER_SAMPLE_TASKS", DEFAULT_SAMPLE_TARGETS).strip()
     if raw.lower() in ("", "all", "none"):
-        return SamplingSettings({}, DEFAULT_SAMPLE_SEED, DEFAULT_SAMPLE_MAX_WORDS, DEFAULT_SAMPLE_MAX_RUN)
+        return SamplingSettings(
+            {}, DEFAULT_SAMPLE_SEED, DEFAULT_SAMPLE_MAX_WORDS, DEFAULT_SAMPLE_MAX_RUN, DEFAULT_SAMPLE_EDGE_FRACTION
+        )
     targets: dict[str, int] = {}
     for part in raw.split(","):
         name, separator, value = part.strip().partition(":")
@@ -107,6 +141,7 @@ def sampling_settings() -> SamplingSettings:
         seed=int(os.environ.get("MEDLINER_SAMPLE_SEED", str(DEFAULT_SAMPLE_SEED))),
         max_words=int(os.environ.get("MEDLINER_SAMPLE_MAX_WORDS", str(DEFAULT_SAMPLE_MAX_WORDS))),
         max_run=int(os.environ.get("MEDLINER_SAMPLE_MAX_RUN", str(DEFAULT_SAMPLE_MAX_RUN))),
+        edge_fraction=float(os.environ.get("MEDLINER_SAMPLE_EDGE_FRACTION", str(DEFAULT_SAMPLE_EDGE_FRACTION))),
     )
     if settings.seed < 0:
         raise ValueError("MEDLINER_SAMPLE_SEED must be non-negative")
@@ -114,6 +149,8 @@ def sampling_settings() -> SamplingSettings:
         raise ValueError("MEDLINER_SAMPLE_MAX_WORDS must be non-negative (0 disables the cap)")
     if settings.max_run < 1:
         raise ValueError("MEDLINER_SAMPLE_MAX_RUN must be at least 1")
+    if not 0.0 <= settings.edge_fraction <= 1.0:
+        raise ValueError("MEDLINER_SAMPLE_EDGE_FRACTION must be between 0 and 1")
     return settings
 
 
@@ -147,27 +184,40 @@ def bundle_path(value: str | None = None) -> Path:
 
 def run_candidates(input_path: Path) -> Path:
     """Validate/dedupe/sample raw candidates into the Label Studio import file; returns its path."""
+    from .candidates import difficulty_score
+
     settings = sampling_settings()
     tasks = build_import_tasks(read_candidates(input_path))
     if not tasks:
         raise ValueError(f"no import tasks produced from {input_path}")
     sampling_manifest: dict[str, Any] | None = None
     if settings.targets:
+        pool_difficulty = [difficulty_score(task["data"]["text"]) for task in tasks]
         sampling_manifest = {
             "targets": settings.targets,
             "seed": settings.seed,
             "max_words": settings.max_words,
             "max_run": settings.max_run,
+            "edge_fraction": settings.edge_fraction,
             "pool_task_counts": dict(sorted(Counter(task["data"]["task"] for task in tasks).items())),
             "pool_family_counts": dict(sorted(Counter(task["data"]["source_family"] for task in tasks).items())),
+            "pool_difficulty_mean": round(sum(pool_difficulty) / len(pool_difficulty), 3),
         }
-        tasks = sample_tasks(tasks, settings.targets, seed=settings.seed, max_words=settings.max_words or None)
+        tasks = sample_tasks(
+            tasks,
+            settings.targets,
+            seed=settings.seed,
+            max_words=settings.max_words or None,
+            edge_fraction=settings.edge_fraction,
+        )
         tasks = stagger_tasks(tasks, max_run=settings.max_run, seed=settings.seed)
         if not tasks:
             raise ValueError(
                 f"sampling produced no tasks from {input_path} "
                 f"(targets {settings.targets}, max_words {settings.max_words})"
             )
+        selected_difficulty = [difficulty_score(task["data"]["text"]) for task in tasks]
+        sampling_manifest["selected_difficulty_mean"] = round(sum(selected_difficulty) / len(selected_difficulty), 3)
     manifest = import_manifest(tasks, input_path=input_path, sampling=sampling_manifest)
     output = workdir() / "label-studio" / import_file_name(input_hash=manifest["input_hash"], sampling=settings.config)
     write_import_file(tasks, output)
@@ -288,7 +338,7 @@ def score_prelabeler(*, model_id: str, threshold: float, device: str | None, wor
 
     gold = benchmark_path()
     if not gold.exists():
-        raise FileNotFoundError(f"gold benchmark not found: {gold} (MEDLINER_BENCHMARK; run 'medliner ingest' first)")
+        raise FileNotFoundError(f"gold benchmark not found: {gold} (check MEDLINER_BENCHMARK)")
     model, resolved = prelabel.load_model(model_id, device=device)
     prelabel.check_model_budgets(model, budget=word_budget, max_width=max_width)
     batch = prelabel.batch_predictor(model, threshold=threshold, labels=prelabel.PRELABEL_LABELS)
@@ -313,12 +363,23 @@ def score_prelabeler(*, model_id: str, threshold: float, device: str | None, wor
 
 def run_dataset(path: Path) -> Path:
     """Validate the reviewed export into the normalized dataset; returns the JSONL path."""
-    examples = normalize_export(path, require_reviewed=True)
+    source_path = path
+    excluded = 0
+    if os.environ.get("MEDLINER_ONBOARDING_REQUIRED", "0").lower() in {"1", "true", "yes", "on"}:
+        _config, bank, _bank_path = _onboarding_context()
+        allowed = promoted_users(workdir(), bank)
+        if not allowed:
+            raise RuntimeError("no annotator has passed onboarding for the current test-bank; run onboarding-promote")
+        source_path, audit_path, excluded = filter_production_export(path, workdir(), bank, allowed)
+        if not source_path.exists():
+            raise RuntimeError(f"onboarding produced no eligible production export; audit: {audit_path}")
+        print(f"dataset: onboarding gate allowed {len(allowed)} users; excluded {excluded} task(s) -> {audit_path}")
+    examples = normalize_export(source_path, require_reviewed=True)
     if not examples:
-        raise ValueError(f"normalized dataset from {path} is empty")
+        raise ValueError(f"normalized dataset from {source_path} is empty")
     output = workdir() / "normalized" / "examples.jsonl"
     write_examples(examples, output)
-    manifest = manifest_for(examples, input_export_hash=hash_file(path), dataset_id=hash_file(output))
+    manifest = manifest_for(examples, input_export_hash=hash_file(source_path), dataset_id=hash_file(output))
     write_manifest(manifest, output.with_name("manifest.json"))
     print(f"dataset: {len(examples)} examples -> {output}")
     return output
@@ -397,6 +458,74 @@ def cmd_candidates(args: argparse.Namespace) -> None:
     run_candidates(raw_candidates_path(args.input))
 
 
+def run_shorten(input_path: Path, *, limit: int | None, max_words: int, url: str | None) -> Path:
+    """Rewrite over-long candidate texts through the local LLM; returns the output path.
+
+    Opt-in stage, never part of the default flow: only rows over ``max_words`` are sent to
+    the model, two at a time (the server runs ``-np 2 -cb``). Every rewrite is validated by
+    :func:`medliner.llm.shorten_text`; failures keep the original text and are counted in
+    the manifest rather than silently corrupting the pool.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from . import llm
+    from .candidates import _word_count
+
+    if not llm.health(url):
+        raise RuntimeError(f"LLM server not healthy at {llm.llm_url(url)} (start it with 'make llm')")
+    candidates = read_candidates(input_path)
+    rows = [candidate.model_dump(exclude_none=True) for candidate in candidates]
+    over_long = [index for index, row in enumerate(rows) if _word_count(row["text"]) > max_words]
+    if limit is not None:
+        over_long = over_long[:limit]
+
+    def shorten_one(index: int) -> tuple[int, str, bool, bool]:
+        original = rows[index]["text"]
+        shortened, empty_hint = llm.shorten_text(original, max_words=max_words, url=url)
+        return index, shortened, empty_hint, shortened != original
+
+    shortened_count = 0
+    empty_hints = 0
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        for index, shortened, empty_hint, changed in pool.map(shorten_one, over_long):
+            rows[index]["text"] = shortened
+            shortened_count += changed
+            empty_hints += empty_hint
+
+    output = input_path.with_name(f"{input_path.stem}.shortened{input_path.suffix}")
+    with output.open("w", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+    manifest = {
+        "schema_version": "medliner.shorten.manifest.v1",
+        "input_path": str(input_path),
+        "input_hash": hash_candidates_file(input_path),
+        "llm_url": llm.llm_url(url),
+        "max_words": max_words,
+        "rows": len(rows),
+        "over_long": len(over_long),
+        "shortened": shortened_count,
+        "unchanged_over_long": len(over_long) - shortened_count,
+        "empty_hints": empty_hints,
+    }
+    output.with_suffix(".manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    print(
+        f"shorten: {shortened_count}/{len(over_long)} over-{max_words}-word texts shortened "
+        f"({empty_hints} empty-entity hints; unchanged rows kept verbatim) -> {output}"
+    )
+    return output
+
+
+def cmd_shorten(args: argparse.Namespace) -> None:
+    run_shorten(
+        raw_candidates_path(args.input),
+        limit=args.limit,
+        max_words=args.max_words or sampling_settings().max_words,
+        url=args.url,
+    )
+    print("next: MEDLINER_RAW_CANDIDATES=<shortened file> medliner candidates")
+
+
 def _prelabel_options(args: argparse.Namespace) -> dict[str, Any]:
     from . import prelabel
 
@@ -418,6 +547,156 @@ def cmd_prelabel(args: argparse.Namespace) -> None:
         return
     run_prelabel(raw_candidates_path(args.input), batch_size=args.batch_size, force=args.force, **options)
     print("next: medliner label-studio --prelabel")
+
+
+def _onboarding_context() -> tuple[Any, Any, Path]:
+    """Load the current versioned onboarding bank, creating its private sidecar if needed."""
+    from .evaluation import benchmark_path
+
+    config_path = Path(os.environ.get("MEDLINER_ONBOARDING_CONFIG", str(repo_root() / ONBOARDING_CONFIG_PATH)))
+    config = load_onboarding_config(config_path)
+    gold = benchmark_path()
+    if not gold.exists():
+        raise FileNotFoundError(f"gold benchmark not found: {gold} (check MEDLINER_BENCHMARK; run ingest if needed)")
+    manifest = build_test_bank(gold, config)
+    bank_path = versioned_bank_path(workdir(), manifest)
+    if not bank_path.exists():
+        write_test_bank(manifest, bank_path)
+    write_current_bank_pointer(workdir(), manifest)
+    return config, manifest, bank_path
+
+
+def _label_studio_credentials() -> dict[str, Any]:
+    return {
+        "username": os.environ.get("MEDLINER_LABEL_STUDIO_USERNAME", "medliner@localhost"),
+        "password": os.environ.get("MEDLINER_LABEL_STUDIO_PASSWORD", "medliner-local"),
+        "token": os.environ.get("MEDLINER_LABEL_STUDIO_TOKEN") or None,
+    }
+
+
+def _onboarding_import_path(manifest: Any) -> Path:
+    return workdir() / "onboarding" / f"import-{manifest.test_bank_hash}.json"
+
+
+def cmd_onboarding(args: argparse.Namespace) -> None:
+    config, manifest, _bank_path = _onboarding_context()
+    import_path = _onboarding_import_path(manifest)
+    import_was_missing = not import_path.exists()
+    if import_was_missing or args.reimport:
+        write_import_file(build_onboarding_tasks(manifest), import_path)
+    annotator_values = args.annotator
+    if not annotator_values:
+        raw = os.environ.get("MEDLINER_LABEL_STUDIO_ANNOTATORS")
+        annotator_values = [item.strip() for item in raw.split(",") if item.strip()] if raw else None
+    result = provision(
+        import_file=import_path,
+        label_config_path=repo_root() / "configs" / "label_studio_ner.xml",
+        port=args.port or int(os.environ.get("MEDLINER_LABEL_STUDIO_PORT", str(DEFAULT_PORT))),
+        image=args.image or os.environ.get("MEDLINER_LABEL_STUDIO_IMAGE", DEFAULT_IMAGE),
+        data_dir=workdir() / "label-studio" / "server-data",
+        project_title=config.project_title or ONBOARDING_PROJECT_TITLE,
+        publish_host=args.host or os.environ.get("MEDLINER_LABEL_STUDIO_HOST", "127.0.0.1"),
+        annotators=_annotator_pairs(annotator_values),
+        reimport=args.reimport,
+        **_label_studio_credentials(),
+    )
+    if import_was_missing and result.get("existing_tasks", 0) and not args.reimport:
+        raise OnboardingError(
+            "a new onboarding bank was prepared but the project already has tasks; "
+            "rerun with REIMPORT=1 to replace the old bank"
+        )
+    print(
+        f"onboarding: {result['tasks_in_project']} answer-free tasks at {result['url']} "
+        f"(project {config.project_title}; bank {manifest.test_bank_hash})"
+    )
+    print(f"onboarding: private bank -> {_bank_path}")
+
+
+def cmd_onboarding_start(args: argparse.Namespace) -> None:
+    config, manifest, _bank_path = _onboarding_context()
+    attempt = start_attempt(workdir(), manifest, config, args.user)
+    print(
+        f"onboarding: {attempt.username} attempt {attempt.attempt_number} "
+        f"({attempt.attempt_id}) -> annotate exactly these task ids: {', '.join(attempt.selected_task_ids)}"
+    )
+
+
+def cmd_onboarding_export(args: argparse.Namespace) -> None:
+    config, _manifest, _bank_path = _onboarding_context()
+    output = (
+        args.output or os.environ.get("MEDLINER_ONBOARDING_EXPORT") or str(workdir() / "onboarding" / "export.json")
+    )
+    result = export_project(
+        output_path=output,
+        port=int(os.environ.get("MEDLINER_LABEL_STUDIO_PORT", str(DEFAULT_PORT))),
+        project_title=config.project_title or ONBOARDING_PROJECT_TITLE,
+        **_label_studio_credentials(),
+    )
+    print(
+        f"onboarding-export: {result['tasks_annotated']}/{result['tasks_exported']} annotated tasks -> {result['output']}"
+    )
+
+
+def cmd_onboarding_evaluate(args: argparse.Namespace) -> None:
+    config, manifest, _bank_path = _onboarding_context()
+    attempts = read_attempts(workdir(), username=args.user)
+    if args.attempt:
+        attempts = [item for item in attempts if item.attempt_id == args.attempt]
+    if not attempts:
+        raise OnboardingError(f"no onboarding attempt found for {args.user!r}; run onboarding-start first")
+    attempt = attempts[-1]
+    export_path = Path(
+        args.export or os.environ.get("MEDLINER_ONBOARDING_EXPORT", str(workdir() / "onboarding" / "export.json"))
+    )
+    if not export_path.exists():
+        raise FileNotFoundError(f"onboarding export not found: {export_path}; run onboarding-export first")
+    from .onboarding import evaluate_attempt
+
+    report = evaluate_attempt(export_path, workdir(), manifest, config, attempt)
+    report_path = write_report(report, workdir())
+    score = (
+        "incomplete" if report.score is None else f"{report.correct_tasks}/{report.total_tasks} ({report.score:.0%})"
+    )
+    print(f"onboarding: {report.username} attempt {attempt.attempt_number}: {report.status} {score} -> {report_path}")
+
+
+def cmd_onboarding_status(args: argparse.Namespace) -> None:
+    _config, manifest, _bank_path = _onboarding_context()
+    attempts = read_attempts(workdir(), username=args.user)
+    reports = {
+        item.attempt_id: item for item in read_reports(workdir()) if item.test_bank_hash == manifest.test_bank_hash
+    }
+    for attempt in attempts:
+        report = reports.get(attempt.attempt_id)
+        result = report.status if report else attempt.status
+        score = "" if report is None or report.score is None else f" {report.correct_tasks}/{report.total_tasks}"
+        print(f"{attempt.username} attempt {attempt.attempt_number}: {result}{score} ({attempt.attempt_id})")
+    passing = sorted(
+        {
+            item.username
+            for item in reports.values()
+            if item.status == "passed" and item.config_hash == manifest.config_hash
+        }
+    )
+    promoted = sorted(promoted_users(workdir(), manifest))
+    print(f"onboarding: passing users: {', '.join(passing) if passing else '(none)'}")
+    print(f"onboarding: promoted users: {', '.join(promoted) if promoted else '(none)'}")
+
+
+def cmd_onboarding_promote(args: argparse.Namespace) -> None:
+    _config, manifest, _bank_path = _onboarding_context()
+    reports = [
+        item
+        for item in read_reports(workdir())
+        if item.username == args.user and item.test_bank_hash == manifest.test_bank_hash and item.status == "passed"
+    ]
+    if args.attempt:
+        reports = [item for item in reports if item.attempt_id == args.attempt]
+    if not reports:
+        raise OnboardingError(f"no passing onboarding report found for {args.user!r}")
+    report = sorted(reports, key=lambda item: (item.evaluated_at, item.report_id))[-1]
+    record = promote_onboarding_user(workdir(), report, manifest)
+    print(f"onboarding: promoted {record.username} for production (attempt {record.attempt_id})")
 
 
 def cmd_label_studio(args: argparse.Namespace) -> None:
@@ -474,9 +753,7 @@ def cmd_label_studio(args: argparse.Namespace) -> None:
 
         gold = benchmark_path()
         if not gold.exists():
-            raise FileNotFoundError(
-                f"gold benchmark not found: {gold} (MEDLINER_BENCHMARK; run 'medliner ingest' first)"
-            )
+            raise FileNotFoundError(f"gold benchmark not found: {gold} (check MEDLINER_BENCHMARK)")
         warmup_file = workdir() / "label-studio" / "warmup.json"
         write_import_file(build_warmup_tasks(gold, limit=args.warmup_limit), warmup_file)
         warmup = provision(
@@ -521,7 +798,7 @@ def cmd_label_studio_export(args: argparse.Namespace) -> None:
         f"label-studio-export: {result['tasks_annotated']}/{result['tasks_exported']} annotated tasks "
         f"-> {result['output']}"
     )
-    print("next: medliner dataset --export <file> (or make pipeline with MEDLINER_LABEL_STUDIO_EXPORT set)")
+    print("next: medliner dataset --export <file> (or make train with MEDLINER_LABEL_STUDIO_EXPORT set)")
 
 
 def cmd_label_studio_stop(_args: argparse.Namespace) -> None:
@@ -589,6 +866,16 @@ def build_parser() -> argparse.ArgumentParser:
     candidates.add_argument("--input", help="raw candidates NDJSON (default: $MEDLINER_RAW_CANDIDATES)")
     candidates.set_defaults(func=cmd_candidates)
 
+    shorten = sub.add_parser(
+        "shorten",
+        help="rewrite over-long candidate texts through the local LLM (opt-in; start it with 'make llm')",
+    )
+    shorten.add_argument("--input", help="raw candidates NDJSON (default: $MEDLINER_RAW_CANDIDATES)")
+    shorten.add_argument("--limit", type=int, help="process at most this many over-long rows (for trial runs)")
+    shorten.add_argument("--max-words", type=int, help="row length threshold (default: $MEDLINER_SAMPLE_MAX_WORDS)")
+    shorten.add_argument("--url", help="LLM server base URL (default: $MEDLINER_LLM_URL, http://127.0.0.1:8080)")
+    shorten.set_defaults(func=cmd_shorten)
+
     prelabel = sub.add_parser("prelabel", help="attach GLiNER model suggestions to the Label Studio import file")
     prelabel.add_argument("--input", help="raw candidates NDJSON (default: $MEDLINER_RAW_CANDIDATES)")
     prelabel.add_argument(
@@ -628,6 +915,39 @@ def build_parser() -> argparse.ArgumentParser:
     export = sub.add_parser("label-studio-export", help="download the reviewed annotations from the running server")
     export.add_argument("--output", help="export destination (default: $MEDLINER_LABEL_STUDIO_EXPORT)")
     export.set_defaults(func=cmd_label_studio_export)
+
+    onboarding = sub.add_parser("onboarding", help="provision the answer-free Onboarding Label Studio project")
+    onboarding.add_argument("--reimport", action="store_true", help="replace the Onboarding project tasks")
+    onboarding.add_argument("--port", type=int, help="host port (default: $MEDLINER_LABEL_STUDIO_PORT)")
+    onboarding.add_argument("--image", help="container image (default: $MEDLINER_LABEL_STUDIO_IMAGE)")
+    onboarding.add_argument("--host", help="port-publish bind address (default: $MEDLINER_LABEL_STUDIO_HOST)")
+    onboarding.add_argument(
+        "--annotator", action="append", metavar="USERNAME:PASSWORD", help="ensure an annotator account"
+    )
+    onboarding.set_defaults(func=cmd_onboarding)
+
+    onboarding_start = sub.add_parser("onboarding-start", help="assign a deterministic quiz attempt to an annotator")
+    onboarding_start.add_argument("--user", required=True, help="Label Studio username")
+    onboarding_start.set_defaults(func=cmd_onboarding_start)
+
+    onboarding_export = sub.add_parser("onboarding-export", help="download the Onboarding project export")
+    onboarding_export.add_argument("--output", help="export destination (default: $MEDLINER_ONBOARDING_EXPORT)")
+    onboarding_export.set_defaults(func=cmd_onboarding_export)
+
+    onboarding_evaluate = sub.add_parser("onboarding-evaluate", help="score one annotator's onboarding attempt")
+    onboarding_evaluate.add_argument("--user", required=True, help="Label Studio username")
+    onboarding_evaluate.add_argument("--attempt", help="attempt id (default: latest attempt for the user)")
+    onboarding_evaluate.add_argument("--export", help="Onboarding export (default: $MEDLINER_ONBOARDING_EXPORT)")
+    onboarding_evaluate.set_defaults(func=cmd_onboarding_evaluate)
+
+    onboarding_status = sub.add_parser("onboarding-status", help="show onboarding attempts and passing users")
+    onboarding_status.add_argument("--user", help="limit output to one Label Studio username")
+    onboarding_status.set_defaults(func=cmd_onboarding_status)
+
+    onboarding_promote = sub.add_parser("onboarding-promote", help="promote a passing annotator for production")
+    onboarding_promote.add_argument("--user", required=True, help="Label Studio username")
+    onboarding_promote.add_argument("--attempt", help="attempt id (default: latest passing attempt)")
+    onboarding_promote.set_defaults(func=cmd_onboarding_promote)
 
     stop = sub.add_parser("label-studio-stop", help="remove the Label Studio container (annotations survive)")
     stop.set_defaults(func=cmd_label_studio_stop)

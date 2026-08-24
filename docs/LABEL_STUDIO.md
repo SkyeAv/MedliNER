@@ -6,15 +6,15 @@ dependency.
 
 ## Managed server (default)
 
-`make label-studio` starts the stock `heartexlabs/label-studio` image with podman,
+`make annotate` starts the stock `heartexlabs/label-studio` image with podman,
 waits for health, creates the `MedliNER` project from
-`configs/label_studio_ner.xml`, and imports the tasks built by `make candidates` (run
+`configs/label_studio_ner.xml`, and imports the tasks built by `make data` (run
 automatically when the import file for the current input hash and sampling config is
 missing; see the sampling table in `docs/CANDIDATE_TASKS.md` for the `MEDLINER_SAMPLE_*`
-variables that bound the import to ~10K balanced, staggered tasks):
+variables that bound the import to ~5K mostly-edge-case, balanced, staggered tasks):
 
 ```bash
-make label-studio
+make annotate
 ```
 
 Open <http://localhost:9030> and log in with `$MEDLINER_LABEL_STUDIO_USERNAME` /
@@ -27,15 +27,62 @@ Behavior notes:
 - The project title is `MedliNER` (previously `MedliNER medical NER`). Projects are matched by
   exact title, so the first run after the rename creates a fresh project; any old-titled
   project remains in the server data directory, unused.
-- Re-running `make label-studio` reuses a running container and an existing project, and skips
+- Re-running `make annotate` reuses a running container and an existing project, and skips
   the import when the project already has tasks. To replace project tasks, run
-  `REIMPORT=1 make label-studio`.
+  `REIMPORT=1 make annotate`.
 - If the default-account login ever fails (e.g. image behavior changes), create an account in
   the browser, copy an access token from Account & Settings, and set
   `MEDLINER_LABEL_STUDIO_TOKEN` in `.envrc.local`; the client then sends it as a Bearer
   credential and skips the login form. (Legacy `Token` API auth is disabled by default in
   Label Studio ≥ 1.23, which is why the default path uses session login.)
-- Stop the server with `make label-studio-stop` (removes the container, keeps the data dir).
+- Stop the server with `make annotate-stop` (removes the container, keeps the data dir).
+
+## Gated annotator onboarding
+
+The repository adds a rubric gate on top of Label Studio CE. It creates a separate `Onboarding`
+project on the same local server. The project contains ten answer-free benchmark tasks; the gold
+spans are kept in a versioned sidecar under `$MEDLINER_WORKDIR/onboarding/`. Each annotator gets a
+deterministic four-task attempt. At least three of four tasks must be exactly correct (character
+boundaries and label included) before promotion.
+
+Run the operator sequence:
+
+```bash
+make setup
+make onboarding ANNOTATORS="alice:pw-a,bob:pw-b"
+make onboarding-start USER=alice
+# Alice annotates the four printed task IDs in the Onboarding project.
+make onboarding-export
+make onboarding-evaluate USER=alice
+make onboarding-promote USER=alice       # only after a 3/4 or 4/4 pass
+
+# Retries are unlimited; each start creates a new four-task selection.
+make onboarding-start USER=alice
+make onboarding-export
+make onboarding-evaluate USER=alice
+```
+
+After promotion, run the unchanged production preparation flow:
+
+```bash
+make data
+make annotate ANNOTATORS="alice:pw-a,bob:pw-b"
+# annotate the MedliNER project
+make export
+MEDLINER_ONBOARDING_REQUIRED=1 make train
+```
+
+`make onboarding-status USER=alice` shows attempt history and passing users. The test-bank and
+attempt files include benchmark/config hashes, so changing the benchmark starts a new onboarding
+version and old passes do not unlock it. Reports are append-only and non-promoted production
+annotations are retained under the onboarding audit directory rather than entering the normalized
+dataset.
+
+**Community Edition limitation:** CE does not provide per-user project visibility or task
+assignment. The separate `Onboarding` and `MedliNER` projects are a robust operational workflow,
+but a user who already has access to the shared CE instance may technically open the production
+project. The repository gate prevents non-promoted annotations from being accepted downstream; a
+hard UI/API access barrier would require a custom proxy/frontend or a separate production instance.
 
 ## Group annotation sessions (e.g. a presentation)
 
@@ -48,19 +95,17 @@ on the shared instance sees every project. The managed flow supports a group ses
    `http://<this-machine>:$MEDLINER_LABEL_STUDIO_PORT` from the same LAN; the CLI prints a
    reminder when the bind address is public.
 2. **Pre-create annotator accounts** so nobody registers during the session:
-   `ANNOTATORS="alice:pw-a,bob:pw-b" make label-studio` (repeatable `--annotator user:pass`
+   `ANNOTATORS="alice:pw-a,bob:pw-b" make annotate` (repeatable `--annotator user:pass`
    flags, or `MEDLINER_LABEL_STUDIO_ANNOTATORS` comma-separated). Accounts are created via
    `POST /api/users` and existing usernames are skipped, so the command stays idempotent.
 3. **Avoid collisions**: CE lets two annotators open the same task, and tasks are served in
    queue order. For a short session either assign each person a slice of the task list, or
    rely on the natural staggering of the sequential queue — both work with this pipeline
    because exports keep per-annotation authorship.
-4. **Seed a warm-up round** with `WARMUP=1 make label-studio`: gold-benchmark cases are
-   imported into a *separate* project (`MedliNER — Warm-up`, `--warmup-limit`
-   tasks, default 10) so annotators can practice and compare against known answers without
-   gold leaking into the main queue. The gold spans travel with each task in its
-   `gold_mentions` data field (visible in the Data Manager). The warm-up project needs the
-   ingested benchmark (`make ingest`), and is never consumed by training.
+4. **Use gated onboarding** with `make onboarding` rather than the old presenter-only warm-up
+   when annotator qualification matters. The onboarding sequence above keeps answers private and
+   records each annotator's score. `WARMUP=1 make annotate` remains available as an informal demo;
+   its gold spans are intentionally visible to the presenter and it is not a qualification gate.
 5. **Speed up labeling** with the hotkeys baked into `configs/label_studio_ner.xml`:
    `1` = disease, `2` = phenotype after selecting a span.
 
@@ -69,8 +114,8 @@ on the shared instance sees every project. The managed flow supports a group ses
 Download the reviewed annotations over the API instead of the browser:
 
 ```bash
-make label-studio-export            # writes $MEDLINER_LABEL_STUDIO_EXPORT
-OUTPUT=/tmp/reviewed.json make label-studio-export
+make export            # writes $MEDLINER_LABEL_STUDIO_EXPORT
+OUTPUT=/tmp/reviewed.json make export
 ```
 
 The command finds the `MedliNER` project by title, downloads the JSON export,
@@ -83,12 +128,12 @@ cat > .envrc.local <<'EOF'
 export MEDLINER_LABEL_STUDIO_EXPORT="$PWD/data/label-studio/indications-2026-01.json"
 EOF
 direnv allow
-make pipeline
+make train
 ```
 
 ## Import task JSON
 
-Candidate tasks come from `make candidates` (see `docs/CANDIDATE_TASKS.md`). Each
+Candidate tasks come from `make data` (see `docs/CANDIDATE_TASKS.md`). Each
 task exposes at least:
 
 ```json
@@ -127,7 +172,7 @@ podman run --rm -it -p 9030:8080 \
 
 Then create a local account/project, paste the contents of `configs/label_studio_ner.xml`
 into the project's labeling configuration, and import the JSON file written by
-`make candidates` (its path is printed to stdout).
+`make data` (its path is printed to stdout).
 
 ## Annotator workflow
 
@@ -142,12 +187,12 @@ There is no manual offset counting. Label Studio records the highlighted phrase 
 
 ## Pre-annotations
 
-Annotators are far faster correcting a span than drawing one, so `make prelabel` can attach
-model suggestions to the import file before the session starts:
+Annotators are far faster correcting a span than drawing one, so `make data` also runs
+`medliner prelabel` to attach model suggestions to the import file before the session starts:
 
 ```bash
-make prelabel                          # writes import-<hash>.prelabeled.json + its manifest
-make label-studio PRELABEL=1 REIMPORT=1
+make data                              # candidates + prelabel: import-<hash>.prelabeled.json + manifests
+make annotate PRELABEL=1 REIMPORT=1
 ```
 
 The suggestions come from `gliner-community/gliner_large-v2.5` prompted with `disease` and
@@ -170,15 +215,15 @@ span carries an `origin` (`prediction`, `prediction-changed`, or `manual`) into 
 dataset, and `origin_counts` in the dataset manifest reports how much of the result was accepted
 untouched; see `docs/ADJUDICATION.md`.
 
-Re-running `make prelabel` is cheap: suggestions are cached per text under
+Re-running `uv run medliner prelabel` is cheap: suggestions are cached per text under
 `$MEDLINER_WORKDIR/label-studio/prelabel-cache.json`, keyed by model, threshold, labels, window
-budget, and normalized text, so adding candidates only runs the model over the new ones. `FORCE=1`
-ignores the cache.
+budget, and normalized text, so adding candidates only runs the model over the new ones.
+`FORCE=1` (or `--force`) ignores the cache.
 
-Before trusting suggestions in front of a room, score them against the ingested gold benchmark:
+Before trusting suggestions in front of a room, score them against the gold benchmark:
 
 ```bash
-make prelabel SCORE_GOLD=1
+uv run medliner prelabel --score-gold
 ```
 
 That reports strict and boundary-only F1 over the same `ner_gold.json` cases the trained model is

@@ -13,6 +13,7 @@ and free of ML dependencies.
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter, defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -140,6 +141,73 @@ def _sampling_rank(seed: int, task_id: str) -> str:
     return blake3(f"{seed}:{task_id}".encode()).hexdigest()
 
 
+#: Edge-case vocabulary for ``difficulty_score``, drawn from the hard rules in
+#: ``docs/ANNOTATION_GUIDE.md``: hedged spans, population traps, maximal-span modifiers,
+#: coordination, and dosage-only negatives are exactly where SMEs add the most value.
+_HEDGE_TERMS = (
+    "suspected",
+    "history of",
+    "possible",
+    "potential",
+    " may ",
+    "might",
+    "caution",
+    "not recommended",
+    "should be avoided",
+    "should not",
+    "is not recommended",
+    "reported",
+    "consider",
+)
+_POPULATION_TERMS = (
+    "women of childbearing potential",
+    "pediatric",
+    "children",
+    "elderly",
+    "geriatric",
+    "pregnan",
+    "lactat",
+    "nursing",
+    "neonat",
+    "infant",
+)
+_MODIFIER_TERMS = (
+    "severe",
+    "acute",
+    "chronic",
+    "advanced",
+    "moderate",
+    "active",
+    "progressive",
+    "recurrent",
+    "refractory",
+)
+_DOSAGE_RE = re.compile(r"\b\d+(?:\.\d+)?\s?(?:mg|mcg|µg|g|ml|%|mmol|units?|iu|meq)\b", re.IGNORECASE)
+_ABBREV_RE = re.compile(r"\([A-Z]{2,}(?:/[A-Z]{2,})*\)")
+_COORDINATION_RE = re.compile(r",\s*(?:and|or)\s|\band/or\b|;")
+
+
+def difficulty_score(text: str) -> float:
+    """Heuristic edge-case score for a candidate text; higher means harder to annotate.
+
+    Pure and deterministic — a weighted count of the patterns the annotation guide calls
+    out as traps (hedges to exclude, populations that are not entities, maximal-span
+    modifiers, coordination lists, dosages, abbreviations, negation) plus a small length
+    component, since longer sections force more span-boundary decisions.
+    """
+    lowered = f" {text.lower()} "
+    score = 0.0
+    score += 3.0 * sum(lowered.count(term) for term in _HEDGE_TERMS)
+    score += 3.0 * sum(lowered.count(term) for term in _POPULATION_TERMS)
+    score += 2.0 * sum(lowered.count(term) for term in _MODIFIER_TERMS)
+    score += 4.0 * len(_COORDINATION_RE.findall(lowered))
+    score += 2.0 * len(_DOSAGE_RE.findall(text))
+    score += 2.0 * len(_ABBREV_RE.findall(text))
+    score += 3.0 * lowered.count(" not ")
+    score += min(_word_count(text), 300) / 100.0
+    return score
+
+
 def _largest_remainder(counts: dict[str, int], total: int) -> dict[str, int]:
     """Split ``total`` across keys proportionally to ``counts`` (largest-remainder rounding)."""
     if total <= 0:
@@ -161,6 +229,7 @@ def sample_tasks(
     *,
     seed: int = 2026,
     max_words: int | None = None,
+    edge_fraction: float = 0.0,
 ) -> list[dict[str, Any]]:
     """Deterministically sample a family-stratified subset of deduplicated import tasks.
 
@@ -172,12 +241,19 @@ def sample_tasks(
     drops texts longer than that many whitespace-separated words: GLiNER conversion refuses
     such texts at training time (``max_length`` in ``configs/train-small.yaml``), so
     annotating longer passages is wasted effort.
+
+    With ``edge_fraction`` above 0, that share of each stratum's allocation goes to the
+    highest-``difficulty_score`` members (ties broken by the same blake3 rank) and the
+    remainder keeps the hash-random selection as a control slice, so the batch is mostly
+    edge cases without losing distribution coverage.
     """
     for name, target in targets.items():
         if name not in ALLOWED_TASKS:
             raise ValueError(f"unknown sampling task {name!r}; expected one of {sorted(ALLOWED_TASKS)}")
         if int(target) < 0:
             raise ValueError(f"sampling target for {name!r} must be non-negative, got {target}")
+    if not 0.0 <= edge_fraction <= 1.0:
+        raise ValueError(f"edge_fraction must be between 0 and 1, got {edge_fraction}")
     if not targets:
         return list(tasks)
     selected: list[dict[str, Any]] = []
@@ -200,7 +276,19 @@ def sample_tasks(
         )
         for family in sorted(allocation):
             members = sorted(by_family[family], key=lambda task: _sampling_rank(seed, task["id"]))
-            selected.extend(members[: allocation[family]])
+            take = allocation[family]
+            edge_count = min(take, round(take * edge_fraction))
+            if edge_count:
+                by_difficulty = sorted(
+                    members,
+                    key=lambda task: (-difficulty_score(task["data"]["text"]), _sampling_rank(seed, task["id"])),
+                )
+                edge_picks = by_difficulty[:edge_count]
+                picked_ids = {task["id"] for task in edge_picks}
+                control = [task for task in members if task["id"] not in picked_ids]
+                selected.extend(edge_picks + control[: take - edge_count])
+            else:
+                selected.extend(members[:take])
     return selected
 
 
@@ -363,6 +451,7 @@ __all__ = [
     "CandidateText",
     "build_import_tasks",
     "build_warmup_tasks",
+    "difficulty_score",
     "hash_candidates_file",
     "import_file_name",
     "import_manifest",

@@ -2,7 +2,7 @@
 
 MedliNER is a standalone, local pipeline for producing a reviewed medical NER dataset and fine-tuning a small GLiNER checkpoint. Its first use cases are extracting `disease` and `phenotype` mentions from `indication` and `contraindication` text.
 
-MedliNER consumes DAKP data only through its training-data export bundle (`make ingest`); no DAKP checkout or runtime is required. The only training input is a reviewed Label Studio export.
+MedliNER consumes DAKP data through a reviewed export bundle or raw candidates file; no DAKP checkout or runtime is required. The only training input is a reviewed Label Studio export. Set machine-specific paths in the ignored `.envrc.local`.
 
 ## Labels and tasks
 
@@ -23,7 +23,7 @@ Read [`docs/ANNOTATION_GUIDE.md`](docs/ANNOTATION_GUIDE.md) before annotation.
 ## Annotation
 
 Label Studio Community Edition is free to self-host locally and provides a browser UI. The
-pipeline runs it in a podman container via `make label-studio` — no separate
+pipeline runs it in a podman container via `make annotate` — no separate
 install needed; see [`docs/LABEL_STUDIO.md`](docs/LABEL_STUDIO.md).
 
 Annotators do not count offsets:
@@ -38,72 +38,76 @@ Review the safe example paths in `.envrc`, then enable direnv:
 
 ```bash
 direnv allow
-make sync
+make setup
 ```
 
 The checked-in `.envrc` exports:
 
 | Variable | Purpose |
 | --- | --- |
-| `MEDLINER_EXPORT_BUNDLE` | DAKP training-data export bundle directory ingested by `make ingest` |
-| `MEDLINER_BENCHMARK` | NER gold benchmark materialized by `make ingest` |
-| `MEDLINER_RAW_CANDIDATES` | raw candidates NDJSON, ingested from the DAKP export bundle or authored manually (see [`docs/CANDIDATE_TASKS.md`](docs/CANDIDATE_TASKS.md)) |
-| `MEDLINER_LABEL_STUDIO_EXPORT` | reviewed export that feeds the pipeline |
-| `MEDLINER_WORKDIR` | root for normalized data, splits, checkpoints, and reports |
+| `MEDLINER_RAW_CANDIDATES` | raw candidates NDJSON (default `data/label-studio/candidates.ndjson`; see [`docs/CANDIDATE_TASKS.md`](docs/CANDIDATE_TASKS.md)) |
+| `MEDLINER_BENCHMARK` | NER gold benchmark (default `data/materialized/ingested/ner_gold.json`) |
+| `MEDLINER_EXPORT_BUNDLE` | older DAKP bundle layout, only for `uv run medliner ingest` |
+| `MEDLINER_LABEL_STUDIO_EXPORT` | reviewed production export that feeds the pipeline |
+| `MEDLINER_ONBOARDING_CONFIG` | onboarding policy config (default `configs/onboarding.json`) |
+| `MEDLINER_ONBOARDING_EXPORT` | downloaded `Onboarding` project export |
+| `MEDLINER_ONBOARDING_REQUIRED` | require a current passing onboarding promotion before dataset acceptance |
+| `MEDLINER_WORKDIR` | root for normalized data, splits, checkpoints, reports, and onboarding state |
 | `MEDLINER_TRAIN_CONFIG` | training configuration YAML |
-| `MEDLINER_PRELABEL_MODEL` / `_THRESHOLD` / `_DEVICE` | GLiNER checkpoint, score floor, and device used by `make prelabel` |
+| `MEDLINER_PRELABEL_MODEL` / `_THRESHOLD` / `_DEVICE` | GLiNER checkpoint, score floor, and device used by the pre-labeling step of `make data` |
 | `MEDLINER_LABEL_STUDIO_PORT` / `_IMAGE` | podman Label Studio container port and image |
 | `MEDLINER_LABEL_STUDIO_USERNAME` / `_PASSWORD` / `_TOKEN` | Label Studio login created on first container boot, or an explicit API token |
+| `MEDLINER_LLM_URL` | local LLM server for `make shorten` (default `http://127.0.0.1:8080`, started by `make llm`; set `MODELS_DIR` for the model checkout) |
+| `MEDLINER_SAMPLE_*` | import sampling: per-task targets (default 3,000/2,000), seed, word cap, run cap, edge fraction (see [`docs/CANDIDATE_TASKS.md`](docs/CANDIDATE_TASKS.md)) |
 | `MEDLINER_SPLIT_SEED` / `MEDLINER_REGRESSION_IDS` | split seed and IDs withheld from every split |
 | `TRITON_LIBCUDA_PATH` | set automatically when the system has no `/sbin/ldconfig` (see [`docs/HARDWARE.md`](docs/HARDWARE.md)) |
 
 Print the resolved values with `make env`. For private local overrides, create the ignored `.envrc.local`; do not put secrets or machine-specific paths into the committed `.envrc`.
 
 Label Studio runs in a podman container started by the pipeline; it is intentionally not a
-MedliNER Python dependency. The pipeline stages are Makefile targets wrapping the
-`medliner` CLI. The full flow is:
+MedliNER Python dependency. The pipeline stages are a small set of Makefile targets wrapping
+the `medliner` CLI (every stage also runs standalone as `uv run medliner <stage>`). The full flow is:
 
-1. `make ingest` — verifies the DAKP export bundle (`MEDLINER_EXPORT_BUNDLE`, default
-   `data/dakp-export`) and materializes its candidates and NER gold under
-   `$MEDLINER_WORKDIR/ingested/`. Alternatively author
-   `data/label-studio/candidates.ndjson` by hand
-   ([`docs/CANDIDATE_TASKS.md`](docs/CANDIDATE_TASKS.md)).
-2. `make prelabel` *(optional)* — attaches GLiNER suggestions to the import file so
-   annotators correct spans instead of drawing them. Uses
-   `gliner-community/gliner_large-v2.5` with the `disease`/`phenotype` prompts and `0.35`
-   threshold the sibling DAKP pipeline mines with. Suggestions only: a human accepts,
-   corrects, or deletes every span ([`docs/LABEL_STUDIO.md`](docs/LABEL_STUDIO.md)).
-   `make prelabel SCORE_GOLD=1` scores them against the ingested gold benchmark first.
-3. `make label-studio` — builds the Label Studio import file (`make candidates` runs
-   automatically when needed) and starts the annotation server. For the ingested bundle,
-   pass `INPUT=$MEDLINER_WORKDIR/ingested/candidates.ndjson`; add `REIMPORT=1` to replace
-   existing project tasks and `PRELABEL=1` to import the pre-labeled file with Label Studio's
-   prediction pre-fill turned on.
-4. Annotate in the browser at <http://localhost:9030> (span hotkeys: `1` disease, `2`
-   phenotype), then `make label-studio-export` downloads the reviewed JSON to
-   `MEDLINER_LABEL_STUDIO_EXPORT` (default `data/label-studio/reviewed.json`).
-5. `make pipeline` — runs the remaining stages (`dataset` → `splits` → `train` →
-   `evaluate` → `bundle`) in order.
+1. `make setup` — installs the uv environment.
+2. `make data` — validates/dedupes the raw candidates, samples the 5K mostly-edge-case
+   import batch, and attaches GLiNER suggestions so annotators correct spans instead of
+   drawing them. Suggestions only: a human accepts, corrects, or deletes every span
+   ([`docs/LABEL_STUDIO.md`](docs/LABEL_STUDIO.md)).
+   `uv run medliner prelabel --score-gold` scores the suggestions against the gold
+   benchmark before they go in front of a room.
+3. `make onboarding ANNOTATORS="alice:pw-a"` — provisions the separate answer-free
+   `Onboarding` project. Run `make onboarding-start USER=alice`, annotate the four printed task
+   IDs, then `make onboarding-export`, `make onboarding-evaluate USER=alice`, and
+   `make onboarding-promote USER=alice` after a 3/4 or 4/4 pass. Repeat `onboarding-start` for
+   unlimited retries; each attempt selects a new four-task subset from the ten-case bank.
+4. `make annotate` — starts the production `MedliNER` project with the tasks imported. Add
+   `REIMPORT=1` to replace existing project tasks and `PRELABEL=1` to import the pre-labeled
+   file with Label Studio's prediction pre-fill turned on. Annotate in the browser at
+   <http://localhost:9030> (span hotkeys: `1` disease, `2` phenotype), then `make export` downloads
+   the reviewed JSON to `MEDLINER_LABEL_STUDIO_EXPORT`.
+5. `make train` — runs the remaining stages (`dataset` → `splits` → `train` → `evaluate` →
+   `bundle`) in order. The Makefile enables `MEDLINER_ONBOARDING_REQUIRED=1`, so only production
+   annotations from promoted users are accepted; set it to `0` only for a legacy run.
 
-Stop the annotation server with `make label-studio-stop`; annotations survive in the
+Stop the annotation server with `make annotate-stop`; annotations survive in the
 container's data volume directory under `$MEDLINER_WORKDIR/label-studio/server-data`. For a
-group session, `MEDLINER_LABEL_STUDIO_HOST=0.0.0.0` exposes the server on the LAN,
-`ANNOTATORS="alice:pw,bob:pw"` pre-creates accounts, and `WARMUP=1` seeds a separate
-gold warm-up project (see [`docs/LABEL_STUDIO.md`](docs/LABEL_STUDIO.md)).
+group session, `MEDLINER_LABEL_STUDIO_HOST=0.0.0.0` exposes the server on the LAN and
+`ANNOTATORS="alice:pw,bob:pw"` pre-creates accounts. See
+[`docs/LABEL_STUDIO.md`](docs/LABEL_STUDIO.md) for onboarding details and the Community Edition
+limitation: project separation is an operational gate, not per-user API access control.
 
 The required first GPU check is a one-step smoke run of the training code path:
 
 ```bash
-SMOKE=1 make pipeline   # run once before the full `make pipeline`
+SMOKE=1 make train   # run once before the full `make train`
 ```
 
-`make check` runs the tests, lint, and format checks; `make coverage` adds a coverage
-report.
+`make check` runs the tests, lint, and format checks.
 
 Override any environment path without editing files, for example:
 
 ```bash
-MEDLINER_LABEL_STUDIO_EXPORT=$PWD/data/label-studio/reviewed.json make pipeline
+MEDLINER_LABEL_STUDIO_EXPORT=$PWD/data/label-studio/reviewed.json make train
 ```
 
 ## Pipeline
@@ -149,14 +153,14 @@ Reports include:
 - indication versus contraindication metrics;
 - source-family metrics;
 - no-entity false-positive rate;
-- gold-benchmark regression results from the DAKP NER gold set ingested by `make ingest` (`$MEDLINER_BENCHMARK`);
+- gold-benchmark regression results from the DAKP NER gold set (`$MEDLINER_BENCHMARK`);
 - a truncation block naming any example over the model's word budget.
 
 The tuned model must be compared with the untuned small checkpoint before it is selected for packaging. The ingested DAKP gold benchmark remains held out from training.
 
 ## Artifact bundle
 
-`make pipeline` creates a standalone directory containing:
+`make train` creates a standalone directory containing:
 
 - `checkpoint/`;
 - `labels.json`;

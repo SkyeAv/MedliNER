@@ -29,7 +29,8 @@ the training-time validation callback on every evaluation step.
 
 ## Locating the gold benchmark
 
-Evaluation scores the regression set from the gold benchmark ingested by `medliner ingest`
-(`make ingest`). Its path is `$MEDLINER_BENCHMARK`, defaulting to
-`$MEDLINER_WORKDIR/ingested/ner_gold.json`. When the file is missing, evaluation fails with
-an error telling you to run `medliner ingest`; the regression set is never silently skipped.
+Evaluation scores the regression set from the gold benchmark at `$MEDLINER_BENCHMARK`
+(default `data/materialized/ingested/ner_gold.json`; set it in the ignored `.envrc.local` for a
+ready DAKP export. The older bundle flow materializes it under `$MEDLINER_WORKDIR/ingested/`
+via `medliner ingest`). When the file is missing,
+evaluation fails with an error; the regression set is never silently skipped.

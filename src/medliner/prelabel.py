@@ -593,7 +593,7 @@ def load_model(model_id: str = DEFAULT_MODEL_ID, *, device: str | None = None) -
     try:
         from gliner import GLiNER
     except ImportError as exc:  # pragma: no cover - gliner is a hard dependency
-        raise PrelabelError("pre-labeling requires the 'gliner' package; run 'make sync'") from exc
+        raise PrelabelError("pre-labeling requires the 'gliner' package; run 'make setup'") from exc
     resolved = device or _cuda_device()
     model = GLiNER.from_pretrained(model_id, map_location=resolved)
     model.eval()

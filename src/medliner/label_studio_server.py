@@ -25,6 +25,7 @@ DEFAULT_CONTAINER = "medliner-label-studio"
 DEFAULT_IMAGE = "docker.io/heartexlabs/label-studio:latest"
 DEFAULT_PORT = 9030
 DEFAULT_PROJECT_TITLE = "MedliNER"
+ONBOARDING_PROJECT_TITLE = "Onboarding"
 WARMUP_PROJECT_TITLE = "MedliNER — Warm-up"
 HEALTH_TIMEOUT_S = 300.0
 
@@ -327,6 +328,7 @@ def provision(
         "container": container,
         "project_id": project_id,
         "tasks_in_project": imported,
+        "existing_tasks": existing,
         "reimported": bool(existing and reimport),
         "publish_host": publish_host,
         "annotators_created": annotators_created,
@@ -376,6 +378,7 @@ __all__ = [
     "DEFAULT_IMAGE",
     "DEFAULT_PORT",
     "DEFAULT_PROJECT_TITLE",
+    "ONBOARDING_PROJECT_TITLE",
     "WARMUP_PROJECT_TITLE",
     "LabelStudioClient",
     "LabelStudioServerError",

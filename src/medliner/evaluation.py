@@ -18,7 +18,7 @@ Predictor = Callable[[str], list[dict[str, Any]]]
 
 
 def benchmark_path() -> Path:
-    """Path of the ingested gold benchmark: `$MEDLINER_BENCHMARK`, else the workdir default.
+    """Path of the gold benchmark: `$MEDLINER_BENCHMARK`, else the workdir default.
 
     Resolution matches ``cli.workdir()`` (``$MEDLINER_WORKDIR`` or ``data/materialized``).
     No existence guarantee: callers decide how to report a missing file.
@@ -252,8 +252,8 @@ def evaluate_checkpoint(
     gold_path = benchmark_path()
     if not gold_path.exists():
         raise RuntimeError(
-            f"gold benchmark not found at {gold_path}; run `medliner ingest` to materialize it "
-            "(or point $MEDLINER_BENCHMARK at an existing ner_gold.json)"
+            f"gold benchmark not found at {gold_path}; point $MEDLINER_BENCHMARK at an existing "
+            "ner_gold.json (or run `medliner ingest` with the older bundle layout)"
         )
     benchmark = load_gold_benchmark(gold_path)
 

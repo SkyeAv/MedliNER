@@ -26,9 +26,8 @@
 
 ```bash
 direnv allow
-make sync
+make setup
 make check       # tests, lint, format
-make coverage    # tests with a coverage report
 make env         # resolved pipeline environment
 
 # Verify the target CUDA wheel before training
@@ -40,24 +39,24 @@ assert "sm_120" in torch.cuda.get_arch_list()
 PY
 
 # Pipeline stages run through the Makefile/CLI
-make candidates
-make label-studio
+make data
+make annotate
 # One-step smoke run of the whole post-annotation chain before full training
-SMOKE=1 make pipeline
+SMOKE=1 make train
 ```
 
 ## End-to-end gate
 
-0. Run `make ingest` to materialize the DAKP export bundle's candidates under
-   `$MEDLINER_WORKDIR/ingested/` (manual authoring of `data/label-studio/candidates.ndjson`
-   remains a fallback) and run `make label-studio`; confirm http://localhost:9030 shows the
+0. Run `make data` to build the sampled import batch from the export
+   (`$MEDLINER_RAW_CANDIDATES`, default `data/label-studio/candidates.ndjson`; set it in the ignored `.envrc.local` for a ready export)
+   and run `make annotate`; confirm http://localhost:9030 shows the
    project with the imported tasks.
 1. Annotate in the browser and export the reviewed JSON manually; confirm annotators can
    highlight text without entering offsets.
-2. Run `make pipeline` and inspect rejected spans/errors from the dataset stage.
+2. Run `make train` and inspect rejected spans/errors from the dataset stage.
 4. Verify the split manifest hash under `$MEDLINER_WORKDIR/splits/`.
-5. Run the one-step smoke run (`SMOKE=1 make pipeline`) and confirm `training/final/` is loadable with `GLiNER.from_pretrained` and records `selected_checkpoint`.
-6. Run full bounded training with resume enabled (`make pipeline`).
+5. Run the one-step smoke run (`SMOKE=1 make train`) and confirm `training/final/` is loadable with `GLiNER.from_pretrained` and records `selected_checkpoint`.
+6. Run full bounded training with resume enabled (`make train`).
 7. Inspect the tuned, untuned, and gold-regression metrics in the evaluation report.
 8. Inspect the standalone bundle's provenance/model-card files.
 

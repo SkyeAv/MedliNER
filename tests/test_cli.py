@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from medliner import cli
 from medliner.dataset import read_examples, write_examples
 from medliner.schema import Annotation, Example
@@ -193,6 +195,59 @@ def test_candidates_missing_input_is_an_explicit_error(tmp_path, monkeypatch, ca
     monkeypatch.setenv("MEDLINER_RAW_CANDIDATES", str(tmp_path / "absent.jsonl"))
     assert cli.main(["candidates"]) == 1
     assert "MEDLINER_RAW_CANDIDATES" in capsys.readouterr().err
+
+
+def test_sampling_defaults_to_the_5k_edge_case_batch(monkeypatch):
+    monkeypatch.delenv("MEDLINER_SAMPLE_TASKS", raising=False)
+    monkeypatch.delenv("MEDLINER_SAMPLE_EDGE_FRACTION", raising=False)
+    settings = cli.sampling_settings()
+    assert settings.targets == {"indication": 3000, "contraindication": 2000}
+    assert settings.edge_fraction == 0.8
+    assert "edge_fraction=0.8" in (settings.config or "")
+
+
+def test_sampling_rejects_an_out_of_range_edge_fraction(monkeypatch):
+    monkeypatch.setenv("MEDLINER_SAMPLE_TASKS", "indication:5")
+    monkeypatch.setenv("MEDLINER_SAMPLE_EDGE_FRACTION", "1.5")
+    with pytest.raises(ValueError, match="EDGE_FRACTION"):
+        cli.sampling_settings()
+
+
+def test_sampling_manifest_records_edge_selection(tmp_path, monkeypatch, capsys):
+    raw = tmp_path / "candidates.ndjson"
+    rows = [
+        {"text": f"Case {i}. Indicated for asthma.", "task": "indication", "source_family": "dailymed"}
+        for i in range(4)
+    ]
+    rows += [
+        {
+            "text": f"Case {i}. Contraindicated in patients with suspected severe hepatic impairment; "
+            "caution in women of childbearing potential. Do not coadminister with probenecid 500 mg or NSAIDs.",
+            "task": "indication",
+            "source_family": "dailymed",
+        }
+        for i in range(4)
+    ]
+    raw.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+    monkeypatch.setenv("MEDLINER_RAW_CANDIDATES", str(raw))
+    monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
+    monkeypatch.setenv("MEDLINER_SAMPLE_TASKS", "indication:4")
+
+    assert cli.main(["candidates"]) == 0
+    import_path = Path(capsys.readouterr().out.split("->")[-1].strip())
+    manifest = json.loads(import_path.with_suffix(".manifest.json").read_text(encoding="utf-8"))
+    assert manifest["sampling"]["edge_fraction"] == 0.8
+    assert manifest["sampling"]["selected_difficulty_mean"] > manifest["sampling"]["pool_difficulty_mean"]
+
+
+def test_shorten_requires_a_healthy_llm_server(tmp_path, monkeypatch, capsys):
+    raw = tmp_path / "candidates.ndjson"
+    _write_raw_candidates(raw)
+    monkeypatch.setenv("MEDLINER_RAW_CANDIDATES", str(raw))
+    monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
+    monkeypatch.setenv("MEDLINER_LLM_URL", "http://127.0.0.1:1")
+    assert cli.main(["shorten"]) == 1
+    assert "make llm" in capsys.readouterr().err
 
 
 def test_candidates_empty_input_fails(tmp_path, monkeypatch, capsys):

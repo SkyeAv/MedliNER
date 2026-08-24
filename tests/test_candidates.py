@@ -177,6 +177,48 @@ def test_sample_tasks_rejects_unknown_or_negative_targets():
         sample_tasks(tasks, {"indication": -1})
 
 
+def test_difficulty_score_ranks_annotation_traps_above_plain_text():
+    from medliner.candidates import difficulty_score
+
+    plain = difficulty_score("Indicated for the treatment of asthma.")
+    traps = difficulty_score(
+        "Contraindicated in patients with suspected active peptic ulcer disease and recent gastrointestinal "
+        "bleeding; caution is advised in women of childbearing potential. Not recommended with aspirin 81 mg, "
+        "warfarin, or other NSAIDs (see WARNINGS, CABG)."
+    )
+    assert traps > plain
+    assert difficulty_score("same text") == difficulty_score("same text")  # deterministic
+
+
+def test_sample_tasks_prefers_edge_cases_and_keeps_a_control_slice():
+    hard_text = (
+        "Contraindicated in patients with suspected severe hepatic impairment; caution in women of "
+        "childbearing potential. Do not coadminister with probenecid, aspirin 81 mg, or NSAIDs."
+    )
+    rows = [_row(f"Case {i}. {hard_text}", source_family="dailymed", source_document_id=f"hard-{i}") for i in range(5)]
+    rows += [
+        _row(f"Indicated for condition number {i}.", source_family="dailymed", source_document_id=f"easy-{i}")
+        for i in range(5)
+    ]
+    tasks = build_import_tasks([CandidateText.model_validate(row) for row in rows])
+    sampled = sample_tasks(tasks, {"indication": 5}, seed=2026, edge_fraction=0.8)
+    assert len(sampled) == 5
+    hard_selected = [task for task in sampled if "Contraindicated" in task["data"]["text"]]
+    assert len(hard_selected) == 4  # 80% of the allocation goes to the hardest texts
+    # Deterministic, and the remaining slot comes from the hash-random control slice.
+    assert sample_tasks(tasks, {"indication": 5}, seed=2026, edge_fraction=0.8) == sampled
+    # edge_fraction=0 restores the plain hash-random selection.
+    assert sample_tasks(tasks, {"indication": 5}, seed=2026, edge_fraction=0.0) == sample_tasks(
+        tasks, {"indication": 5}, seed=2026
+    )
+
+
+def test_sample_tasks_rejects_out_of_range_edge_fraction():
+    tasks = _pool({("indication", "dailymed"): 1})
+    with pytest.raises(ValueError, match="edge_fraction"):
+        sample_tasks(tasks, {"indication": 1}, edge_fraction=1.5)
+
+
 def _max_task_run(kinds: list[str]) -> int:
     longest = current = 1
     for previous, item in zip(kinds, kinds[1:], strict=False):  # deliberately off-by-one pairing
