@@ -3,8 +3,10 @@
 Label Studio stays out of the MEDliNER Python environment: the ``medliner label-studio``
 command launches the
 stock ``heartexlabs/label-studio`` image with podman, waits for health, ensures a project
-with ``configs/label_studio_ner.xml``, and imports candidate tasks. Annotation and export
-remain a manual browser step. Everything here is stdlib-only so no SDK dependency is added.
+with ``configs/label_studio_ner.xml``, and imports candidate tasks. Annotation happens in
+the browser; ``export_project`` downloads the result over the API. Group sessions can bind
+the port mapping beyond loopback (``publish_host``) and pre-create annotator accounts.
+Everything here is stdlib-only so no SDK dependency is added.
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ DEFAULT_CONTAINER = "medliner-label-studio"
 DEFAULT_IMAGE = "docker.io/heartexlabs/label-studio:latest"
 DEFAULT_PORT = 9030
 DEFAULT_PROJECT_TITLE = "MEDliNER medical NER"
+WARMUP_PROJECT_TITLE = "MEDliNER medical NER — Warm-up"
 HEALTH_TIMEOUT_S = 300.0
 
 
@@ -59,12 +62,15 @@ def ensure_container(
     data_dir: str | Path,
     username: str,
     password: str,
+    publish_host: str = "127.0.0.1",
 ) -> str:
     """Start the Label Studio container idempotently; returns the container id.
 
     An existing non-running container is replaced rather than started: port, volume, and
     credential env cannot change on ``podman start``, and the mounted data directory keeps
-    the Label Studio database across the replacement.
+    the Label Studio database across the replacement. ``publish_host`` is the address the
+    port mapping binds (``127.0.0.1`` keeps the server private; ``0.0.0.0`` exposes it on
+    every interface so annotators on the same network can reach it).
     """
     state = container_state(name)
     if state == "running":
@@ -89,7 +95,7 @@ def ensure_container(
             "--name",
             name,
             "-p",
-            f"{port}:8080",
+            f"{publish_host}:{port}:8080",
             "-v",
             f"{data_dir}:/label-studio/data:Z",
             "-e",
@@ -200,13 +206,32 @@ class LabelStudioClient:
 
     def ensure_project(self, title: str, label_config: str) -> int:
         """Return the project id, creating the project with the labeling config when absent."""
+        existing = self.find_project(title)
+        if existing is not None:
+            return existing
+        created = self.api("POST", "/api/projects", {"title": title, "label_config": label_config})
+        return int(created["id"])
+
+    def find_project(self, title: str) -> int | None:
+        """Return the project id with exactly this title, or None when absent."""
         listing = self.api("GET", "/api/projects")
         projects = listing.get("results", listing) if isinstance(listing, dict) else listing
         for project in projects:
             if project.get("title") == title:
                 return int(project["id"])
-        created = self.api("POST", "/api/projects", {"title": title, "label_config": label_config})
-        return int(created["id"])
+        return None
+
+    def list_users(self) -> list[dict[str, Any]]:
+        """All known Label Studio accounts (paginated or bare list)."""
+        listing = self.api("GET", "/api/users")
+        return listing.get("results", listing) if isinstance(listing, dict) else listing
+
+    def create_user(self, *, username: str, password: str, email: str | None = None) -> dict[str, Any]:
+        """Create an annotator account via ``POST /api/users``; returns the created user."""
+        payload: dict[str, Any] = {"username": username, "password": password}
+        if email:
+            payload["email"] = email
+        return self.api("POST", "/api/users", payload)
 
     def project_task_count(self, project_id: int) -> int:
         project = self.api("GET", f"/api/projects/{project_id}")
@@ -215,6 +240,19 @@ class LabelStudioClient:
     def import_tasks(self, project_id: int, tasks: list[dict[str, Any]]) -> int:
         result = self.api("POST", f"/api/projects/{project_id}/import", tasks)
         return int(result.get("task_count", len(tasks)))
+
+    def export_annotations(self, project_id: int) -> list[dict[str, Any]]:
+        """Download every task with its annotations as JSON (Label Studio's JSON export)."""
+        export = self.api("GET", f"/api/projects/{project_id}/export?exportType=JSON")
+        if not isinstance(export, list):
+            raise LabelStudioServerError(f"unexpected export payload from project {project_id}: expected a list")
+        return export
+
+
+def _base_url(port: int) -> str:
+    # 127.0.0.1, not localhost: rootless podman's forwarder may not listen on ::1, and
+    # localhost can resolve there first.
+    return f"http://127.0.0.1:{port}"
 
 
 def provision(
@@ -230,14 +268,24 @@ def provision(
     token: str | None = None,
     project_title: str = DEFAULT_PROJECT_TITLE,
     reimport: bool = False,
+    publish_host: str = "127.0.0.1",
+    annotators: list[tuple[str, str]] | None = None,
 ) -> dict[str, Any]:
-    """Container + project + task import in one call; returns provisioning metadata."""
+    """Container + project + task import in one call; returns provisioning metadata.
+
+    ``annotators`` are ``(username, password)`` pairs ensured as additional accounts via
+    ``POST /api/users``; existing usernames are skipped so provisioning stays idempotent.
+    """
     container = ensure_container(
-        name=name, image=image, port=port, data_dir=data_dir, username=username, password=password
+        name=name,
+        image=image,
+        port=port,
+        data_dir=data_dir,
+        username=username,
+        password=password,
+        publish_host=publish_host,
     )
-    # 127.0.0.1, not localhost: rootless podman's forwarder may not listen on ::1, and
-    # localhost can resolve there first.
-    base_url = f"http://127.0.0.1:{port}"
+    base_url = _base_url(port)
     wait_healthy(base_url)
     client = LabelStudioClient(base_url, token=token, username=username, password=password)
     project_id = client.ensure_project(project_title, Path(label_config_path).read_text(encoding="utf-8"))
@@ -248,12 +296,59 @@ def provision(
         imported = existing
     else:
         imported = client.import_tasks(project_id, tasks)
+    annotators_created = 0
+    if annotators:
+        known = {user.get("username") for user in client.list_users()}
+        for annotator_username, annotator_password in annotators:
+            if annotator_username in known:
+                continue
+            client.create_user(username=annotator_username, password=annotator_password)
+            annotators_created += 1
     return {
         "url": base_url,
         "container": container,
         "project_id": project_id,
         "tasks_in_project": imported,
         "reimported": bool(existing and reimport),
+        "publish_host": publish_host,
+        "annotators_created": annotators_created,
+    }
+
+
+def export_project(
+    *,
+    output_path: str | Path,
+    port: int = DEFAULT_PORT,
+    username: str,
+    password: str,
+    token: str | None = None,
+    project_title: str = DEFAULT_PROJECT_TITLE,
+) -> dict[str, Any]:
+    """Download the project's annotations to ``output_path``; returns export metadata.
+
+    The output lands directly at ``$MEDLINER_LABEL_STUDIO_EXPORT`` by default from the CLI,
+    so the manual browser-export step is replaced end to end.
+    """
+    base_url = _base_url(port)
+    wait_healthy(base_url)
+    client = LabelStudioClient(base_url, token=token, username=username, password=password)
+    project_id = client.find_project(project_title)
+    if project_id is None:
+        raise LabelStudioServerError(f"no Label Studio project titled {project_title!r} at {base_url}")
+    tasks = client.export_annotations(project_id)
+    annotated = sum(1 for task in tasks if task.get("annotations"))
+    output = Path(output_path)
+    try:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(tasks, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    except OSError as exc:
+        raise LabelStudioServerError(f"cannot write {output}: {exc}") from exc
+    return {
+        "url": base_url,
+        "project_id": project_id,
+        "tasks_exported": len(tasks),
+        "tasks_annotated": annotated,
+        "output": output,
     }
 
 
@@ -262,10 +357,12 @@ __all__ = [
     "DEFAULT_IMAGE",
     "DEFAULT_PORT",
     "DEFAULT_PROJECT_TITLE",
+    "WARMUP_PROJECT_TITLE",
     "LabelStudioClient",
     "LabelStudioServerError",
     "container_state",
     "ensure_container",
+    "export_project",
     "provision",
     "stop_container",
     "wait_healthy",

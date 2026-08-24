@@ -21,6 +21,7 @@ from pydantic import BaseModel, ValidationError, field_validator
 from .schema import ALLOWED_TASKS
 
 GENERATOR_VERSION = "medliner.candidates.v1"
+WARMUP_SOURCE_FAMILY = "gold-warmup"
 
 
 class CandidateInputError(ValueError):
@@ -140,11 +141,79 @@ def import_manifest(tasks: list[dict[str, Any]], *, input_path: str | Path) -> d
     }
 
 
+def build_warmup_tasks(gold_path: str | Path, *, limit: int = 10) -> list[dict[str, Any]]:
+    """Build demo tasks from the ingested gold benchmark for a separate warm-up project.
+
+    Warm-up tasks never enter the main candidate queue, so gold cases cannot leak into
+    training data; they give present-day annotators instant feedback against known answers.
+    Each task carries its resolved ``gold_mentions`` in ``data`` so a presenter can compare
+    an annotation against truth in the Data Manager. Task mapping mirrors the benchmark
+    loader: DailyMed-sourced cases are contraindications, everything else indications.
+    Raises :class:`CandidateInputError` on a malformed or empty benchmark.
+    """
+    try:
+        payload = json.loads(Path(gold_path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise CandidateInputError(f"cannot read gold benchmark {gold_path}: {exc}") from exc
+    cases = payload.get("cases") if isinstance(payload, dict) else None
+    if not isinstance(cases, list) or not cases:
+        raise CandidateInputError(f"{gold_path}: 'cases' must be a non-empty list")
+    if limit < 1:
+        raise ValueError("warm-up limit must be at least 1")
+    stamp = datetime.now(UTC).isoformat()
+    tasks: list[dict[str, Any]] = []
+    for case in cases:
+        if len(tasks) >= limit:
+            break
+        case_id = str(case.get("id") or "").strip()
+        text = str(case.get("text") or "").strip()
+        mentions = case.get("mentions")
+        if not case_id or not text or not isinstance(mentions, list):
+            raise CandidateInputError(f"{gold_path}: each case needs non-blank id/text and a mentions list")
+        resolved: list[dict[str, Any]] = []
+        for mention in mentions:
+            surface = str(mention.get("surface") or "").strip()
+            if not surface:
+                raise CandidateInputError(f"{gold_path}: case {case_id!r} has a blank mention surface")
+            start = mention.get("start")
+            try:
+                start = text.index(surface) if start is None else int(start)
+            except ValueError as exc:
+                raise CandidateInputError(
+                    f"{gold_path}: case {case_id!r} surface {surface!r} is not present in its text"
+                ) from exc
+            if text[start : start + len(surface)] != surface:
+                raise CandidateInputError(f"{gold_path}: case {case_id!r} offset {start} does not contain {surface!r}")
+            resolved.append(
+                {"start": start, "end": start + len(surface), "label": str(mention.get("type") or ""), "text": surface}
+            )
+        source = str(case.get("source") or "unknown")
+        digest = blake3(f"warmup\n{case_id}".encode()).hexdigest()
+        tasks.append(
+            {
+                "id": f"warmup-{digest[:16]}",
+                "data": {
+                    "text": text,
+                    "task": "contraindication" if source == "dailymed" else "indication",
+                    "source_family": WARMUP_SOURCE_FAMILY,
+                    "source_document_id": case_id,
+                    "generator_version": GENERATOR_VERSION,
+                    "generated_at": stamp,
+                    "warmup": True,
+                    "gold_mentions": resolved,
+                },
+            }
+        )
+    return tasks
+
+
 __all__ = [
     "GENERATOR_VERSION",
+    "WARMUP_SOURCE_FAMILY",
     "CandidateInputError",
     "CandidateText",
     "build_import_tasks",
+    "build_warmup_tasks",
     "hash_candidates_file",
     "import_manifest",
     "read_candidates",

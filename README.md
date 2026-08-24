@@ -72,14 +72,17 @@ MEDliNER Python dependency. The pipeline stages are Makefile targets wrapping th
    automatically when needed) and starts the annotation server. For the ingested bundle,
    pass `INPUT=$MEDLINER_WORKDIR/ingested/candidates.jsonl`; add `REIMPORT=1` to replace
    existing project tasks.
-3. Annotate in the browser at <http://localhost:9030>, export the reviewed JSON manually,
-   and point `MEDLINER_LABEL_STUDIO_EXPORT` at it (default
-   `data/label-studio/reviewed.json`).
+3. Annotate in the browser at <http://localhost:9030> (span hotkeys: `1` disease, `2`
+   phenotype, `3` drug), then `make label-studio-export` downloads the reviewed JSON to
+   `MEDLINER_LABEL_STUDIO_EXPORT` (default `data/label-studio/reviewed.json`).
 4. `make pipeline` — runs the remaining stages (`dataset` → `splits` → `train` →
    `evaluate` → `bundle`) in order.
 
 Stop the annotation server with `make label-studio-stop`; annotations survive in the
-container's data volume directory under `$MEDLINER_WORKDIR/label-studio/server-data`.
+container's data volume directory under `$MEDLINER_WORKDIR/label-studio/server-data`. For a
+group session, `MEDLINER_LABEL_STUDIO_HOST=0.0.0.0` exposes the server on the LAN,
+`ANNOTATORS="alice:pw,bob:pw"` pre-creates accounts, and `WARMUP=1` seeds a separate
+gold warm-up project (see [`docs/LABEL_STUDIO.md`](docs/LABEL_STUDIO.md)).
 
 The required first GPU check is a one-step smoke run of the training code path:
 

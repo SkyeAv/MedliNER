@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from medliner.candidates import (
     CandidateInputError,
     CandidateText,
     build_import_tasks,
+    build_warmup_tasks,
     hash_candidates_file,
     import_manifest,
     read_candidates,
@@ -124,3 +126,65 @@ def test_empty_candidates_produce_an_empty_import(tmp_path):
     path.write_text("", encoding="utf-8")
     assert read_candidates(path) == []
     assert build_import_tasks([]) == []
+
+
+def _gold(cases: list[dict]) -> Path:
+    path = Path(tempfile.mkdtemp()) / "ner_gold.json"
+    payload = {"schema_version": "dakp.ner.gold.v1", "cases": cases}
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def test_build_warmup_tasks_maps_gold_cases_to_demo_tasks():
+    gold = _gold(
+        [
+            {
+                "id": "dailymed-ibuprofen",
+                "source": "dailymed",
+                "text": "Contraindicated in patients with asthma.",
+                "mentions": [{"surface": "asthma", "type": "disease"}],
+            },
+            {
+                "id": "faers-case-1",
+                "source": "faers",
+                "text": "Used for migraine prophylaxis.",
+                "mentions": [{"surface": "migraine", "type": "disease", "start": 9}],
+            },
+        ]
+    )
+    tasks = build_warmup_tasks(gold)
+    assert [task["data"]["task"] for task in tasks] == ["contraindication", "indication"]
+    assert all(task["data"]["source_family"] == "gold-warmup" for task in tasks)
+    assert all(task["data"]["warmup"] is True for task in tasks)
+    ibuprofen, faers = tasks
+    assert ibuprofen["id"].startswith("warmup-")
+    assert ibuprofen["data"]["gold_mentions"] == [{"start": 33, "end": 39, "label": "disease", "text": "asthma"}]
+    assert faers["data"]["gold_mentions"] == [{"start": 9, "end": 17, "label": "disease", "text": "migraine"}]
+    # Ids are deterministic (case-id keyed), so re-runs reproduce the same warm-up queue.
+    assert [task["id"] for task in build_warmup_tasks(gold)] == [task["id"] for task in tasks]
+
+
+def test_build_warmup_tasks_honors_the_limit():
+    cases = [{"id": f"c{i}", "source": "faers", "text": f"Used for condition {i}.", "mentions": []} for i in range(5)]
+    assert len(build_warmup_tasks(_gold(cases), limit=3)) == 3
+
+
+def test_build_warmup_tasks_rejects_malformed_benchmarks():
+    empty = Path(tempfile.mkdtemp()) / "empty.json"
+    empty.write_text(json.dumps({"schema_version": "dakp.ner.gold.v1", "cases": []}), encoding="utf-8")
+    with pytest.raises(CandidateInputError, match="non-empty"):
+        build_warmup_tasks(empty)
+    bad_offset = _gold(
+        [
+            {
+                "id": "x",
+                "source": "faers",
+                "text": "short",
+                "mentions": [{"surface": "absent", "type": "disease"}],
+            }
+        ]
+    )
+    with pytest.raises(CandidateInputError, match="is not present in its text"):
+        build_warmup_tasks(bad_offset)
+    with pytest.raises(ValueError, match="at least 1"):
+        build_warmup_tasks(_gold([{"id": "a", "source": "faers", "text": "t", "mentions": []}]), limit=0)

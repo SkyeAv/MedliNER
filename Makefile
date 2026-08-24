@@ -11,12 +11,13 @@ export MEDLINER_LABEL_STUDIO_PORT ?= 9030
 export MEDLINER_LABEL_STUDIO_IMAGE ?= docker.io/heartexlabs/label-studio:latest
 export MEDLINER_LABEL_STUDIO_USERNAME ?= medliner@localhost
 export MEDLINER_LABEL_STUDIO_PASSWORD ?= medliner-local
+export MEDLINER_LABEL_STUDIO_HOST ?= 127.0.0.1
 
 # Triton locates libcuda through /sbin/ldconfig; without a loader cache that call fails inside
 # the backward pass. An empty value is ignored by Triton, so this is safe on normal systems.
 export TRITON_LIBCUDA_PATH ?= $(shell test -x /sbin/ldconfig || for d in /run/opengl-driver/lib /usr/lib64 /usr/lib/x86_64-linux-gnu /usr/lib; do test -e $$d/libcuda.so.1 && echo $$d && break; done)
 
-.PHONY: help ingest candidates label-studio label-studio-stop pipeline sync test coverage lint format check clean env
+.PHONY: help ingest candidates label-studio label-studio-stop label-studio-export pipeline sync test coverage lint format check clean env
 
 help:
 	@printf '%s\n' \
@@ -46,12 +47,16 @@ candidates:
 # --- Label Studio ---
 
 label-studio:
-	uv run medliner label-studio $(if $(INPUT),--input $(INPUT),) $(if $(REIMPORT),--reimport,)
+	uv run medliner label-studio $(if $(INPUT),--input $(INPUT),) $(if $(REIMPORT),--reimport,) \
+	$(if $(WARMUP),--warmup,) $(foreach A,$(ANNOTATORS),--annotator $(A))
 
 # The Label Studio database lives in $MEDLINER_WORKDIR/label-studio/server-data, so
 # annotations survive this.
 label-studio-stop:
 	uv run medliner label-studio-stop
+
+label-studio-export:
+	uv run medliner label-studio-export $(if $(OUTPUT),--output $(OUTPUT),)
 
 # --- After Label Studio ---
 
@@ -92,5 +97,6 @@ env:
 		'MEDLINER_TRAIN_CONFIG=$(MEDLINER_TRAIN_CONFIG)' \
 		'MEDLINER_LABEL_STUDIO_PORT=$(MEDLINER_LABEL_STUDIO_PORT)' \
 		'MEDLINER_LABEL_STUDIO_IMAGE=$(MEDLINER_LABEL_STUDIO_IMAGE)' \
+		'MEDLINER_LABEL_STUDIO_HOST=$(MEDLINER_LABEL_STUDIO_HOST)' \
 		'MEDLINER_LABEL_STUDIO_USERNAME=$(MEDLINER_LABEL_STUDIO_USERNAME)' \
 		'TRITON_LIBCUDA_PATH=$(TRITON_LIBCUDA_PATH)'

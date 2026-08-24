@@ -6,6 +6,7 @@ import subprocess
 import urllib.error
 from http.cookiejar import Cookie, CookieJar
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -59,9 +60,12 @@ class FakeResponse:
 class FakeLabelStudio:
     """In-memory Label Studio HTTP API; fakes label_studio_server._urlopen."""
 
-    def __init__(self, *, healthy: bool = True, projects: list[dict] | None = None) -> None:
+    def __init__(
+        self, *, healthy: bool = True, projects: list[dict] | None = None, users: list[str] | None = None
+    ) -> None:
         self.healthy = healthy
         self.projects = {p["id"]: {**p, "tasks": list(p.get("tasks", []))} for p in projects or []}
+        self.users = list(users or [])
         self.requests: list[tuple[str, str]] = []
         self._next_id = max(self.projects, default=0) + 1
 
@@ -83,6 +87,15 @@ class FakeLabelStudio:
             self.projects[self._next_id] = {**project, "tasks": []}
             self._next_id += 1
             return FakeResponse(project)
+        if path == "/api/users" and method == "GET":
+            return FakeResponse({"results": [{"id": index, "username": name} for index, name in enumerate(self.users)]})
+        if path == "/api/users" and method == "POST":
+            payload = json.loads(request.data.decode())
+            self.users.append(payload["username"])
+            return FakeResponse({"id": len(self.users), "username": payload["username"]})
+        if method == "GET" and "/export" in path:
+            project = self.projects[int(path.split("/")[3])]
+            return FakeResponse(project["tasks"])
         project_id = int(path.split("/")[3])
         project = self.projects[project_id]
         if method == "GET":
@@ -110,7 +123,7 @@ def test_ensure_container_creates_when_absent(podman, tmp_path):
         name="medliner-label-studio", image="img", port=8080, data_dir=tmp_path, username="u", password="p"
     )
     (run_call,) = [call for call in podman.calls if call[1] == "run"]
-    assert "-p" in run_call and "8080:8080" in run_call
+    assert run_call[run_call.index("-p") + 1] == "127.0.0.1:8080:8080"
     volume = run_call[run_call.index("-v") + 1]
     assert volume.endswith(":/label-studio/data:Z")
     assert "LABEL_STUDIO_USERNAME=u" in run_call and "LABEL_STUDIO_PASSWORD=p" in run_call
@@ -295,3 +308,72 @@ def test_provision_surfaces_api_errors(monkeypatch, podman, tmp_path):
 def test_label_config_fixture_is_real_xml():
     config = Path(__file__).resolve().parents[1] / "configs" / "label_studio_ner.xml"
     assert config.exists()
+
+
+def test_label_config_labels_carry_hotkeys():
+    """Number-key hotkeys keep a live multi-annotator session fast."""
+    import xml.etree.ElementTree as ET
+
+    config = Path(__file__).resolve().parents[1] / "configs" / "label_studio_ner.xml"
+    labels = {node.get("value"): node.get("hotkey") for node in ET.parse(config).iter("Label")}
+    assert labels == {"disease": "1", "phenotype": "2", "drug": "3"}
+
+
+def test_ensure_container_publish_host_binds_wider(podman, tmp_path):
+    server.ensure_container(
+        name="medliner-label-studio",
+        image="img",
+        port=8080,
+        data_dir=tmp_path,
+        username="u",
+        password="p",
+        publish_host="0.0.0.0",
+    )
+    (run_call,) = [call for call in podman.calls if call[1] == "run"]
+    assert run_call[run_call.index("-p") + 1] == "0.0.0.0:8080:8080"
+
+
+def test_provision_seeds_missing_annotators_idempotently(monkeypatch, podman, tmp_path):
+    _install_api(monkeypatch, FakeLabelStudio(users=["medliner@localhost"]))
+    import_file = tmp_path / "import.json"
+    import_file.write_text(json.dumps([{"id": "t1", "data": {"text": "x", "task": "indication"}}]), encoding="utf-8")
+    config = tmp_path / "config.xml"
+    config.write_text("<View/>", encoding="utf-8")
+
+    common: dict[str, Any] = dict(
+        import_file=import_file,
+        label_config_path=config,
+        data_dir=tmp_path / "data",
+        username="u",
+        password="p",
+        token="test-token",
+    )
+    result = server.provision(annotators=[("alice", "pw-a"), ("medliner@localhost", "x")], **common)
+    assert result["annotators_created"] == 1  # the existing admin is skipped
+    again = server.provision(annotators=[("alice", "pw-a")], **common)
+    assert again["annotators_created"] == 0  # already present on the second run
+
+
+def test_export_project_writes_file_and_counts_annotations(monkeypatch, podman, tmp_path):
+    annotated = {
+        "id": 1,
+        "title": server.DEFAULT_PROJECT_TITLE,
+        "tasks": [
+            {"id": "t1", "annotations": [{"result": []}]},
+            {"id": "t2", "annotations": []},
+        ],
+    }
+    _install_api(monkeypatch, FakeLabelStudio(projects=[annotated]))
+
+    output = tmp_path / "reviewed" / "export.json"
+    result = server.export_project(output_path=output, username="u", password="p", token="test-token")
+    assert result["project_id"] == 1
+    assert result["tasks_exported"] == 2
+    assert result["tasks_annotated"] == 1
+    assert json.loads(output.read_text(encoding="utf-8"))[0]["id"] == "t1"
+
+
+def test_export_project_requires_the_project_to_exist(monkeypatch, podman, tmp_path):
+    _install_api(monkeypatch, FakeLabelStudio())
+    with pytest.raises(server.LabelStudioServerError, match="no Label Studio project titled"):
+        server.export_project(output_path=tmp_path / "x.json", username="u", password="p", token="test-token")

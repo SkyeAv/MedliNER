@@ -32,6 +32,55 @@ Behavior notes:
   Label Studio ≥ 1.23, which is why the default path uses session login.)
 - Stop the server with `make label-studio-stop` (removes the container, keeps the data dir).
 
+## Group annotation sessions (e.g. a presentation)
+
+Label Studio Community Edition has **no limits on users, annotators, or tasks**, but it has
+no task-assignment or role layer (those are Enterprise features): everyone with an account
+on the shared instance sees every project. The managed flow supports a group session:
+
+1. **Expose the server on the network** with `MEDLINER_LABEL_STUDIO_HOST=0.0.0.0`
+   (default `127.0.0.1` keeps it private). Attendees then reach
+   `http://<this-machine>:$MEDLINER_LABEL_STUDIO_PORT` from the same LAN; the CLI prints a
+   reminder when the bind address is public.
+2. **Pre-create annotator accounts** so nobody registers during the session:
+   `ANNOTATORS="alice:pw-a,bob:pw-b" make label-studio` (repeatable `--annotator user:pass`
+   flags, or `MEDLINER_LABEL_STUDIO_ANNOTATORS` comma-separated). Accounts are created via
+   `POST /api/users` and existing usernames are skipped, so the command stays idempotent.
+3. **Avoid collisions**: CE lets two annotators open the same task, and tasks are served in
+   queue order. For a short session either assign each person a slice of the task list, or
+   rely on the natural staggering of the sequential queue — both work with this pipeline
+   because exports keep per-annotation authorship.
+4. **Seed a warm-up round** with `WARMUP=1 make label-studio`: gold-benchmark cases are
+   imported into a *separate* project (`MEDliNER medical NER — Warm-up`, `--warmup-limit`
+   tasks, default 10) so annotators can practice and compare against known answers without
+   gold leaking into the main queue. The gold spans travel with each task in its
+   `gold_mentions` data field (visible in the Data Manager). The warm-up project needs the
+   ingested benchmark (`make ingest`), and is never consumed by training.
+5. **Speed up labeling** with the hotkeys baked into `configs/label_studio_ner.xml`:
+   `1` = disease, `2` = phenotype, `3` = drug after selecting a span.
+
+## Export
+
+Download the reviewed annotations over the API instead of the browser:
+
+```bash
+make label-studio-export            # writes $MEDLINER_LABEL_STUDIO_EXPORT
+OUTPUT=/tmp/reviewed.json make label-studio-export
+```
+
+The command finds the `MEDliNER medical NER` project by title, downloads the JSON export,
+and prints the annotated/total task counts. The manual browser route still works: export as
+JSON from the project UI and save it anywhere, then override `MEDLINER_LABEL_STUDIO_EXPORT`
+in the ignored `.envrc.local` if the path differs from the example in `.envrc`.
+
+```bash
+cat > .envrc.local <<'EOF'
+export MEDLINER_LABEL_STUDIO_EXPORT="$PWD/data/label-studio/indications-2026-01.json"
+EOF
+direnv allow
+make pipeline
+```
+
 ## Import task JSON
 
 Candidate tasks come from `make candidates` (see `docs/CANDIDATE_TASKS.md`). Each
@@ -90,19 +139,9 @@ There is no manual offset counting. Label Studio records the highlighted phrase 
 
 Optional model suggestions may be imported using Label Studio's prediction format. They must be visibly treated as predictions and reviewed by a human. The MEDliNER adapter rejects a model-only prediction set as training gold unless the completed annotation has human provenance/status.
 
-## Export
+## Export details worth knowing
 
-From the project, export the completed annotations as JSON. JSONL is also accepted by MEDliNER when one task object is stored per line. Save the export under a local ignored directory such as `data/label-studio/indications-2026-01.json`, then override `MEDLINER_LABEL_STUDIO_EXPORT` in the ignored `.envrc.local` if the path differs from the example in `.envrc`.
-
-```bash
-cat > .envrc.local <<'EOF'
-export MEDLINER_LABEL_STUDIO_EXPORT="$PWD/data/label-studio/indications-2026-01.json"
-EOF
-direnv allow
-make pipeline
-```
-
-The raw export is retained as provenance. MEDliNER converts it to its canonical schema and validates offsets, labels, overlap, task metadata, review status, and text slices before training.
+The raw export is retained as provenance. MEDliNER converts it to its canonical schema and validates offsets, labels, overlap, task metadata, review status, and text slices before training. JSONL is also accepted by MEDliNER when one task object is stored per line.
 
 Two export details are worth knowing before the first review round:
 

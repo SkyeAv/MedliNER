@@ -4,8 +4,9 @@ The pipeline runs in three phases, each a subcommand (see the Makefile wrappers)
 
 - before Label Studio: ``ingest`` materializes a DAKP export bundle (optional when
   hand-authoring raw candidates), then ``candidates`` builds the validated import file;
-- Label Studio: ``label-studio``/``label-studio-stop`` manage the podman annotation server,
-  annotation and export itself remain manual browser steps;
+- Label Studio: ``label-studio``/``label-studio-stop`` manage the podman annotation server
+  (LAN exposure, annotator accounts, and a gold warm-up project for group sessions);
+  ``label-studio-export`` downloads the reviewed annotations over the API;
 - after Label Studio: ``dataset`` → ``splits`` → ``train`` → ``evaluate`` → ``bundle``
   (or all five via ``pipeline``).
 
@@ -22,11 +23,26 @@ import os
 import sys
 from pathlib import Path
 
-from .candidates import build_import_tasks, hash_candidates_file, import_manifest, read_candidates, write_import_file
+from .candidates import (
+    build_import_tasks,
+    build_warmup_tasks,
+    hash_candidates_file,
+    import_manifest,
+    read_candidates,
+    write_import_file,
+)
 from .dataset import hash_file, manifest_for, read_examples, write_examples, write_manifest
 from .export_ingest import ingest_export
 from .label_studio import normalize_export
-from .label_studio_server import DEFAULT_IMAGE, DEFAULT_PORT, provision, stop_container
+from .label_studio_server import (
+    DEFAULT_IMAGE,
+    DEFAULT_PORT,
+    DEFAULT_PROJECT_TITLE,
+    WARMUP_PROJECT_TITLE,
+    export_project,
+    provision,
+    stop_container,
+)
 from .packaging import build_export_bundle
 from .splits import assert_no_group_leakage, group_key, split_examples
 
@@ -177,18 +193,89 @@ def cmd_label_studio(args: argparse.Namespace) -> None:
     import_file = ensure_import_file(raw_candidates_path(args.input))
     port = args.port or int(os.environ.get("MEDLINER_LABEL_STUDIO_PORT", str(DEFAULT_PORT)))
     image = args.image or os.environ.get("MEDLINER_LABEL_STUDIO_IMAGE", DEFAULT_IMAGE)
+    host = args.host or os.environ.get("MEDLINER_LABEL_STUDIO_HOST", "127.0.0.1")
+    annotator_values = args.annotator
+    if not annotator_values:
+        env_annotators = os.environ.get("MEDLINER_LABEL_STUDIO_ANNOTATORS")
+        annotator_values = (
+            [item.strip() for item in env_annotators.split(",") if item.strip()] if env_annotators else None
+        )
+    annotators = _annotator_pairs(annotator_values)
+    credentials = {
+        "username": os.environ.get("MEDLINER_LABEL_STUDIO_USERNAME", "medliner@localhost"),
+        "password": os.environ.get("MEDLINER_LABEL_STUDIO_PASSWORD", "medliner-local"),
+        "token": os.environ.get("MEDLINER_LABEL_STUDIO_TOKEN") or None,
+    }
     result = provision(
         import_file=import_file,
         label_config_path=repo_root() / "configs" / "label_studio_ner.xml",
         port=port,
         image=image,
         data_dir=workdir() / "label-studio" / "server-data",
+        project_title=DEFAULT_PROJECT_TITLE,
+        publish_host=host,
+        annotators=annotators,
+        reimport=args.reimport,
+        **credentials,
+    )
+    print(f"label-studio: {result['tasks_in_project']} tasks at {result['url']} (container {result['container']})")
+    if result.get("annotators_created"):
+        print(f"label-studio: created {result['annotators_created']} annotator account(s)")
+    if host not in ("127.0.0.1", "localhost"):
+        print(f"label-studio: reachable on the network via {host}:{port} (share http://<this-host>:{port})")
+    if args.warmup:
+        from .evaluation import benchmark_path
+
+        gold = benchmark_path()
+        if not gold.exists():
+            raise FileNotFoundError(
+                f"gold benchmark not found: {gold} (MEDLINER_BENCHMARK; run 'medliner ingest' first)"
+            )
+        warmup_file = workdir() / "label-studio" / "warmup.json"
+        write_import_file(build_warmup_tasks(gold, limit=args.warmup_limit), warmup_file)
+        warmup = provision(
+            import_file=warmup_file,
+            label_config_path=repo_root() / "configs" / "label_studio_ner.xml",
+            port=port,
+            image=image,
+            data_dir=workdir() / "label-studio" / "server-data",
+            project_title=WARMUP_PROJECT_TITLE,
+            reimport=args.reimport,
+            **credentials,
+        )
+        print(
+            f"label-studio: {warmup['tasks_in_project']} warm-up tasks at {result['url']} "
+            f"(project {WARMUP_PROJECT_TITLE}; gold answers travel with each task)"
+        )
+
+
+def _annotator_pairs(values: list[str] | None) -> list[tuple[str, str]]:
+    """Parse ``username:password`` pairs; empty when none were requested."""
+    pairs: list[tuple[str, str]] = []
+    for value in values or []:
+        username, separator, password = value.partition(":")
+        if not separator or not username.strip() or not password:
+            raise ValueError(f"--annotator expects username:password, got {value!r}")
+        pairs.append((username.strip(), password))
+    return pairs
+
+
+def cmd_label_studio_export(args: argparse.Namespace) -> None:
+    output = args.output or os.environ.get("MEDLINER_LABEL_STUDIO_EXPORT")
+    if not output:
+        raise RuntimeError("pass --output or set MEDLINER_LABEL_STUDIO_EXPORT for the export destination")
+    result = export_project(
+        output_path=output,
+        port=int(os.environ.get("MEDLINER_LABEL_STUDIO_PORT", str(DEFAULT_PORT))),
         username=os.environ.get("MEDLINER_LABEL_STUDIO_USERNAME", "medliner@localhost"),
         password=os.environ.get("MEDLINER_LABEL_STUDIO_PASSWORD", "medliner-local"),
         token=os.environ.get("MEDLINER_LABEL_STUDIO_TOKEN") or None,
-        reimport=args.reimport,
     )
-    print(f"label-studio: {result['tasks_in_project']} tasks at {result['url']} (container {result['container']})")
+    print(
+        f"label-studio-export: {result['tasks_annotated']}/{result['tasks_exported']} annotated tasks "
+        f"-> {result['output']}"
+    )
+    print("next: medliner dataset --export <file> (or make pipeline with MEDLINER_LABEL_STUDIO_EXPORT set)")
 
 
 def cmd_label_studio_stop(_args: argparse.Namespace) -> None:
@@ -250,7 +337,24 @@ def build_parser() -> argparse.ArgumentParser:
     server.add_argument("--reimport", action="store_true", help="replace existing project tasks")
     server.add_argument("--port", type=int, help="host port (default: $MEDLINER_LABEL_STUDIO_PORT)")
     server.add_argument("--image", help="container image (default: $MEDLINER_LABEL_STUDIO_IMAGE)")
+    server.add_argument("--host", help="port-publish bind address (default: $MEDLINER_LABEL_STUDIO_HOST, 127.0.0.1)")
+    server.add_argument(
+        "--annotator",
+        action="append",
+        metavar="USERNAME:PASSWORD",
+        help="ensure an extra annotator account (repeatable; also MEDLINER_LABEL_STUDIO_ANNOTATORS, comma-separated)",
+    )
+    server.add_argument(
+        "--warmup",
+        action="store_true",
+        help="also import gold-benchmark warm-up tasks into a separate project (needs the ingested benchmark)",
+    )
+    server.add_argument("--warmup-limit", type=int, default=10, help="maximum warm-up tasks to import (default: 10)")
     server.set_defaults(func=cmd_label_studio)
+
+    export = sub.add_parser("label-studio-export", help="download the reviewed annotations from the running server")
+    export.add_argument("--output", help="export destination (default: $MEDLINER_LABEL_STUDIO_EXPORT)")
+    export.set_defaults(func=cmd_label_studio_export)
 
     stop = sub.add_parser("label-studio-stop", help="remove the Label Studio container (annotations survive)")
     stop.set_defaults(func=cmd_label_studio_stop)

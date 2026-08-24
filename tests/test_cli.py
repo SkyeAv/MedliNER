@@ -143,6 +143,117 @@ def test_label_studio_provisions_with_the_import_file(tmp_path, monkeypatch, cap
     assert "http://127.0.0.1:9030" in capsys.readouterr().out
 
 
+def test_label_studio_annotator_flag_parses_pairs(tmp_path, monkeypatch, capsys):
+    raw = tmp_path / "candidates.jsonl"
+    _write_raw_candidates(raw)
+    monkeypatch.setenv("MEDLINER_RAW_CANDIDATES", str(raw))
+    monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
+    calls = {}
+
+    def fake_provision(**kwargs):
+        calls.update(kwargs)
+        return {"url": "http://127.0.0.1:9030", "container": "c", "tasks_in_project": 2, "annotators_created": 1}
+
+    monkeypatch.setattr(cli, "provision", fake_provision)
+    assert cli.main(["label-studio", "--input", str(raw), "--annotator", "alice:pw-a"]) == 0
+    assert calls["annotators"] == [("alice", "pw-a")]
+    out = capsys.readouterr().out
+    assert "1 annotator account(s)" in out
+
+
+def test_label_studio_annotator_env_and_validation(tmp_path, monkeypatch, capsys):
+    raw = tmp_path / "candidates.jsonl"
+    _write_raw_candidates(raw)
+    monkeypatch.setenv("MEDLINER_RAW_CANDIDATES", str(raw))
+    monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
+    monkeypatch.setenv("MEDLINER_LABEL_STUDIO_ANNOTATORS", "alice:pw-a,bob:pw-b")
+    calls = {}
+
+    def fake_provision(**kwargs):
+        calls.update(kwargs)
+        return {"url": "http://127.0.0.1:9030", "container": "c", "tasks_in_project": 2, "annotators_created": 0}
+
+    monkeypatch.setattr(cli, "provision", fake_provision)
+    assert cli.main(["label-studio", "--input", str(raw)]) == 0
+    assert calls["annotators"] == [("alice", "pw-a"), ("bob", "pw-b")]
+
+    # A pair without a separator is rejected loudly before anything is provisioned.
+    monkeypatch.setenv("MEDLINER_LABEL_STUDIO_ANNOTATORS", "alicepw")
+    assert cli.main(["label-studio", "--input", str(raw)]) == 1
+    assert "username:password" in capsys.readouterr().err
+
+
+def test_label_studio_warmup_provisions_the_separate_project(tmp_path, monkeypatch, capsys):
+    raw = tmp_path / "candidates.jsonl"
+    _write_raw_candidates(raw)
+    monkeypatch.setenv("MEDLINER_RAW_CANDIDATES", str(raw))
+    monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
+    monkeypatch.setenv("MEDLINER_BENCHMARK", str(DAKP_EXPORT_FIXTURE / "ner_gold.json"))
+    calls = []
+
+    def fake_provision(**kwargs):
+        calls.append(kwargs)
+        return {"url": "http://127.0.0.1:9030", "container": "c", "tasks_in_project": 2, "annotators_created": 0}
+
+    monkeypatch.setattr(cli, "provision", fake_provision)
+    assert cli.main(["label-studio", "--input", str(raw), "--warmup", "--warmup-limit", "3"]) == 0
+    assert len(calls) == 2
+    assert calls[0]["project_title"] == "MEDliNER medical NER"
+    assert calls[1]["project_title"] == "MEDliNER medical NER — Warm-up"
+    warmup_tasks = json.loads(Path(calls[1]["import_file"]).read_text(encoding="utf-8"))
+    assert len(warmup_tasks) == 3
+    assert all(task["data"]["source_family"] == "gold-warmup" for task in warmup_tasks)
+    assert all(task["data"]["gold_mentions"] is not None for task in warmup_tasks)
+    assert "warm-up tasks" in capsys.readouterr().out
+
+
+def test_label_studio_warmup_requires_the_gold_benchmark(tmp_path, monkeypatch, capsys):
+    raw = tmp_path / "candidates.jsonl"
+    _write_raw_candidates(raw)
+    monkeypatch.setenv("MEDLINER_RAW_CANDIDATES", str(raw))
+    monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
+    monkeypatch.setenv("MEDLINER_BENCHMARK", str(tmp_path / "absent-gold.json"))
+    monkeypatch.setattr(
+        cli, "provision", lambda **k: {"url": "u", "container": "c", "tasks_in_project": 0, "annotators_created": 0}
+    )
+    assert cli.main(["label-studio", "--input", str(raw), "--warmup"]) == 1
+    assert "MEDLINER_BENCHMARK" in capsys.readouterr().err
+
+
+def test_label_studio_export_downloads_via_the_api(tmp_path, monkeypatch, capsys):
+    output = tmp_path / "reviewed.json"
+    monkeypatch.setenv("MEDLINER_LABEL_STUDIO_EXPORT", str(output))
+    calls = {}
+
+    def fake_export(**kwargs):
+        calls.update(kwargs)
+        return {
+            "url": "http://127.0.0.1:9030",
+            "project_id": 1,
+            "tasks_exported": 4,
+            "tasks_annotated": 3,
+            "output": output,
+        }
+
+    monkeypatch.setattr(cli, "export_project", fake_export)
+    assert cli.main(["label-studio-export"]) == 0
+    assert Path(calls["output_path"]) == output
+    out = capsys.readouterr().out
+    assert "3/4 annotated" in out
+
+    # An explicit --output wins over the environment.
+    override = tmp_path / "elsewhere.json"
+    assert cli.main(["label-studio-export", "--output", str(override)]) == 0
+    assert Path(calls["output_path"]) == override
+
+
+def test_label_studio_export_requires_a_destination(monkeypatch, capsys):
+    monkeypatch.delenv("MEDLINER_LABEL_STUDIO_EXPORT", raising=False)
+    assert cli.main(["label-studio-export"]) == 1
+    error = capsys.readouterr().err
+    assert "--output" in error and "MEDLINER_LABEL_STUDIO_EXPORT" in error
+
+
 def test_label_studio_stop_reports_container_state(monkeypatch, capsys):
     monkeypatch.setattr(cli, "stop_container", lambda: True)
     assert cli.main(["label-studio-stop"]) == 0
