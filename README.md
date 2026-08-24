@@ -1,6 +1,6 @@
 # MedliNER
 
-MedliNER is a standalone, local pipeline for producing a reviewed medical NER dataset and fine-tuning a small GLiNER checkpoint. Its first use cases are extracting `disease`, `phenotype`, and `drug` mentions from `indication` and `contraindication` text.
+MedliNER is a standalone, local pipeline for producing a reviewed medical NER dataset and fine-tuning a small GLiNER checkpoint. Its first use cases are extracting `disease` and `phenotype` mentions from `indication` and `contraindication` text.
 
 MedliNER consumes DAKP data only through its training-data export bundle (`make ingest`); no DAKP checkout or runtime is required. The only training input is a reviewed Label Studio export.
 
@@ -10,14 +10,13 @@ Entity labels:
 
 - `disease`
 - `phenotype`
-- `drug`
 
 Every example also has task metadata:
 
 - `indication`
 - `contraindication`
 
-The task is context metadata, not an entity label. GLiNER can be queried with all three labels, while evaluation reports indication and contraindication separately.
+The task is context metadata, not an entity label. GLiNER is queried with both labels, while evaluation reports indication and contraindication separately.
 
 Read [`docs/ANNOTATION_GUIDE.md`](docs/ANNOTATION_GUIDE.md) before annotation.
 
@@ -29,7 +28,7 @@ install needed; see [`docs/LABEL_STUDIO.md`](docs/LABEL_STUDIO.md).
 
 Annotators do not count offsets:
 
-> open task → click-drag/highlight condition or drug phrase → choose label → submit
+> open task → click-drag/highlight the condition phrase → choose label → submit
 
 Label Studio records character offsets automatically. MedliNER validates those offsets and converts them to GLiNER token spans.
 
@@ -52,6 +51,7 @@ The checked-in `.envrc` exports:
 | `MEDLINER_LABEL_STUDIO_EXPORT` | reviewed export that feeds the pipeline |
 | `MEDLINER_WORKDIR` | root for normalized data, splits, checkpoints, and reports |
 | `MEDLINER_TRAIN_CONFIG` | training configuration YAML |
+| `MEDLINER_PRELABEL_MODEL` / `_THRESHOLD` / `_DEVICE` | GLiNER checkpoint, score floor, and device used by `make prelabel` |
 | `MEDLINER_LABEL_STUDIO_PORT` / `_IMAGE` | podman Label Studio container port and image |
 | `MEDLINER_LABEL_STUDIO_USERNAME` / `_PASSWORD` / `_TOKEN` | Label Studio login created on first container boot, or an explicit API token |
 | `MEDLINER_SPLIT_SEED` / `MEDLINER_REGRESSION_IDS` | split seed and IDs withheld from every split |
@@ -68,14 +68,21 @@ MedliNER Python dependency. The pipeline stages are Makefile targets wrapping th
    `$MEDLINER_WORKDIR/ingested/`. Alternatively author
    `data/label-studio/candidates.ndjson` by hand
    ([`docs/CANDIDATE_TASKS.md`](docs/CANDIDATE_TASKS.md)).
-2. `make label-studio` — builds the Label Studio import file (`make candidates` runs
+2. `make prelabel` *(optional)* — attaches GLiNER suggestions to the import file so
+   annotators correct spans instead of drawing them. Uses
+   `gliner-community/gliner_large-v2.5` with the `disease`/`phenotype` prompts and `0.35`
+   threshold the sibling DAKP pipeline mines with. Suggestions only: a human accepts,
+   corrects, or deletes every span ([`docs/LABEL_STUDIO.md`](docs/LABEL_STUDIO.md)).
+   `make prelabel SCORE_GOLD=1` scores them against the ingested gold benchmark first.
+3. `make label-studio` — builds the Label Studio import file (`make candidates` runs
    automatically when needed) and starts the annotation server. For the ingested bundle,
    pass `INPUT=$MEDLINER_WORKDIR/ingested/candidates.ndjson`; add `REIMPORT=1` to replace
-   existing project tasks.
-3. Annotate in the browser at <http://localhost:9030> (span hotkeys: `1` disease, `2`
-   phenotype, `3` drug), then `make label-studio-export` downloads the reviewed JSON to
+   existing project tasks and `PRELABEL=1` to import the pre-labeled file with Label Studio's
+   prediction pre-fill turned on.
+4. Annotate in the browser at <http://localhost:9030> (span hotkeys: `1` disease, `2`
+   phenotype), then `make label-studio-export` downloads the reviewed JSON to
    `MEDLINER_LABEL_STUDIO_EXPORT` (default `data/label-studio/reviewed.json`).
-4. `make pipeline` — runs the remaining stages (`dataset` → `splits` → `train` →
+5. `make pipeline` — runs the remaining stages (`dataset` → `splits` → `train` →
    `evaluate` → `bundle`) in order.
 
 Stop the annotation server with `make label-studio-stop`; annotations survive in the
@@ -108,6 +115,8 @@ raw candidates NDJSON (ingested from the DAKP export bundle or authored manually
         ↓
 Label Studio import tasks (validated, deduplicated)
         ↓
+[optional: GLiNER pre-labeling → Label Studio predictions]
+        ↓
 Label Studio server (podman container + project + import)
         ↓
 [human annotation in the browser → manual JSON export]
@@ -136,7 +145,7 @@ GLiNER 0.2.28's training records use model tokens and inclusive token end indexe
 Two GLiNER behaviours would otherwise discard supervision without saying so, and are turned into
 errors at conversion time: text beyond `max_len` (384 word tokens) is truncated with only a
 warning, and a gold span wider than `max_width` (12 word tokens) is never enumerated as a span
-candidate. The batch entity vocabulary is also pinned to the three labels, because a batch of
+candidate. The batch entity vocabulary is also pinned to the two labels, because a batch of
 purely no-entity examples otherwise has zero entity types and the loss fails outright. See
 [`docs/TRAINING.md`](docs/TRAINING.md).
 

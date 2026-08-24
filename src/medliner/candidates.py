@@ -3,8 +3,11 @@
 The user authors a small NDJSON file of raw candidate texts — typically derived from
 intermediate DAKP inputs such as DailyMed section text or FAERS indication strings. This
 module validates that file, deduplicates it, and emits the plain-text Label Studio import
-shape documented in ``docs/LABEL_STUDIO.md``. Pre-annotations are intentionally not
-generated here.
+shape documented in ``docs/LABEL_STUDIO.md``.
+
+Pre-annotations are intentionally not generated here: :mod:`medliner.prelabel` attaches them
+to the import file as a separate opt-in stage, which keeps this one deterministic, offline,
+and free of ML dependencies.
 """
 
 from __future__ import annotations

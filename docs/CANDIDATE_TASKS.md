@@ -43,7 +43,9 @@ script against DAKP's intermediate artifacts.
   recognizable.
 - Rows are deduplicated on normalized text + task; the first occurrence wins and the merged
   task records a `duplicate_count` in its metadata.
-- Tasks are plain text only — no pre-annotations or `predictions` are generated.
+- Tasks are plain text only. `make candidates` never runs a model; pre-annotations are a
+  separate opt-in stage (`make prelabel`, see `docs/LABEL_STUDIO.md`) so this stage stays
+  deterministic, offline, and free of ML dependencies.
 - Each task carries `generator_version` and `generated_at` in its `data` payload.
 - A `*.manifest.json` next to the import file records the BLAKE3 input hash and per-task /
   per-family counts.
@@ -58,6 +60,6 @@ script against DAKP's intermediate artifacts.
 
 ## Next step
 
-Run `make label-studio` to serve these tasks in a browser; see
-`docs/LABEL_STUDIO.md`. Model suggestions, if ever added later, are suggestions only and
-never training gold.
+Optionally run `make prelabel` to attach GLiNER suggestions, then `make label-studio` (add
+`PRELABEL=1` to import the pre-labeled file) to serve these tasks in a browser; see
+`docs/LABEL_STUDIO.md`. Model suggestions are suggestions only and never training gold.

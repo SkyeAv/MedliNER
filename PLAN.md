@@ -21,7 +21,7 @@ Initial findings and decisions:
 
 ### Indications and contraindications are first-class tasks
 
-The first milestone should extract condition mentions from both indication and contraindication contexts. Keep the NER labels as `disease`, `phenotype`, and `drug`; add a separate immutable `task` field with values `indication` or `contraindication` for sampling, splits, review, and metrics. The task field is not an entity label.
+The first milestone should extract condition mentions from both indication and contraindication contexts. Keep the NER labels as `disease` and `phenotype`; add a separate immutable `task` field with values `indication` or `contraindication` for sampling, splits, review, and metrics. The task field is not an entity label.
 
 This distinction matters: GLiNER can identify the condition span, but plain NER does not by itself assert whether that condition is an indication or contraindication. For DAKP's structured sections, the source section and existing contraindication sentence filters provide that context. If later users need arbitrary mixed prose classified as indication versus contraindication, add a separate assertion-role classifier or a four-label formulation; do not silently overload the medical entity labels in the first model.
 
@@ -29,7 +29,7 @@ This distinction matters: GLiNER can identify the condition span, but plain NER 
 
 Yes, even though GLiNER inference is query-driven. At inference time, labels are the natural-language queries supplied to `predict_entities`, and returned entities carry the matching label. During supervised fine-tuning, each gold span still needs a target label so the model learns which query should retrieve it; the training record is effectively text plus span boundaries plus entity label(s). The labels do not need to be ontology CURIEs, and they can be intentionally coarse.
 
-For the initial MedliNER corpus, use three entity labels: `disease`, `phenotype`, and `drug`. The first two preserve DAKP's existing definitions and benchmark compatibility; `drug` adds medication, active-ingredient, and brand mentions that frequently occur in indication and contraindication text. The annotation guide will define what counts as a drug mention and initially exclude dosage, route, frequency, and other medication attributes. We can separately evaluate a type-agnostic boundary metric later, but omitting labels would discard useful supervision.
+For the initial MedliNER corpus, use two entity labels: `disease` and `phenotype`. These are exactly DAKP's `CONTRAINDICATION_DISEASE_TYPES`, so the annotation policy, the gold benchmark, and the GLiNER pre-labeling prompts stay compatible with DAKP without translation. A third `drug` label was specified in the original version of this plan and has since been dropped from the schema; medications get no span (`docs/ANNOTATION_GUIDE.md` rule 4). We can separately evaluate a type-agnostic boundary metric later.
 
 ## Approach
 
@@ -37,7 +37,7 @@ Build a small, local Dagster-orchestrated data and training system in MedliNER:
 
 1. Import reviewed Label Studio JSON/JSONL exports containing indication and contraindication text tasks; retain imported task/source metadata and annotation provenance.
 2. Annotators work entirely by highlighting answer text in the browser and selecting a label; they never enter indexes. Normalize the exported result into a versioned internal schema, validating the automatically recorded Label Studio character offsets, label names, duplicate/overlapping spans, empty examples, and task values.
-3. Convert the validated records into GLiNER's training representation: model-tokenized text plus `(start_token, end_token_inclusive, label)` tuples for `disease`, `phenotype`, and `drug`; keep original Label Studio character offsets for audit/evaluation and test the conversion against GLiNER's actual `words_splitter`.
+3. Convert the validated records into GLiNER's training representation: model-tokenized text plus `(start_token, end_token_inclusive, label)` tuples for `disease` and `phenotype`; keep original Label Studio character offsets for audit/evaluation and test the conversion against GLiNER's actual `words_splitter`.
 4. Freeze a leakage-resistant split, keeping the existing DAKP gold fixture as a regression set rather than silently absorbing it into training.
 5. Run a GLiNER training smoke test, then fine-tune the selected small checkpoint on the laptop. Record parameters and artifacts in Dagster metadata and compare against the untuned small checkpoint, the existing large-model baseline where available, and the gazetteer baseline.
 6. Export the best standalone checkpoint with a model card, label schema, task definition, dataset manifest, evaluation report, and reproducible configuration suitable for later Hugging Face upload.
@@ -55,7 +55,7 @@ Medical Hugging Face datasets and DAKP integration remain explicit follow-up pha
 - `src/medliner/evaluation.py` — strict typed-span, boundary-only, per-task/source, and no-entity metrics; DAKP benchmark adapter.
 - `src/medliner/training.py` — small-checkpoint loading, laptop-safe training arguments, checkpoint/resume, and artifact metadata.
 - `src/medliner/dagster_defs.py` — minimal local Dagster asset graph and asset checks; no schedules/sensors initially.
-- `configs/label_studio_ner.xml` — Label Studio browser configuration for `disease`/`phenotype`/`drug` spans and indication/contraindication context display.
+- `configs/label_studio_ner.xml` — Label Studio browser configuration for `disease`/`phenotype` spans and indication/contraindication context display.
 - `configs/train-small.yaml` — pinned base checkpoint, sequence/window limits, batch/accumulation, precision, seed, and output settings.
 - `tests/` — importer/offset tests, GLiNER conversion tests, split determinism/leakage tests, metric tests, Dagster asset tests, and a mocked one-step training smoke test.
 - `data/`/`artifacts/` conventions documented but gitignored — Label Studio exports, normalized datasets, split manifests, checkpoints, and reports remain local or are explicitly packaged for upload.
@@ -76,8 +76,8 @@ No changes to `../DAKP` are required in this phase.
 
 ## Steps
 
-- [x] Finalize the three-label schema (`disease`, `phenotype`, `drug`) and annotation guide, including maximal-span, qualifier, hedge, population, medication-name, dosage/route exclusion, and no-entity policies.
-- [x] Define the Label Studio Community Edition setup: local self-hosted install (pip or Docker), NER labeling configuration with `disease`, `phenotype`, and `drug`, visible indication/contraindication task metadata, and JSON/JSONL export procedure. Document the annotator workflow as: open task → click-drag/highlight the condition or drug phrase → choose its label → submit; no manual offset counting. Keep Label Studio outside the core training environment if desired.
+- [x] Finalize the two-label schema (`disease`, `phenotype`) and annotation guide, including maximal-span, qualifier, hedge, population, medication-exclusion, and no-entity policies.
+- [x] Define the Label Studio Community Edition setup: local self-hosted install (pip or Docker), NER labeling configuration with `disease` and `phenotype`, visible indication/contraindication task metadata, and JSON/JSONL export procedure. Document the annotator workflow as: open task → click-drag/highlight the condition phrase → choose its label → submit; no manual offset counting. Keep Label Studio outside the core training environment if desired.
 - [x] Define the Label Studio import/export contract and MedliNER adapter: character-offset validation, the three allowed labels, task/source metadata, annotation provenance, duplicate/overlap policy, empty examples, and conversion to GLiNER token-span records.
 - [x] ~~Define how candidate tasks are created outside this repository~~ Candidate generation moved in-repo: the user authors raw candidates NDJSON from intermediate DAKP inputs, and the `raw_candidate_texts` → `candidate_tasks` assets validate/dedupe it into a Label Studio import file; the `label_studio_server` asset runs Label Studio in a podman container and imports the tasks. Reviewed exports (manual browser export) are still the only training input.
 - [x] Define adjudication, annotation status, and versioning. Model suggestions are suggestions, never silently treated as gold.
@@ -90,6 +90,6 @@ No changes to `../DAKP` are required in this phase.
 
 ## Verification
 
-The first implementation should verify: a local annotator can open Label Studio in a browser, import tasks, click-drag/highlight condition or drug phrases, choose `disease`/`phenotype`/`drug`, and export JSON without manually entering offsets; MedliNER deterministically validates and converts that export; source/task metadata and annotation provenance survive conversion; deterministic re-runs produce the same normalized dataset and split hashes; no source/document leakage occurs across splits; training completes or resumes on the 12 GB GPU; the tuned checkpoint is compared with the untuned GLiNER and gazetteer baselines using strict and type-agnostic span metrics; and the exported artifact contains the model, label schema, dataset/config manifests, benchmark report, and model-card inputs.
+The first implementation should verify: a local annotator can open Label Studio in a browser, import tasks, click-drag/highlight condition phrases, choose `disease`/`phenotype`, and export JSON without manually entering offsets; MedliNER deterministically validates and converts that export; source/task metadata and annotation provenance survive conversion; deterministic re-runs produce the same normalized dataset and split hashes; no source/document leakage occurs across splits; training completes or resumes on the 12 GB GPU; the tuned checkpoint is compared with the untuned GLiNER and gazetteer baselines using strict and type-agnostic span metrics; and the exported artifact contains the model, label schema, dataset/config manifests, benchmark report, and model-card inputs.
 
 Verification completed: `uv sync`, six unit/contract tests, Ruff checks, Dagster definition validation, a local Dagster materialization of normalized data and frozen splits, and an actual one-step BF16 smoke fine-tune on the RTX 5070 Ti succeeded after using a cu130 Torch wheel with `sm_120` support. The sibling DAKP cu126 Torch environment was confirmed incompatible with this GPU and is documented as a non-training environment.

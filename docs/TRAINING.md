@@ -33,7 +33,7 @@ no-entity examples are first-class training signal, and the micro-batch size is 
 only example has no annotations then has *zero* entity types, and the loss fails on
 `scores.view(BS, -1, CL)` with `CL == 0`.
 
-`FixedLabelCollator` pins the vocabulary to `disease`, `phenotype`, `drug` for every batch. This
+`FixedLabelCollator` pins the vocabulary to `disease` and `phenotype` for every batch. This
 also matches inference, where all three labels are always queried, and makes the loss independent
 of which labels a given batch happened to contain. Override with `labels:` in the training config
 if the schema ever changes.

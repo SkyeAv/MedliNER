@@ -14,18 +14,22 @@ from typing import Any, Literal, get_args
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 SCHEMA_VERSION = "medliner.example.v1"
-ALLOWED_LABELS = ("disease", "phenotype", "drug")
+ALLOWED_LABELS = ("disease", "phenotype")
 ALLOWED_TASKS = ("indication", "contraindication")
 REVIEWED_STATUSES = ("reviewed", "adjudicated")
 Provenance = Literal["human", "adjudicated", "model_suggestion"]
 # Derived so the runtime tuple and the annotated type cannot drift apart.
 PROVENANCE_VALUES = get_args(Provenance)
+# Label Studio stamps each submitted region with where it came from. Pre-labeled projects need
+# this to stay auditable: "prediction" means a human submitted a model span without touching it,
+# which is a weaker signal than a span they drew or corrected themselves.
+SpanOrigin = Literal["manual", "prediction", "prediction-changed"]
+SPAN_ORIGINS = get_args(SpanOrigin)
 
 
 class EntityLabel(StrEnum):
     DISEASE = "disease"
     PHENOTYPE = "phenotype"
-    DRUG = "drug"
 
 
 class TaskKind(StrEnum):
@@ -66,6 +70,8 @@ class Annotation(BaseModel):
     annotator: str | None = None
     status: AnnotationStatus = AnnotationStatus.REVIEWED
     provenance: Provenance = "human"
+    # None for exports that predate pre-labeling, or from a Label Studio version that omits it.
+    origin: SpanOrigin | None = None
 
     @field_validator("label")
     @classmethod
@@ -150,6 +156,9 @@ class DatasetManifest(BaseModel):
     example_count: int = Field(ge=0)
     label_counts: dict[str, int] = Field(default_factory=dict)
     task_counts: dict[str, int] = Field(default_factory=dict)
+    # How much of this dataset is an unmodified model suggestion a human merely submitted. The
+    # central risk of pre-labeling, and invisible without counting it here.
+    origin_counts: dict[str, int] = Field(default_factory=dict)
     split_hash: str | None = None
     annotation_policy_version: str = "medliner.policy.v1"
 
@@ -176,7 +185,9 @@ __all__ = [
     "PROVENANCE_VALUES",
     "Provenance",
     "SCHEMA_VERSION",
+    "SPAN_ORIGINS",
     "SourceMetadata",
+    "SpanOrigin",
     "SplitManifest",
     "TaskKind",
 ]

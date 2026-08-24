@@ -3,7 +3,8 @@
 The pipeline runs in three phases, each a subcommand (see the Makefile wrappers):
 
 - before Label Studio: ``ingest`` materializes a DAKP export bundle (optional when
-  hand-authoring raw candidates), then ``candidates`` builds the validated import file;
+  hand-authoring raw candidates), ``candidates`` builds the validated import file, and the
+  optional ``prelabel`` attaches GLiNER suggestions to it;
 - Label Studio: ``label-studio``/``label-studio-stop`` manage the podman annotation server
   (LAN exposure, annotator accounts, and a gold warm-up project for group sessions);
   ``label-studio-export`` downloads the reviewed annotations over the API;
@@ -21,7 +22,11 @@ import argparse
 import json
 import os
 import sys
+import time
+from collections import Counter
+from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 from .candidates import (
     build_import_tasks,
@@ -101,6 +106,122 @@ def ensure_import_file(input_path: Path) -> Path:
     """Return the import file for the current input hash, building it when absent."""
     expected = workdir() / "label-studio" / f"import-{hash_candidates_file(input_path)[:16]}.json"
     return expected if expected.exists() else run_candidates(input_path)
+
+
+def run_prelabel(
+    input_path: Path,
+    *,
+    model_id: str,
+    threshold: float,
+    device: str | None,
+    batch_size: int,
+    word_budget: int,
+    max_width: int,
+    force: bool,
+) -> Path:
+    """Attach GLiNER suggestions to the import file; returns the pre-labeled file's path.
+
+    The model is loaded lazily: a run whose texts are all in the prelabel cache never imports
+    torch at all, which is what makes re-running this after adding a few candidates cheap.
+    """
+    from . import prelabel
+
+    import_file = ensure_import_file(input_path)
+    tasks = json.loads(import_file.read_text(encoding="utf-8"))
+    texts = {str(task["id"]): str(task["data"]["text"]) for task in tasks}
+    cache_path = workdir() / "label-studio" / "prelabel-cache.json"
+    cache = prelabel.PrelabelCache(cache_path)
+    if not force:
+        cache.load()
+
+    state: dict[str, Any] = {"device": device or "not loaded", "predict": None}
+
+    def predict(batch: Sequence[str]) -> list[list[dict[str, Any]]]:
+        if state["predict"] is None:
+            model, resolved = prelabel.load_model(model_id, device=device)
+            prelabel.check_model_budgets(model, budget=word_budget, max_width=max_width)
+            state["device"] = resolved
+            state["predict"] = prelabel.batch_predictor(
+                model, threshold=threshold, labels=prelabel.PRELABEL_LABELS, batch_size=batch_size
+            )
+            print(f"prelabel: loaded {model_id} on {resolved}")
+        return state["predict"](batch)
+
+    drops: Counter[str] = Counter()
+    started = time.monotonic()
+    suggestions = prelabel.prelabel_texts(
+        predict,
+        texts,
+        budget=word_budget,
+        max_width=max_width,
+        cache=cache,
+        model_id=model_id,
+        threshold=threshold,
+        drops=drops,
+    )
+    elapsed = time.monotonic() - started
+    cache.save()
+
+    version = prelabel.model_version(model_id, threshold)
+    output = import_file.with_name(f"{import_file.stem}.prelabeled.json")
+    write_import_file(prelabel.attach_predictions(tasks, suggestions, version=version), output)
+    manifest = prelabel.prelabel_manifest(
+        tasks,
+        suggestions,
+        model_id=model_id,
+        threshold=threshold,
+        labels=prelabel.PRELABEL_LABELS,
+        budget=word_budget,
+        max_width=max_width,
+        device=str(state["device"]),
+        version=version,
+        drops=drops,
+        elapsed_seconds=elapsed,
+        cache_hits=cache.hits,
+        cache_misses=cache.misses,
+    )
+    output.with_suffix(".manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    print(
+        f"prelabel: {manifest['suggestion_count']} suggestions {manifest['label_counts']} "
+        f"across {manifest['tasks_with_suggestions']}/{manifest['task_count']} tasks "
+        f"({cache.hits} cached, {cache.misses} predicted) -> {output}"
+    )
+    print(f"prelabel: dropped {manifest['dropped']} (suggestions only; a human accepts or replaces every span)")
+    return output
+
+
+def score_prelabeler(*, model_id: str, threshold: float, device: str | None, word_budget: int, max_width: int) -> None:
+    """Score the pre-labeler against the ingested gold benchmark.
+
+    Pre-labels that are worse than the annotators' own first guess cost time instead of saving
+    it, so this is the gate to run before showing suggestions to a room full of people.
+    """
+    from . import prelabel
+    from .evaluation import benchmark_path, load_gold_benchmark, score_examples
+
+    gold = benchmark_path()
+    if not gold.exists():
+        raise FileNotFoundError(f"gold benchmark not found: {gold} (MEDLINER_BENCHMARK; run 'medliner ingest' first)")
+    model, resolved = prelabel.load_model(model_id, device=device)
+    prelabel.check_model_budgets(model, budget=word_budget, max_width=max_width)
+    batch = prelabel.batch_predictor(model, threshold=threshold, labels=prelabel.PRELABEL_LABELS)
+
+    def predictor(text: str) -> list[dict[str, Any]]:
+        return [
+            span.as_dict()
+            for span in prelabel.suggest(
+                lambda window: batch([window])[0], text, budget=word_budget, max_width=max_width
+            )
+        ]
+
+    report = score_examples(predictor, load_gold_benchmark(gold))
+    strict = report["overall"]["strict"]
+    boundary = report["overall"]["boundary_only"]
+    print(
+        f"prelabel score ({resolved}): strict P {strict['precision']:.3f} R {strict['recall']:.3f} F1 {strict['f1']:.3f}"
+    )
+    print(f"prelabel score: boundary-only F1 {boundary['f1']:.3f} over {report['examples']} gold cases")
+    print(f"prelabel score: no-entity false-positive rate {report['no_entity']['false_positive_rate']:.3f}")
 
 
 def run_dataset(path: Path) -> Path:
@@ -189,8 +310,40 @@ def cmd_candidates(args: argparse.Namespace) -> None:
     run_candidates(raw_candidates_path(args.input))
 
 
+def _prelabel_options(args: argparse.Namespace) -> dict[str, Any]:
+    from . import prelabel
+
+    return {
+        "model_id": args.model or os.environ.get("MEDLINER_PRELABEL_MODEL", prelabel.DEFAULT_MODEL_ID),
+        "threshold": args.threshold
+        if args.threshold is not None
+        else float(os.environ.get("MEDLINER_PRELABEL_THRESHOLD", str(prelabel.DEFAULT_THRESHOLD))),
+        "device": args.device or os.environ.get("MEDLINER_PRELABEL_DEVICE") or None,
+        "word_budget": args.word_budget or prelabel.DEFAULT_WORD_BUDGET,
+        "max_width": args.max_width or prelabel.DEFAULT_MAX_WIDTH,
+    }
+
+
+def cmd_prelabel(args: argparse.Namespace) -> None:
+    options = _prelabel_options(args)
+    if args.score_gold:
+        score_prelabeler(**options)
+        return
+    run_prelabel(raw_candidates_path(args.input), batch_size=args.batch_size, force=args.force, **options)
+    print("next: medliner label-studio --prelabel")
+
+
 def cmd_label_studio(args: argparse.Namespace) -> None:
-    import_file = ensure_import_file(raw_candidates_path(args.input))
+    input_path = raw_candidates_path(args.input)
+    prelabel_version: str | None = None
+    if args.prelabel:
+        from . import prelabel as prelabel_module
+
+        options = _prelabel_options(args)
+        import_file = run_prelabel(input_path, batch_size=args.batch_size, force=args.force, **options)
+        prelabel_version = prelabel_module.model_version(options["model_id"], options["threshold"])
+    else:
+        import_file = ensure_import_file(input_path)
     port = args.port or int(os.environ.get("MEDLINER_LABEL_STUDIO_PORT", str(DEFAULT_PORT)))
     image = args.image or os.environ.get("MEDLINER_LABEL_STUDIO_IMAGE", DEFAULT_IMAGE)
     host = args.host or os.environ.get("MEDLINER_LABEL_STUDIO_HOST", "127.0.0.1")
@@ -216,9 +369,15 @@ def cmd_label_studio(args: argparse.Namespace) -> None:
         publish_host=host,
         annotators=annotators,
         reimport=args.reimport,
+        prelabel_model_version=prelabel_version,
         **credentials,
     )
     print(f"label-studio: {result['tasks_in_project']} tasks at {result['url']} (container {result['container']})")
+    if result.get("prelabeled"):
+        print(
+            f"label-studio: model suggestions pre-filled from {prelabel_version}; "
+            "annotators must accept, correct, or delete every span"
+        )
     if result.get("annotators_created"):
         print(f"label-studio: created {result['annotators_created']} annotator account(s)")
     if host not in ("127.0.0.1", "localhost"):
@@ -320,6 +479,17 @@ def cmd_pipeline(args: argparse.Namespace) -> None:
     run_bundle(checkpoint, report, dataset_path, split_dir)
 
 
+def _add_prelabel_arguments(parser: argparse.ArgumentParser) -> None:
+    """Flags shared by ``prelabel`` and ``label-studio --prelabel``."""
+    parser.add_argument("--model", help="GLiNER checkpoint (default: $MEDLINER_PRELABEL_MODEL)")
+    parser.add_argument("--threshold", type=float, help="score floor (default: $MEDLINER_PRELABEL_THRESHOLD, 0.35)")
+    parser.add_argument("--device", help="cuda/cpu override (default: $MEDLINER_PRELABEL_DEVICE, autodetected)")
+    parser.add_argument("--batch-size", type=int, default=8, help="windows per forward pass (default: 8)")
+    parser.add_argument("--word-budget", type=int, help="window size in GLiNER word tokens (default: 384)")
+    parser.add_argument("--max-width", type=int, help="widest suggested span in word tokens (default: 12)")
+    parser.add_argument("--force", action="store_true", help="ignore the prelabel cache and re-run the model")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="medliner", description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -331,6 +501,16 @@ def build_parser() -> argparse.ArgumentParser:
     candidates = sub.add_parser("candidates", help="build the Label Studio import file from raw candidates")
     candidates.add_argument("--input", help="raw candidates NDJSON (default: $MEDLINER_RAW_CANDIDATES)")
     candidates.set_defaults(func=cmd_candidates)
+
+    prelabel = sub.add_parser("prelabel", help="attach GLiNER model suggestions to the Label Studio import file")
+    prelabel.add_argument("--input", help="raw candidates NDJSON (default: $MEDLINER_RAW_CANDIDATES)")
+    prelabel.add_argument(
+        "--score-gold",
+        action="store_true",
+        help="score the pre-labeler against the ingested gold benchmark instead of writing an import file",
+    )
+    _add_prelabel_arguments(prelabel)
+    prelabel.set_defaults(func=cmd_prelabel)
 
     server = sub.add_parser("label-studio", help="start the podman Label Studio server with tasks imported")
     server.add_argument("--input", help="raw candidates NDJSON (default: $MEDLINER_RAW_CANDIDATES)")
@@ -350,6 +530,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="also import gold-benchmark warm-up tasks into a separate project (needs the ingested benchmark)",
     )
     server.add_argument("--warmup-limit", type=int, default=10, help="maximum warm-up tasks to import (default: 10)")
+    server.add_argument(
+        "--prelabel",
+        action="store_true",
+        help="attach GLiNER suggestions first and turn on Label Studio's prediction pre-fill",
+    )
+    _add_prelabel_arguments(server)
     server.set_defaults(func=cmd_label_studio)
 
     export = sub.add_parser("label-studio-export", help="download the reviewed annotations from the running server")

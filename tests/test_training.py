@@ -39,7 +39,7 @@ def test_fixed_label_collator_supplies_per_example_entity_types():
         seen.update(kwargs)
         return {"features": features}
 
-    labels = ["disease", "phenotype", "drug"]
+    labels = ["disease", "phenotype"]
     FixedLabelCollator(collator, labels)([{"ner": []}, {"ner": []}])
     # A flat list leaves GLiNER's classes_to_id as one dict, which create_labels then indexes
     # positionally; the batch must carry one label list per example.

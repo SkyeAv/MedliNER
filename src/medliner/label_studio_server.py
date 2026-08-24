@@ -212,6 +212,19 @@ class LabelStudioClient:
         created = self.api("POST", "/api/projects", {"title": title, "label_config": label_config})
         return int(created["id"])
 
+    def enable_prelabeling(self, project_id: int, model_version: str) -> None:
+        """Show imported predictions to annotators and pre-fill their draft from them.
+
+        Without ``show_collab_predictions`` Label Studio stores the predictions but never puts
+        them in front of the annotator, so the whole point of pre-labeling is lost. ``model_version``
+        selects which prediction set to pre-fill from when a task carries more than one.
+        """
+        self.api(
+            "PATCH",
+            f"/api/projects/{project_id}",
+            {"show_collab_predictions": True, "model_version": model_version},
+        )
+
     def find_project(self, title: str) -> int | None:
         """Return the project id with exactly this title, or None when absent."""
         listing = self.api("GET", "/api/projects")
@@ -270,11 +283,14 @@ def provision(
     reimport: bool = False,
     publish_host: str = "127.0.0.1",
     annotators: list[tuple[str, str]] | None = None,
+    prelabel_model_version: str | None = None,
 ) -> dict[str, Any]:
     """Container + project + task import in one call; returns provisioning metadata.
 
     ``annotators`` are ``(username, password)`` pairs ensured as additional accounts via
     ``POST /api/users``; existing usernames are skipped so provisioning stays idempotent.
+    ``prelabel_model_version`` turns on prediction pre-fill for the project when the import file
+    carries model suggestions.
     """
     container = ensure_container(
         name=name,
@@ -289,6 +305,8 @@ def provision(
     wait_healthy(base_url)
     client = LabelStudioClient(base_url, token=token, username=username, password=password)
     project_id = client.ensure_project(project_title, Path(label_config_path).read_text(encoding="utf-8"))
+    if prelabel_model_version:
+        client.enable_prelabeling(project_id, prelabel_model_version)
     tasks = json.loads(Path(import_file).read_text(encoding="utf-8"))
     existing = client.project_task_count(project_id)
     imported = 0
@@ -312,6 +330,7 @@ def provision(
         "reimported": bool(existing and reimport),
         "publish_host": publish_host,
         "annotators_created": annotators_created,
+        "prelabeled": bool(prelabel_model_version),
     }
 
 

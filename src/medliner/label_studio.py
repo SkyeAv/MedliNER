@@ -14,7 +14,15 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from .schema import ALLOWED_LABELS, ALLOWED_TASKS, Annotation, AnnotationStatus, Example, SourceMetadata
+from .schema import (
+    ALLOWED_LABELS,
+    ALLOWED_TASKS,
+    SPAN_ORIGINS,
+    Annotation,
+    AnnotationStatus,
+    Example,
+    SourceMetadata,
+)
 
 
 class LabelStudioExportError(ValueError):
@@ -213,6 +221,7 @@ def _result_annotations(task: dict[str, Any], annotation_set: dict[str, Any] | N
             text=text[start:end],
             annotator=str(annotator) if annotator is not None else None,
             status=status,
+            origin=_span_origin(task, result),
         )
         key = (start, end)
         prior = parsed.get(key)
@@ -221,6 +230,25 @@ def _result_annotations(task: dict[str, Any], annotation_set: dict[str, Any] | N
         # Exact duplicates with the same label are harmless export duplication and are collapsed.
         parsed[key] = annotation
     return sorted(parsed.values(), key=lambda item: (item.start, item.end, item.label))
+
+
+def _span_origin(task: dict[str, Any], result: dict[str, Any]) -> str | None:
+    """Where a submitted region came from, when Label Studio recorded it.
+
+    Pre-labeled projects copy the model's regions into the annotator's draft, and Label Studio
+    marks each one ``prediction`` (submitted untouched), ``prediction-changed`` (corrected), or
+    ``manual`` (drawn by hand). Older exports and non-pre-labeled projects omit the field, which
+    stays ``None`` rather than being guessed at. An unrecognized value is an export problem, not
+    something to silently normalize away.
+    """
+    origin = result.get("origin")
+    if origin is None:
+        return None
+    if not isinstance(origin, str) or origin not in SPAN_ORIGINS:
+        raise LabelStudioExportError(
+            f"task {task.get('id', '<unknown>')!r} has unsupported span origin {origin!r}; expected {SPAN_ORIGINS}"
+        )
+    return origin
 
 
 def _build_annotation(task: dict[str, Any], *, status: AnnotationStatus, **fields: Any) -> Annotation:

@@ -63,3 +63,34 @@ def test_group_key_prefers_document_then_record_then_text():
     # Whitespace and case differences must not split one repeated sentence across groups.
     other = Example(id="b", text="  ASTHMA  ", task="indication", source={"family": "faers"})
     assert group_key(other) == text_key
+
+
+def test_manifest_counts_how_much_of_the_dataset_is_an_untouched_model_span():
+    # The central risk of pre-labeling is a reviewer rubber-stamping suggestions. That is only
+    # auditable if the dataset manifest reports it.
+    examples = [
+        Example(
+            id="a",
+            text="asthma and nausea",
+            task="indication",
+            source={"family": "faers"},
+            annotations=[
+                Annotation(start=0, end=6, label="disease", text="asthma", origin="prediction"),
+                Annotation(start=11, end=17, label="phenotype", text="nausea", origin="prediction-changed"),
+            ],
+        ),
+        Example(
+            id="b",
+            text="asthma",
+            task="indication",
+            source={"family": "faers"},
+            annotations=[Annotation(start=0, end=6, label="disease", text="asthma", origin="manual")],
+        ),
+    ]
+    manifest = manifest_for(examples, input_export_hash="h", dataset_id="d")
+    assert manifest.origin_counts == {"manual": 1, "prediction": 1, "prediction-changed": 1}
+
+
+def test_spans_from_an_export_without_origins_are_counted_as_unrecorded():
+    manifest = manifest_for([_example("a")], input_export_hash="h", dataset_id="d")
+    assert manifest.origin_counts == {"unrecorded": 1}

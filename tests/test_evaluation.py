@@ -12,12 +12,12 @@ def test_strict_boundary_and_no_entity_metrics():
     examples = [
         Example(
             id="positive",
-            text="asthma and ibuprofen",
+            text="asthma and nausea",
             task="indication",
             source={"family": "faers"},
             annotations=[
                 Annotation(start=0, end=6, label="disease", text="asthma"),
-                Annotation(start=11, end=20, label="drug", text="ibuprofen"),
+                Annotation(start=11, end=17, label="phenotype", text="nausea"),
             ],
         ),
         Example(id="negative", text="patients only", task="contraindication", source={"family": "dailymed"}),
@@ -27,7 +27,8 @@ def test_strict_boundary_and_no_entity_metrics():
         if text.startswith("asthma"):
             return [
                 {"start": 0, "end": 6, "label": "disease"},
-                {"start": 11, "end": 20, "label": "phenotype"},
+                # Right boundary, wrong label: strict counts it a miss, boundary-only a hit.
+                {"start": 11, "end": 17, "label": "disease"},
             ]
         return [{"start": 0, "end": 8, "label": "disease"}]
 
@@ -273,7 +274,7 @@ def test_gliner_predictor_wrapper_normalizes_model_output():
         config = type("Config", (), {"max_len": 384})()
 
         def predict_entities(self, text, labels, threshold):
-            assert labels == ["disease", "phenotype", "drug"]
+            assert labels == ["disease", "phenotype"]
             return [{"start": 0, "end": 6, "label": "Disease", "score": 0.9}]
 
     predictor = GLiNERPredictor(Model(), threshold=0.3)

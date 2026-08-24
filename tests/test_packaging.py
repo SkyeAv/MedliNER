@@ -43,7 +43,6 @@ def test_bundle_contains_the_uploadable_artifacts(tmp_path):
     assert json.loads((output / "labels.json").read_text(encoding="utf-8"))["labels"] == [
         "disease",
         "phenotype",
-        "drug",
     ]
 
 

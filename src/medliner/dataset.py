@@ -48,6 +48,11 @@ def manifest_for(examples: Iterable[Example], *, input_export_hash: str, dataset
             sorted(Counter(annotation.label for item in values for annotation in item.annotations).items())
         ),
         task_counts=dict(sorted(Counter(item.task for item in values).items())),
+        origin_counts=dict(
+            sorted(
+                Counter(annotation.origin or "unrecorded" for item in values for annotation in item.annotations).items()
+            )
+        ),
     )
 
 

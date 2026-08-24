@@ -78,6 +78,8 @@ def test_import_tasks_are_deterministic_and_match_the_label_studio_contract():
     assert task["data"]["source_family"] == "dailymed"
     assert task["data"]["source_document_id"] == "spl-document-001"
     assert task["data"]["generator_version"] == GENERATOR_VERSION
+    # Pre-annotation is a separate opt-in stage (medliner.prelabel), so this one stays
+    # deterministic and free of ML dependencies.
     assert "predictions" not in task
 
 

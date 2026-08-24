@@ -9,6 +9,8 @@
 
 Label Studio predictions have provenance `model_suggestion` and are never silently promoted to gold. The adapter accepts only the completed `annotations` array, not `predictions`, and rejects unresolved multiple annotation sets unless the task identifies a final annotation or adjudication record.
 
+Submitting a task is the human review act, so a submitted span keeps `human` (or `adjudicated`) provenance even when its boundaries came from the model. What distinguishes the two is the span's `origin`, which Label Studio records per region and MedliNER preserves: `prediction` (submitted untouched), `prediction-changed` (corrected by a human), or `manual` (drawn by hand). `origin_counts` in the dataset manifest reports the split, so a review round that rubber-stamped its suggestions is visible in the artifact rather than only in someone's memory. Treat a high `prediction` share as a signal to re-check a sample, not as a failure by itself.
+
 ## Adjudication workflow
 
 1. Annotator A labels the task in the browser.

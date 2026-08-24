@@ -6,6 +6,5 @@
   <Labels name="label" toName="text" choice="single" showInline="true">
     <Label value="disease" background="#e74c3c" hotkey="1" />
     <Label value="phenotype" background="#3498db" hotkey="2" />
-    <Label value="drug" background="#2ecc71" hotkey="3" />
   </Labels>
 </View>

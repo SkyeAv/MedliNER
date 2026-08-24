@@ -103,6 +103,9 @@ class FakeLabelStudio:
         if method == "POST" and path.endswith("/import"):
             project["tasks"] = json.loads(request.data.decode())
             return FakeResponse({"task_count": len(project["tasks"])})
+        if method == "PATCH":
+            project.update(json.loads(request.data.decode()))
+            return FakeResponse({"id": project_id})
         raise AssertionError(f"unexpected API call: {method} {path}")
 
 
@@ -316,7 +319,7 @@ def test_label_config_labels_carry_hotkeys():
 
     config = Path(__file__).resolve().parents[1] / "configs" / "label_studio_ner.xml"
     labels = {node.get("value"): node.get("hotkey") for node in ET.parse(config).iter("Label")}
-    assert labels == {"disease": "1", "phenotype": "2", "drug": "3"}
+    assert labels == {"disease": "1", "phenotype": "2"}
 
 
 def test_ensure_container_publish_host_binds_wider(podman, tmp_path):
@@ -377,3 +380,46 @@ def test_export_project_requires_the_project_to_exist(monkeypatch, podman, tmp_p
     _install_api(monkeypatch, FakeLabelStudio())
     with pytest.raises(server.LabelStudioServerError, match="no Label Studio project titled"):
         server.export_project(output_path=tmp_path / "x.json", username="u", password="p", token="test-token")
+
+
+def test_provision_turns_on_prediction_prefill_when_asked(monkeypatch, podman, tmp_path):
+    # Without show_collab_predictions Label Studio stores the predictions and never shows them,
+    # so the annotator would still draw every span by hand.
+    fake = _install_api(monkeypatch, FakeLabelStudio())
+    import_file = tmp_path / "import.json"
+    import_file.write_text(json.dumps([{"id": "t1", "data": {"text": "x"}, "predictions": []}]), encoding="utf-8")
+    config = tmp_path / "config.xml"
+    config.write_text("<View/>", encoding="utf-8")
+
+    result = server.provision(
+        import_file=import_file,
+        label_config_path=config,
+        data_dir=tmp_path / "data",
+        username="u",
+        password="p",
+        token="test-token",
+        prelabel_model_version="gliner_large-v2.5@0.35",
+    )
+    project = fake.projects[result["project_id"]]
+    assert project["show_collab_predictions"] is True
+    assert project["model_version"] == "gliner_large-v2.5@0.35"
+    assert result["prelabeled"] is True
+
+
+def test_provision_leaves_prefill_alone_for_a_plain_text_project(monkeypatch, podman, tmp_path):
+    fake = _install_api(monkeypatch, FakeLabelStudio())
+    import_file = tmp_path / "import.json"
+    import_file.write_text(json.dumps([{"id": "t1", "data": {"text": "x"}}]), encoding="utf-8")
+    config = tmp_path / "config.xml"
+    config.write_text("<View/>", encoding="utf-8")
+
+    result = server.provision(
+        import_file=import_file,
+        label_config_path=config,
+        data_dir=tmp_path / "data",
+        username="u",
+        password="p",
+        token="test-token",
+    )
+    assert result["prelabeled"] is False
+    assert not any(method == "PATCH" for method, _ in fake.requests)

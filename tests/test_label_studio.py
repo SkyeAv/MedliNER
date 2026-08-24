@@ -69,17 +69,17 @@ def test_overlapping_spans_raise_the_adapter_error(tmp_path):
 
 
 def test_conflicting_duplicate_span_labels_raise():
-    start = TEXT.index("ibuprofen")
-    end = start + len("ibuprofen")
-    task = _task([_span(start, end, "drug", result_id="r1"), _span(start, end, "disease", result_id="r2")])
+    start = TEXT.index("pulmonary hypertension")
+    end = start + len("pulmonary hypertension")
+    task = _task([_span(start, end, "phenotype", result_id="r1"), _span(start, end, "disease", result_id="r2")])
     with pytest.raises(LabelStudioExportError, match="conflicting duplicate span"):
         normalize_task(task)
 
 
 def test_identical_duplicate_spans_are_collapsed():
-    start = TEXT.index("ibuprofen")
-    end = start + len("ibuprofen")
-    task = _task([_span(start, end, "drug", result_id="r1"), _span(start, end, "drug", result_id="r2")])
+    start = TEXT.index("pulmonary hypertension")
+    end = start + len("pulmonary hypertension")
+    task = _task([_span(start, end, "disease", result_id="r1"), _span(start, end, "disease", result_id="r2")])
     assert len(normalize_task(task).annotations) == 1
 
 
@@ -197,8 +197,8 @@ def test_span_text_disagreeing_with_the_source_is_rejected():
 
 
 def test_span_must_carry_exactly_one_label():
-    span = _span(TEXT.index("ibuprofen"), TEXT.index("ibuprofen") + 9, "drug")
-    span["value"]["labels"] = ["drug", "disease"]
+    span = _span(TEXT.index("ibuprofen"), TEXT.index("ibuprofen") + 9, "phenotype")
+    span["value"]["labels"] = ["phenotype", "disease"]
     with pytest.raises(LabelStudioExportError, match="exactly one string label"):
         normalize_task(_task([span]))
 
@@ -246,3 +246,55 @@ def test_final_annotation_id_resolves_competing_sets():
     task["annotations"].append({"id": 12, "created_username": "other", "result": []})
     task["data"]["final_annotation_id"] = 12
     assert normalize_task(task).annotation_set_id == "12"
+
+
+def _origin_span(start: int, end: int, label: str, origin: str) -> dict:
+    span = _span(start, end, label)
+    span["origin"] = origin
+    return span
+
+
+def test_span_origin_is_preserved_so_untouched_predictions_stay_visible():
+    # A pre-labeled project copies the model's regions into the annotator's draft. Submitting one
+    # unchanged is a weaker signal than drawing it, and the manifest has to be able to say so.
+    start = TEXT.index("pulmonary hypertension")
+    end = start + len("pulmonary hypertension")
+    example = normalize_task(_task([_origin_span(start, end, "disease", "prediction")]))
+    assert example.annotations[0].origin == "prediction"
+    # Provenance is unchanged: submitting the task IS the human review act.
+    assert example.annotations[0].provenance == "human"
+
+
+def test_a_corrected_prediction_is_distinguishable_from_an_accepted_one():
+    start = TEXT.index("pulmonary hypertension")
+    end = start + len("pulmonary hypertension")
+    example = normalize_task(_task([_origin_span(start, end, "disease", "prediction-changed")]))
+    assert example.annotations[0].origin == "prediction-changed"
+
+
+def test_an_export_without_origins_leaves_the_field_unset_rather_than_guessing():
+    start = TEXT.index("pulmonary hypertension")
+    example = normalize_task(_task([_span(start, start + len("pulmonary hypertension"), "disease")]))
+    assert example.annotations[0].origin is None
+
+
+def test_an_unknown_span_origin_is_rejected():
+    start = TEXT.index("pulmonary hypertension")
+    end = start + len("pulmonary hypertension")
+    with pytest.raises(LabelStudioExportError, match="unsupported span origin"):
+        normalize_task(_task([_origin_span(start, end, "disease", "teleported")]))
+
+
+def test_predictions_on_a_task_are_never_read_as_annotations():
+    # The whole safety property of pre-labeling: only the completed `annotations` array counts.
+    start = TEXT.index("pulmonary hypertension")
+    task = _task([])
+    task["annotations"] = [{"id": 11, "created_username": "annotator", "result": []}]
+    task["predictions"] = [
+        {
+            "model_version": "gliner_large-v2.5@0.35",
+            "score": 0.9,
+            "result": [_span(start, start + len("pulmonary hypertension"), "disease")],
+        }
+    ]
+    assert normalize_task(task).annotations == []

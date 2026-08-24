@@ -57,7 +57,7 @@ on the shared instance sees every project. The managed flow supports a group ses
    `gold_mentions` data field (visible in the Data Manager). The warm-up project needs the
    ingested benchmark (`make ingest`), and is never consumed by training.
 5. **Speed up labeling** with the hotkeys baked into `configs/label_studio_ner.xml`:
-   `1` = disease, `2` = phenotype, `3` = drug after selecting a span.
+   `1` = disease, `2` = phenotype after selecting a span.
 
 ## Export
 
@@ -128,8 +128,8 @@ into the project's labeling configuration, and import the JSON file written by
 
 1. Open a task.
 2. Read the visible indication or contraindication context.
-3. Click-drag/highlight the complete condition or drug phrase.
-4. Choose `disease`, `phenotype`, or `drug`.
+3. Click-drag/highlight the complete condition phrase.
+4. Choose `disease` or `phenotype`.
 5. Correct/delete/add spans as needed.
 6. Submit the task.
 
@@ -137,7 +137,48 @@ There is no manual offset counting. Label Studio records the highlighted phrase 
 
 ## Pre-annotations
 
-Optional model suggestions may be imported using Label Studio's prediction format. They must be visibly treated as predictions and reviewed by a human. The MedliNER adapter rejects a model-only prediction set as training gold unless the completed annotation has human provenance/status.
+Annotators are far faster correcting a span than drawing one, so `make prelabel` can attach
+model suggestions to the import file before the session starts:
+
+```bash
+make prelabel                          # writes import-<hash>.prelabeled.json + its manifest
+make label-studio PRELABEL=1 REIMPORT=1
+```
+
+The suggestions come from `gliner-community/gliner_large-v2.5` prompted with `disease` and
+`phenotype` at threshold `0.35` — the same checkpoint, prompts, and threshold the sibling DAKP
+pipeline mines contraindications with (`MEDLINER_PRELABEL_MODEL` / `MEDLINER_PRELABEL_THRESHOLD`
+override them). Raw model output does not obey the annotation guide, so the same cleanup DAKP
+applies is applied here: leading hedges are trimmed (`recent myocardial infarction` →
+`myocardial infarction`, guide rule 2), population descriptors are dropped (`patients`, `women of
+childbearing potential`, rule 3), overlapping spans collapse to the longest (rule 7), and spans
+wider than the model's `max_width` are dropped because MedliNER refuses to convert them later.
+
+`PRELABEL=1` also turns on the project's `show_collab_predictions`, which is what puts the spans
+in front of the annotator; without it Label Studio stores the predictions and never shows them.
+Opening a pre-labeled task pre-fills the draft annotation with the model's spans.
+
+**They are suggestions.** Accept, correct, or delete each one, and add what the model missed —
+an untouched prediction is not gold. MedliNER's adapter reads only the completed `annotations`
+array and never `predictions`, so a task nobody submitted contributes nothing. Each submitted
+span carries an `origin` (`prediction`, `prediction-changed`, or `manual`) into the normalized
+dataset, and `origin_counts` in the dataset manifest reports how much of the result was accepted
+untouched; see `docs/ADJUDICATION.md`.
+
+Re-running `make prelabel` is cheap: suggestions are cached per text under
+`$MEDLINER_WORKDIR/label-studio/prelabel-cache.json`, keyed by model, threshold, labels, window
+budget, and normalized text, so adding candidates only runs the model over the new ones. `FORCE=1`
+ignores the cache.
+
+Before trusting suggestions in front of a room, score them against the ingested gold benchmark:
+
+```bash
+make prelabel SCORE_GOLD=1
+```
+
+That reports strict and boundary-only F1 over the same `ner_gold.json` cases the trained model is
+evaluated on. Pre-labels materially worse than the annotators' own first guess cost time rather
+than saving it.
 
 ## Export details worth knowing
 

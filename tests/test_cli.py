@@ -335,3 +335,119 @@ def test_train_smoke_flag_reaches_training(tmp_path, monkeypatch):
     assert calls["smoke_test"] is True
     assert cli.main(["train"]) == 0
     assert calls["smoke_test"] is False
+
+
+def _fake_gliner(monkeypatch, entities_for):
+    """Replace model loading with a callable, so CLI tests never touch torch or a GPU."""
+    from medliner import prelabel
+
+    loaded: list[str] = []
+
+    def fake_load_model(model_id, *, device=None):
+        loaded.append(model_id)
+        return object(), device or "cpu"
+
+    def fake_batch_predictor(model, *, threshold, labels=prelabel.PRELABEL_LABELS, batch_size=8):
+        return lambda texts: [entities_for(text) for text in texts]
+
+    monkeypatch.setattr(prelabel, "load_model", fake_load_model)
+    monkeypatch.setattr(prelabel, "batch_predictor", fake_batch_predictor)
+    return loaded
+
+
+def _asthma_entities(text):
+    if "asthma" not in text:
+        return []
+    start = text.index("asthma")
+    return [{"start": start, "end": start + 6, "label": "disease", "score": 0.91}]
+
+
+def test_prelabel_writes_predictions_and_a_manifest(tmp_path, monkeypatch, capsys):
+    raw = tmp_path / "candidates.ndjson"
+    _write_raw_candidates(raw)
+    monkeypatch.setenv("MEDLINER_RAW_CANDIDATES", str(raw))
+    monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
+    _fake_gliner(monkeypatch, _asthma_entities)
+
+    assert cli.main(["prelabel", "--input", str(raw)]) == 0
+
+    (output,) = sorted((tmp_path / "work" / "label-studio").glob("import-*.prelabeled.json"))
+    tasks = json.loads(output.read_text(encoding="utf-8"))
+    assert tasks
+    for task in tasks:
+        (prediction,) = task["predictions"]
+        assert prediction["model_version"].endswith("@0.35")
+        (region,) = prediction["result"]
+        assert region["value"]["labels"] == ["disease"]
+        assert region["value"]["text"] == "asthma"
+    manifest = json.loads(output.with_suffix(".manifest.json").read_text(encoding="utf-8"))
+    assert manifest["schema_version"] == "medliner.prelabel.manifest.v1"
+    assert manifest["label_counts"] == {"disease": 2}
+    assert manifest["labels"] == ["disease", "phenotype"]
+    assert "2 suggestions" in capsys.readouterr().out
+
+
+def test_prelabel_reruns_from_cache_without_loading_the_model(tmp_path, monkeypatch, capsys):
+    raw = tmp_path / "candidates.ndjson"
+    _write_raw_candidates(raw)
+    monkeypatch.setenv("MEDLINER_RAW_CANDIDATES", str(raw))
+    monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
+    loaded = _fake_gliner(monkeypatch, _asthma_entities)
+
+    assert cli.main(["prelabel", "--input", str(raw)]) == 0
+    assert loaded == ["gliner-community/gliner_large-v2.5"]
+    capsys.readouterr()
+
+    assert cli.main(["prelabel", "--input", str(raw)]) == 0
+    assert loaded == ["gliner-community/gliner_large-v2.5"]  # second run never loaded it again
+    assert "2 cached, 0 predicted" in capsys.readouterr().out
+
+
+def test_prelabel_force_ignores_the_cache(tmp_path, monkeypatch, capsys):
+    raw = tmp_path / "candidates.ndjson"
+    _write_raw_candidates(raw)
+    monkeypatch.setenv("MEDLINER_RAW_CANDIDATES", str(raw))
+    monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
+    loaded = _fake_gliner(monkeypatch, _asthma_entities)
+
+    assert cli.main(["prelabel", "--input", str(raw)]) == 0
+    assert cli.main(["prelabel", "--input", str(raw), "--force"]) == 0
+    assert len(loaded) == 2
+    assert "0 cached, 2 predicted" in capsys.readouterr().out
+
+
+def test_label_studio_prelabel_imports_the_prelabeled_file_and_turns_on_prefill(tmp_path, monkeypatch, capsys):
+    raw = tmp_path / "candidates.ndjson"
+    _write_raw_candidates(raw)
+    monkeypatch.setenv("MEDLINER_RAW_CANDIDATES", str(raw))
+    monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
+    _fake_gliner(monkeypatch, _asthma_entities)
+    calls = {}
+
+    def fake_provision(**kwargs):
+        calls.update(kwargs)
+        return {"url": "http://127.0.0.1:9030", "container": "c", "tasks_in_project": 2, "prelabeled": True}
+
+    monkeypatch.setattr(cli, "provision", fake_provision)
+    assert cli.main(["label-studio", "--input", str(raw), "--prelabel"]) == 0
+    assert Path(calls["import_file"]).name.endswith(".prelabeled.json")
+    assert calls["prelabel_model_version"] == "gliner_large-v2.5@0.35"
+    assert "accept, correct, or delete every span" in capsys.readouterr().out
+
+
+def test_label_studio_without_prelabel_imports_plain_tasks(tmp_path, monkeypatch, capsys):
+    raw = tmp_path / "candidates.ndjson"
+    _write_raw_candidates(raw)
+    monkeypatch.setenv("MEDLINER_RAW_CANDIDATES", str(raw))
+    monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
+    calls = {}
+
+    def fake_provision(**kwargs):
+        calls.update(kwargs)
+        return {"url": "http://127.0.0.1:9030", "container": "c", "tasks_in_project": 2}
+
+    monkeypatch.setattr(cli, "provision", fake_provision)
+    assert cli.main(["label-studio", "--input", str(raw)]) == 0
+    assert not Path(calls["import_file"]).name.endswith(".prelabeled.json")
+    assert calls["prelabel_model_version"] is None
+    capsys.readouterr()
