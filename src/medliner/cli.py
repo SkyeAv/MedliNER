@@ -21,14 +21,20 @@ import argparse
 import json
 import os
 import sys
+from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from .candidates import (
     build_import_tasks,
     build_warmup_tasks,
     hash_candidates_file,
+    import_file_name,
     import_manifest,
     read_candidates,
+    sample_tasks,
+    stagger_tasks,
     write_import_file,
 )
 from .dataset import hash_file, manifest_for, read_examples, write_examples, write_manifest
@@ -54,6 +60,58 @@ def workdir() -> Path:
 def repo_root() -> Path:
     """Anchor committed configs regardless of the caller's working directory."""
     return Path(__file__).resolve().parents[2]
+
+
+DEFAULT_SAMPLE_TARGETS = "indication:6000,contraindication:4000"
+DEFAULT_SAMPLE_SEED = 2026
+DEFAULT_SAMPLE_MAX_WORDS = 300
+DEFAULT_SAMPLE_MAX_RUN = 3
+
+
+@dataclass(frozen=True)
+class SamplingSettings:
+    """Resolved ``MEDLINER_SAMPLE_*`` configuration for the Label Studio import."""
+
+    targets: dict[str, int]
+    seed: int
+    max_words: int
+    max_run: int
+
+    @property
+    def config(self) -> str | None:
+        """Canonical configuration string; ``None`` keeps the legacy unsampled import-file name."""
+        if not self.targets:
+            return None
+        spec = ",".join(f"{name}:{self.targets[name]}" for name in sorted(self.targets))
+        return f"tasks={spec};seed={self.seed};max_words={self.max_words};max_run={self.max_run}"
+
+
+def sampling_settings() -> SamplingSettings:
+    """Parse the ``MEDLINER_SAMPLE_*`` environment; an empty/all task list disables sampling."""
+    raw = os.environ.get("MEDLINER_SAMPLE_TASKS", DEFAULT_SAMPLE_TARGETS).strip()
+    if raw.lower() in ("", "all", "none"):
+        return SamplingSettings({}, DEFAULT_SAMPLE_SEED, DEFAULT_SAMPLE_MAX_WORDS, DEFAULT_SAMPLE_MAX_RUN)
+    targets: dict[str, int] = {}
+    for part in raw.split(","):
+        name, separator, value = part.strip().partition(":")
+        if not separator or not name:
+            raise ValueError(f"MEDLINER_SAMPLE_TASKS expects task:count pairs, got {part!r}")
+        if not value.strip().isdigit():
+            raise ValueError(f"MEDLINER_SAMPLE_TASKS count for {name!r} must be a non-negative integer, got {value!r}")
+        targets[name.strip().lower()] = int(value)
+    settings = SamplingSettings(
+        targets=targets,
+        seed=int(os.environ.get("MEDLINER_SAMPLE_SEED", str(DEFAULT_SAMPLE_SEED))),
+        max_words=int(os.environ.get("MEDLINER_SAMPLE_MAX_WORDS", str(DEFAULT_SAMPLE_MAX_WORDS))),
+        max_run=int(os.environ.get("MEDLINER_SAMPLE_MAX_RUN", str(DEFAULT_SAMPLE_MAX_RUN))),
+    )
+    if settings.seed < 0:
+        raise ValueError("MEDLINER_SAMPLE_SEED must be non-negative")
+    if settings.max_words < 0:
+        raise ValueError("MEDLINER_SAMPLE_MAX_WORDS must be non-negative (0 disables the cap)")
+    if settings.max_run < 1:
+        raise ValueError("MEDLINER_SAMPLE_MAX_RUN must be at least 1")
+    return settings
 
 
 def raw_candidates_path(value: str | None = None) -> Path:
@@ -85,21 +143,52 @@ def bundle_path(value: str | None = None) -> Path:
 
 
 def run_candidates(input_path: Path) -> Path:
-    """Validate/dedupe raw candidates into the Label Studio import file; returns its path."""
+    """Validate/dedupe/sample raw candidates into the Label Studio import file; returns its path."""
+    settings = sampling_settings()
     tasks = build_import_tasks(read_candidates(input_path))
     if not tasks:
         raise ValueError(f"no import tasks produced from {input_path}")
-    manifest = import_manifest(tasks, input_path=input_path)
-    output = workdir() / "label-studio" / f"import-{manifest['input_hash'][:16]}.json"
+    sampling_manifest: dict[str, Any] | None = None
+    if settings.targets:
+        sampling_manifest = {
+            "targets": settings.targets,
+            "seed": settings.seed,
+            "max_words": settings.max_words,
+            "max_run": settings.max_run,
+            "pool_task_counts": dict(sorted(Counter(task["data"]["task"] for task in tasks).items())),
+            "pool_family_counts": dict(sorted(Counter(task["data"]["source_family"] for task in tasks).items())),
+        }
+        tasks = sample_tasks(tasks, settings.targets, seed=settings.seed, max_words=settings.max_words or None)
+        tasks = stagger_tasks(tasks, max_run=settings.max_run, seed=settings.seed)
+        if not tasks:
+            raise ValueError(
+                f"sampling produced no tasks from {input_path} "
+                f"(targets {settings.targets}, max_words {settings.max_words})"
+            )
+    manifest = import_manifest(tasks, input_path=input_path, sampling=sampling_manifest)
+    output = workdir() / "label-studio" / import_file_name(input_hash=manifest["input_hash"], sampling=settings.config)
     write_import_file(tasks, output)
     output.with_suffix(".manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-    print(f"candidates: {manifest['task_count']} tasks ({manifest['duplicates_merged']} duplicates merged) -> {output}")
+    composition = ", ".join(f"{count} {name}" for name, count in manifest["task_counts"].items())
+    if sampling_manifest:
+        print(
+            f"candidates: sampled {manifest['task_count']} tasks ({composition}; "
+            f"{manifest['duplicates_merged']} duplicates merged; runs capped at {settings.max_run}) -> {output}"
+        )
+    else:
+        print(
+            f"candidates: {manifest['task_count']} tasks ({manifest['duplicates_merged']} duplicates merged) -> {output}"
+        )
     return output
 
 
 def ensure_import_file(input_path: Path) -> Path:
-    """Return the import file for the current input hash, building it when absent."""
-    expected = workdir() / "label-studio" / f"import-{hash_candidates_file(input_path)[:16]}.json"
+    """Return the import file for the current input hash and sampling config, building when absent."""
+    expected = (
+        workdir()
+        / "label-studio"
+        / import_file_name(input_hash=hash_candidates_file(input_path), sampling=sampling_settings().config)
+    )
     return expected if expected.exists() else run_candidates(input_path)
 
 

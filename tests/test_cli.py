@@ -110,6 +110,85 @@ def test_candidates_builds_an_import_file(tmp_path, monkeypatch, capsys):
     assert manifest["duplicates_merged"] == 1
 
 
+def test_candidates_sampling_uses_env_targets_and_names_the_file_for_the_config(tmp_path, monkeypatch, capsys):
+    raw = tmp_path / "candidates.ndjson"
+    _write_raw_candidates(raw)
+    monkeypatch.setenv("MEDLINER_RAW_CANDIDATES", str(raw))
+    monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
+    monkeypatch.setenv("MEDLINER_SAMPLE_TASKS", "indication:1,contraindication:1")
+
+    assert cli.main(["candidates"]) == 0
+    out = capsys.readouterr().out
+    assert "sampled 2 tasks" in out
+    assert "1 contraindication, 1 indication" in out
+    sampled_path = Path(out.split("->")[-1].strip())
+    manifest = json.loads(sampled_path.with_suffix(".manifest.json").read_text(encoding="utf-8"))
+    assert manifest["sampling"]["targets"] == {"indication": 1, "contraindication": 1}
+    assert manifest["sampling"]["seed"] == 2026
+    assert manifest["sampling"]["max_words"] == 300
+    assert manifest["sampling"]["max_run"] == 3
+    assert manifest["sampling"]["pool_task_counts"] == {"contraindication": 1, "indication": 1}
+
+    # An empty MEDLINER_SAMPLE_TASKS disables sampling and returns to the legacy input-hash name.
+    monkeypatch.setenv("MEDLINER_SAMPLE_TASKS", "")
+    assert cli.main(["candidates"]) == 0
+    out = capsys.readouterr().out
+    assert "sampled" not in out
+    full_path = Path(out.split("->")[-1].strip())
+    input_hash = manifest["input_hash"]
+    assert full_path.name == f"import-{input_hash[:16]}.json"
+    assert sampled_path.name != full_path.name
+
+
+def test_candidates_sampling_can_be_disabled_with_all(tmp_path, monkeypatch):
+    raw = tmp_path / "candidates.ndjson"
+    _write_raw_candidates(raw)
+    monkeypatch.setenv("MEDLINER_RAW_CANDIDATES", str(raw))
+    monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
+    monkeypatch.setenv("MEDLINER_SAMPLE_TASKS", "all")
+    settings = cli.sampling_settings()
+    assert settings.targets == {}
+    assert settings.config is None
+
+
+def test_candidates_rejects_invalid_sampling_env(tmp_path, monkeypatch, capsys):
+    raw = tmp_path / "candidates.ndjson"
+    _write_raw_candidates(raw)
+    monkeypatch.setenv("MEDLINER_RAW_CANDIDATES", str(raw))
+    monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
+    monkeypatch.setenv("MEDLINER_SAMPLE_TASKS", "indication-lots")
+    assert cli.main(["candidates"]) == 1
+    assert "MEDLINER_SAMPLE_TASKS" in capsys.readouterr().err
+
+    monkeypatch.setenv("MEDLINER_SAMPLE_TASKS", "indication:5,contraindication:4000")
+    monkeypatch.setenv("MEDLINER_SAMPLE_MAX_WORDS", "-1")
+    assert cli.main(["candidates"]) == 1
+    assert "non-negative" in capsys.readouterr().err
+
+    monkeypatch.setenv("MEDLINER_SAMPLE_MAX_WORDS", "300")
+    monkeypatch.setenv("MEDLINER_SAMPLE_MAX_RUN", "0")
+    assert cli.main(["candidates"]) == 1
+    assert "at least 1" in capsys.readouterr().err
+
+
+def test_ensure_import_file_respects_the_sampling_config(tmp_path, monkeypatch, capsys):
+    raw = tmp_path / "candidates.ndjson"
+    _write_raw_candidates(raw)
+    monkeypatch.setenv("MEDLINER_RAW_CANDIDATES", str(raw))
+    monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
+    monkeypatch.setenv("MEDLINER_SAMPLE_TASKS", "indication:1")
+
+    first = cli.ensure_import_file(cli.raw_candidates_path())
+    second = cli.ensure_import_file(cli.raw_candidates_path())
+    assert first == second  # the same config reuses the file instead of rebuilding
+    assert first.name != f"import-{cli.hash_candidates_file(raw)[:16]}.json"
+    assert "sampled 1 tasks" in capsys.readouterr().out
+
+    monkeypatch.setenv("MEDLINER_SAMPLE_TASKS", "indication:1,contraindication:1")
+    other = cli.ensure_import_file(cli.raw_candidates_path())
+    assert other != first  # a changed config must not silently reuse the stale import
+
+
 def test_candidates_missing_input_is_an_explicit_error(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("MEDLINER_RAW_CANDIDATES", str(tmp_path / "absent.jsonl"))
     assert cli.main(["candidates"]) == 1
@@ -198,8 +277,8 @@ def test_label_studio_warmup_provisions_the_separate_project(tmp_path, monkeypat
     monkeypatch.setattr(cli, "provision", fake_provision)
     assert cli.main(["label-studio", "--input", str(raw), "--warmup", "--warmup-limit", "3"]) == 0
     assert len(calls) == 2
-    assert calls[0]["project_title"] == "MedliNER medical NER"
-    assert calls[1]["project_title"] == "MedliNER medical NER — Warm-up"
+    assert calls[0]["project_title"] == "MedliNER"
+    assert calls[1]["project_title"] == "MedliNER — Warm-up"
     warmup_tasks = json.loads(Path(calls[1]["import_file"]).read_text(encoding="utf-8"))
     assert len(warmup_tasks) == 3
     assert all(task["data"]["source_family"] == "gold-warmup" for task in warmup_tasks)

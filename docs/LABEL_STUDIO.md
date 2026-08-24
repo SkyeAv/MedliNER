@@ -7,9 +7,11 @@ dependency.
 ## Managed server (default)
 
 `make label-studio` starts the stock `heartexlabs/label-studio` image with podman,
-waits for health, creates the `MedliNER medical NER` project from
+waits for health, creates the `MedliNER` project from
 `configs/label_studio_ner.xml`, and imports the tasks built by `make candidates` (run
-automatically when the import file for the current input hash is missing):
+automatically when the import file for the current input hash and sampling config is
+missing; see the sampling table in `docs/CANDIDATE_TASKS.md` for the `MEDLINER_SAMPLE_*`
+variables that bound the import to ~10K balanced, staggered tasks):
 
 ```bash
 make label-studio
@@ -22,6 +24,9 @@ that account on first boot). Server state — accounts, projects, annotations �
 
 Behavior notes:
 
+- The project title is `MedliNER` (previously `MedliNER medical NER`). Projects are matched by
+  exact title, so the first run after the rename creates a fresh project; any old-titled
+  project remains in the server data directory, unused.
 - Re-running `make label-studio` reuses a running container and an existing project, and skips
   the import when the project already has tasks. To replace project tasks, run
   `REIMPORT=1 make label-studio`.
@@ -51,7 +56,7 @@ on the shared instance sees every project. The managed flow supports a group ses
    rely on the natural staggering of the sequential queue — both work with this pipeline
    because exports keep per-annotation authorship.
 4. **Seed a warm-up round** with `WARMUP=1 make label-studio`: gold-benchmark cases are
-   imported into a *separate* project (`MedliNER medical NER — Warm-up`, `--warmup-limit`
+   imported into a *separate* project (`MedliNER — Warm-up`, `--warmup-limit`
    tasks, default 10) so annotators can practice and compare against known answers without
    gold leaking into the main queue. The gold spans travel with each task in its
    `gold_mentions` data field (visible in the Data Manager). The warm-up project needs the
@@ -68,7 +73,7 @@ make label-studio-export            # writes $MEDLINER_LABEL_STUDIO_EXPORT
 OUTPUT=/tmp/reviewed.json make label-studio-export
 ```
 
-The command finds the `MedliNER medical NER` project by title, downloads the JSON export,
+The command finds the `MedliNER` project by title, downloads the JSON export,
 and prints the annotated/total task counts. The manual browser route still works: export as
 JSON from the project UI and save it anywhere, then override `MEDLINER_LABEL_STUDIO_EXPORT`
 in the ignored `.envrc.local` if the path differs from the example in `.envrc`.
