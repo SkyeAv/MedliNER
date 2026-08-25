@@ -94,8 +94,8 @@ DEFAULT_SAMPLE_SEED = 2026
 DEFAULT_SAMPLE_MAX_WORDS = 300
 #: Shorten stage threshold: texts over this many words (≈ 3-4 short sentences) are rewritten.
 DEFAULT_SHORTEN_MAX_WORDS = 48
-#: Parallel chat requests; the server serves two slots (-np 2) with continuous batching, so a
-#: small queue in front of it keeps both slots busy without unbounded memory growth.
+#: Parallel chat requests; default matches the server's four slots (-np 4) with continuous
+#: batching — extra requests would just queue client-side for no gain.
 DEFAULT_SHORTEN_WORKERS = 4
 DEFAULT_SAMPLE_MAX_RUN = 3
 #: Share of each sampling stratum filled with the hardest texts; the rest stays hash-random.
@@ -218,6 +218,22 @@ def run_candidates(input_path: Path) -> Path:
             raise ValueError(
                 f"sampling produced no tasks from {input_path} "
                 f"(targets {settings.targets}, max_words {settings.max_words})"
+            )
+        # Shorten only what was sampled: the batch that annotators will actually see. When the
+        # LLM is down this is skipped and long texts simply stay as-is (the sampling cap above
+        # still bounds them), so prepare remains usable offline.
+        from . import llm
+
+        if llm.health(url=None):
+            shorten_stats = shorten_task_texts(tasks, max_words=shorten_max_words(), url=None)
+            sampling_manifest["llm_shorten"] = shorten_stats
+            print(
+                f"candidates: shortened {shorten_stats['shortened']}/"
+                f"{shorten_stats['over_threshold']} over-{shorten_stats['max_words']}-word texts via LLM"
+            )
+        else:
+            print(
+                f"candidates: LLM not healthy at {llm.llm_url()}; skipping text shortening (start 'make llm' to enable)"
             )
         selected_difficulty = [difficulty_score(task["data"]["text"]) for task in tasks]
         sampling_manifest["selected_difficulty_mean"] = round(sum(selected_difficulty) / len(selected_difficulty), 3)
@@ -466,6 +482,53 @@ def shorten_max_words() -> int:
     return int(os.environ.get("MEDLINER_SHORTEN_MAX_WORDS", str(DEFAULT_SHORTEN_MAX_WORDS)))
 
 
+def rewrite_texts(texts: list[str], *, max_words: int, url: str | None) -> list[tuple[str, bool, bool]]:
+    """Rewrite each text through the local LLM (validated); returns per input
+    ``(shortened_text, empty_hint, cached_hit)``. Failures keep the original text."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from . import llm
+
+    workers = max(1, int(os.environ.get("MEDLINER_SHORTEN_WORKERS", str(DEFAULT_SHORTEN_WORKERS))))
+    cache_path = llm.default_cache_path()
+
+    def rewrite_one(text: str) -> tuple[str, bool, bool]:
+        cached = llm.cache_lookup(cache_path, text, max_words=max_words) is not None
+        shortened, empty_hint = llm.shorten_text(text, max_words=max_words, url=url, cache=cache_path)
+        return shortened, empty_hint, cached
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        return list(pool.map(rewrite_one, texts))
+
+
+def shorten_task_texts(tasks: list[dict[str, Any]], *, max_words: int, url: str | None) -> dict[str, Any]:
+    """Rewrite sampled import-task texts over ``max_words`` words through the LLM, in place.
+
+    Only the already-sampled batch is sent to the model — never the whole candidate pool.
+    Every rewrite is validated by :func:`medliner.llm.shorten_text`; failures and empty
+    hints keep the original text. Returns manifest statistics.
+    """
+    from .candidates import _word_count
+
+    long_indices = [index for index, task in enumerate(tasks) if _word_count(task["data"]["text"]) > max_words]
+    stats: dict[str, Any] = {
+        "max_words": max_words,
+        "over_threshold": len(long_indices),
+        "shortened": 0,
+        "empty_hints": 0,
+        "cached_replies": 0,
+    }
+    results = rewrite_texts([tasks[index]["data"]["text"] for index in long_indices], max_words=max_words, url=url)
+    for index, (shortened, empty_hint, cached_hit) in zip(long_indices, results, strict=True):
+        original = tasks[index]["data"]["text"]
+        if shortened != original:
+            tasks[index]["data"]["text"] = shortened
+            stats["shortened"] += 1
+        stats["empty_hints"] += empty_hint
+        stats["cached_replies"] += cached_hit
+    return stats
+
+
 def run_shorten(input_path: Path, *, limit: int | None, max_words: int, url: str | None, force: bool = False) -> Path:
     """Rewrite candidate texts over ``max_words`` words through the LLM; returns the output path.
 
@@ -482,8 +545,6 @@ def run_shorten(input_path: Path, *, limit: int | None, max_words: int, url: str
     ($MEDLINER_SHORTEN_CACHE), so overlapping texts across candidate files are never sent
     to the model twice.
     """
-    from concurrent.futures import ThreadPoolExecutor
-
     from . import llm
     from .candidates import _word_count
 
@@ -524,24 +585,16 @@ def run_shorten(input_path: Path, *, limit: int | None, max_words: int, url: str
     if limit is not None:
         pending = pending[:limit]
 
-    workers = max(1, int(os.environ.get("MEDLINER_SHORTEN_WORKERS", str(DEFAULT_SHORTEN_WORKERS))))
-    cache_path = llm.default_cache_path()
+    cache_path_str = str(llm.default_cache_path())
     resumed_count = len(done_texts)
-
-    def shorten_one(index: int) -> tuple[int, str, bool, bool]:
-        original = rows[index]["text"]
-        cached_hit = llm.cache_lookup(cache_path, original, max_words=max_words) is not None
-        shortened, empty_hint = llm.shorten_text(original, max_words=max_words, url=url, cache=cache_path)
-        return index, shortened, empty_hint, cached_hit
-
+    results = rewrite_texts([rows[index]["text"] for index in pending], max_words=max_words, url=url)
     cached_count = 0
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        for index, shortened, empty_hint, cached_hit in pool.map(shorten_one, pending):
-            rows[index]["text"] = shortened
-            done_texts[index] = shortened
-            cached_count += cached_hit
-            if empty_hint:
-                done_hints.add(index)
+    for index, (shortened, empty_hint, cached_hit) in zip(pending, results, strict=True):
+        rows[index]["text"] = shortened
+        done_texts[index] = shortened
+        cached_count += cached_hit
+        if empty_hint:
+            done_hints.add(index)
     for index, text in done_texts.items():
         rows[index]["text"] = text
 
@@ -562,10 +615,10 @@ def run_shorten(input_path: Path, *, limit: int | None, max_words: int, url: str
         "empty_hints": len(done_hints),
         "resumed_from_previous": resumed_count,
         "cached_replies": cached_count,
-        "cache": str(cache_path),
+        "cache": cache_path_str,
         "processed_indices": attempted,
         "empty_hint_indices": sorted(done_hints),
-        "workers": workers,
+        "workers": max(1, int(os.environ.get("MEDLINER_SHORTEN_WORKERS", str(DEFAULT_SHORTEN_WORKERS)))),
     }
     with output.open("w", encoding="utf-8") as handle:
         for row in rows:

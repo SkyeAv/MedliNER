@@ -1,11 +1,11 @@
 """Client for the local llama.cpp chat server (the ``medliner`` target in ``$MODELS_DIR``).
 
-The server (Ornith-1.0-9B, ``llama-server -np 2 -cb --kv-unified``) speaks the
+The server (Ornith-1.0-9B, ``llama-server -np 4 -cb --kv-unified``) speaks the
 OpenAI-compatible chat-completions API. Two details of this deployment shape the client:
 
 - the model is a reasoner: unless ``enable_thinking`` is turned off it spends the whole
   token budget on ``reasoning_content`` and returns an empty ``content``;
-- it serves two parallel slots with continuous batching, so callers may run two requests
+- it serves four parallel slots with continuous batching, so callers may run several requests
   concurrently without queuing.
 
 Nothing here is required by the deterministic pipeline: the LLM only rewrites over-long
