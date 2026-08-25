@@ -387,9 +387,11 @@ def _synthetic_pool_path() -> Path:
 def _load_synthetic_examples(config: dict[str, Any], *, no_synthetic: bool) -> tuple[list[Example], str | None]:
     """Load the synthetic pool for down-weighted mixing into the train split.
 
-    A configured ``synthetic_weight`` with no pool is a hard error, not a silent gold-only run:
-    the operator asked for a semi-supervised mix and must either generate the pool or opt out
-    explicitly with ``--no-synthetic``.
+    Both mismatches between the pool and the config are hard errors, not silent fallbacks: a
+    configured ``synthetic_weight`` with no pool would silently train gold-only, and a present
+    pool with no configured ``synthetic_weight`` would silently train synthetic examples at
+    the full gold weight 1.0. Generate the pool, configure the weight, or opt out explicitly
+    with ``--no-synthetic``.
     """
     if no_synthetic:
         return [], None
@@ -402,6 +404,12 @@ def _load_synthetic_examples(config: dict[str, Any], *, no_synthetic: bool) -> t
                 "with --no-synthetic"
             )
         return [], None
+    if "synthetic_weight" not in config:
+        raise ValueError(
+            f"synthetic pool found at {path} but the training config sets no synthetic_weight; "
+            "synthetic examples would train at the full gold weight 1.0 — add synthetic_weight "
+            "(e.g. 0.1) to the training config or train gold-only with --no-synthetic"
+        )
     return read_examples(path), hash_file(path)
 
 

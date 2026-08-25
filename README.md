@@ -89,9 +89,9 @@ the `medliner` CLI (every stage also runs standalone as `uv run medliner <stage>
    the container's data volume directory under `$MEDLINER_WORKDIR/label-studio/server-data`.
 5. `make train` — runs the remaining stages (`dataset` → `splits` → `train` → `evaluate` →
    `bundle`) in order. Onboarding is optional: set `MEDLINER_ONBOARDING_REQUIRED=1` to accept
-   only production annotations from promoted users. With the committed
-   `synthetic_weight: 0.1` configuration the training step also requires the synthetic pool
-   from `make synthesize` (see below).
+   only production annotations from promoted users. When no synthetic pool exists yet, the
+   pipeline trains gold-only with a notice; once `make synthesize` has produced a pool, the
+   training step mixes it in at the configured `synthetic_weight` (see below).
 
 For a group session, `MEDLINER_LABEL_STUDIO_HOST=0.0.0.0` exposes the server on the LAN and
 `MEDLINER_LABEL_STUDIO_ANNOTATORS="alice:pw,bob:pw"` pre-creates accounts. See
@@ -171,11 +171,14 @@ Accepted paraphrases are stamped `source.family='synthetic'` and can never claim
 provenance, so machine-made rows stay auditable. The artifact bundle ships the synthetic
 examples, their manifest, and the synthetic weight/count/manifest hash in `provenance.json`.
 
-Caveat: `make train` wraps `medliner pipeline`, which does not expose `--no-synthetic` — once
-`synthetic_weight` is configured, the pipeline *requires* the synthetic pool and fails loudly
-when it is missing rather than silently training on gold only. A gold-only run is
-`uv run medliner train --no-synthetic` once the dataset/splits stages have produced their
-artifacts (or remove `synthetic_weight` from the training config).
+Fallback semantics: `make train` wraps `medliner pipeline`, which does not expose
+`--no-synthetic`. When no pool exists yet, the pipeline selects the gold-only fallback
+itself and prints a notice instead of failing; when a pool exists, it is mixed in at the
+configured `synthetic_weight`. Direct `medliner train` stays strict: a configured
+`synthetic_weight` with no pool, or a present pool with no configured weight, fails loudly
+rather than silently training gold-only or training synthetic examples at the full gold
+weight. The explicit forced gold-only route is `uv run medliner train --no-synthetic` once
+the dataset/splits stages have produced their artifacts.
 
 ## Evaluation gates
 

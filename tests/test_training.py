@@ -541,6 +541,32 @@ def test_missing_synthetic_pool_with_configured_weight_is_a_hard_error(tmp_path,
     assert metadata["synthetic_dataset_hash"] is None
 
 
+def test_synthetic_pool_without_configured_weight_is_a_hard_error(tmp_path, monkeypatch):
+    # A present pool must not silently fall back to weight 1.0: machine-paraphrased examples
+    # would then train at full gold strength and steer the model without any operator intent.
+    # --no-synthetic stays the explicit gold-only opt-out even with a pool sitting in the workdir.
+    workdir = tmp_path / "work"
+    monkeypatch.setenv("MEDLINER_WORKDIR", str(workdir))
+    split_dir = tmp_path / "splits"
+    _write_splits(split_dir)
+    write_examples(
+        [_gold_example("gold-1-synth-paraphrase", "asthma flares", (0, 6))],
+        workdir / "synthetic" / "examples.jsonl",
+    )
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("model_id: stub\neval_steps: 25\nsave_steps: 25\nresume: false\n", encoding="utf-8")
+    captured: dict = {}
+    _patch_training_internals(monkeypatch, captured)
+    from medliner.training import train_from_split_directory
+
+    with pytest.raises(ValueError, match=r"sets no synthetic_weight.*--no-synthetic"):
+        train_from_split_directory(split_dir, tmp_path / "out", config_path=config_path)
+
+    train_from_split_directory(split_dir, tmp_path / "out", config_path=config_path, no_synthetic=True)
+    assert [record["id"] for record in captured["train_records"]] == ["gold-1", "gold-2"]
+    assert captured["weighted"] is False
+
+
 def test_train_without_synthetic_pool_or_synthetic_weight_is_gold_only(tmp_path, monkeypatch):
     # No pool and no configured weight is the historical default: the plain
     # FixedLabelCollator + GLiNER Trainer path, bit-for-bit unchanged.
