@@ -28,8 +28,13 @@ export MEDLINER_SYNTH_MAX_WORDS ?= 250
 export MEDLINER_SYNTH_MIN_SIMILARITY ?= 0.3
 export MEDLINER_SYNTH_WORKERS ?= 2
 export MEDLINER_SYNTH_CACHE ?= $(CURDIR)/data/materialized/synth-cache.sqlite3
-MODELS_DIR ?= $(CURDIR)/models
+# Model checkout with the `medliner` llama-server target; falls back to ~/Desktop/MODELS.
+MODELS_DIR ?= $(if $(wildcard $(CURDIR)/models/Makefile),$(CURDIR)/models,$(HOME)/Desktop/MODELS)
 LLM_TMUX_SESSION ?= medliner-llm
+# Shorten stage: word threshold (≈3-4 short sentences), parallel requests, reply cache.
+export MEDLINER_SHORTEN_MAX_WORDS ?= 48
+export MEDLINER_SHORTEN_WORKERS ?= 4
+export MEDLINER_SHORTEN_CACHE ?= $(CURDIR)/data/materialized/shorten-cache.sqlite3
 
 # Triton locates libcuda through /sbin/ldconfig; without a loader cache that call fails inside
 # the backward pass. An empty value is ignored by Triton, so this is safe on normal systems.
@@ -43,7 +48,7 @@ help:
 		'  make setup              Install or update the uv environment' \
 		'' \
 		'Data (everything before Label Studio, one command):' \
-		'  make prepare            Build the sampled import file and attach GLiNER suggestions' \
+		'  make prepare            Sample, shorten long texts via the LLM (if healthy), attach GLiNER suggestions' \
 		'' \
 		'Label Studio:' \
 		'  make annotate           Start the production Label Studio server with tasks imported' \
@@ -61,9 +66,10 @@ help:
 		'  make synthesize         Fill the gated synthetic pool: make llm -> make synthesize -> make train' \
 		'' \
 		'Local LLM (used by make shorten and make synthesize):' \
-		'  make llm                Start the LLM via "make medliner" in models/ (detached tmux)' \
+		'  make llm                Start the LLM used by make prepare / make shorten / make synthesize (detached tmux)' \
+
 		'  make llm-stop           Kill the LLM tmux session' \
-		'  make shorten            Rewrite over-long candidate texts through the LLM' \
+		'  make shorten            Rewrite texts over MAX_WORDS words via the LLM; resumes interrupted runs' \
 		'' \
 		'Development:' \
 		'  make check              Run tests, lint, and formatting checks' \
@@ -93,7 +99,7 @@ llm-stop:
 		|| echo "llm: no tmux session named $(LLM_TMUX_SESSION)"
 
 shorten:
-	uv run medliner shorten
+	uv run medliner shorten $(if $(LIMIT),--limit $(LIMIT),) $(if $(MAX_WORDS),--max-words $(MAX_WORDS),)
 
 prepare:
 	uv run medliner prepare

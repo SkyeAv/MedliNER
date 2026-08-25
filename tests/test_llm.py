@@ -142,6 +142,66 @@ def test_shorten_text_tolerates_a_broken_cache(server, tmp_path):
     assert (shortened, empty_hint) == ("a shorter text", False)  # cache failure degrades to a miss
 
 
+def test_candidates_shortens_only_the_sampled_batch(tmp_path, monkeypatch, capsys, server):
+    import json
+    from pathlib import Path
+
+    from medliner import cli
+
+    raw = tmp_path / "candidates.ndjson"
+    rows = [
+        {"text": " ".join(["filler"] * 60), "task": "indication", "source_family": "dailymed"},
+        {"text": " ".join(["detail"] * 65), "task": "indication", "source_family": "ema"},
+        {"text": " ".join(["extra"] * 70), "task": "indication", "source_family": "dailymed"},
+        {"text": "Short indication text.", "task": "contraindication", "source_family": "faers"},
+    ]
+    raw.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+    monkeypatch.setenv("MEDLINER_RAW_CANDIDATES", str(raw))
+    monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
+    monkeypatch.setenv("MEDLINER_LLM_URL", server)
+    monkeypatch.setenv("MEDLINER_SAMPLE_TASKS", "indication:2")
+    StubHandler.reply_content = "Condensed indication."
+
+    assert cli.main(["candidates"]) == 0
+    out = capsys.readouterr().out
+    assert "sampled 2 tasks" in out
+    assert "shortened 2/2 over-48-word texts via LLM" in out
+    import_path = Path(out.split("->")[-1].strip())
+    tasks = json.loads(import_path.read_text(encoding="utf-8"))
+    assert [task["data"]["text"] for task in tasks] == ["Condensed indication.", "Condensed indication."]
+    # Only the two sampled tasks reached the model; the third long row was never sent.
+    assert StubHandler.request_count == 2
+    manifest = json.loads(import_path.with_suffix(".manifest.json").read_text(encoding="utf-8"))
+    assert manifest["sampling"]["llm_shorten"]["over_threshold"] == 2
+    assert manifest["sampling"]["llm_shorten"]["shortened"] == 2
+
+
+def test_candidates_skips_shortening_when_the_llm_is_down(tmp_path, monkeypatch, capsys):
+    import json
+    from pathlib import Path
+
+    from medliner import cli
+
+    raw = tmp_path / "candidates.ndjson"
+    raw.write_text(
+        json.dumps({"text": "Indicated for asthma.", "task": "indication", "source_family": "dailymed"}) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MEDLINER_RAW_CANDIDATES", str(raw))
+    monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
+    monkeypatch.setenv("MEDLINER_LLM_URL", "http://127.0.0.1:1")
+    monkeypatch.setenv("MEDLINER_SAMPLE_TASKS", "indication:1")
+
+    assert cli.main(["candidates"]) == 0
+    out = capsys.readouterr().out
+    assert "skipping text shortening" in out
+    import_path = Path(out.split("->")[-1].strip())
+    tasks = json.loads(import_path.read_text(encoding="utf-8"))
+    assert tasks[0]["data"]["text"] == "Indicated for asthma."  # untouched without an LLM
+    manifest = json.loads(import_path.with_suffix(".manifest.json").read_text(encoding="utf-8"))
+    assert "llm_shorten" not in manifest["sampling"]
+
+
 def test_run_shorten_rewrites_over_long_rows_via_the_cli(tmp_path, monkeypatch, capsys, server):
     import json
 
@@ -211,7 +271,7 @@ def test_run_shorten_resumes_an_interrupted_run(tmp_path, monkeypatch, capsys, s
     ]
     assert all(row["text"] == "short version" for row in final)
 
-    # --force re-runs everything despite complete progress.
+    # --force re-processes everything through the server, bypassing the sqlite rewrite cache.
     assert cli.main(["shorten", "--force"]) == 0
     assert StubHandler.request_count == 6
 

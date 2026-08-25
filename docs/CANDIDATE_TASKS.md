@@ -93,25 +93,28 @@ Behavior:
 - The manifest records a `sampling` block (targets, seed, caps, `edge_fraction`, pool counts,
   and pool-vs-selected mean difficulty) for auditability.
 
-## LLM shortening (opt-in)
+## LLM shortening (sampled batch)
 
-Rows over `max_words` are normally dropped. The local LLM (Ornith-1.0-9B, served by the directory configured in `MODELS_DIR` with
-`make medliner`) can instead rewrite them into shorter texts that keep
-every condition mention verbatim:
+`make prepare` shortens automatically as part of building the import file: after sampling, every sampled text over
+`MEDLINER_SHORTEN_MAX_WORDS` words (default 48, ≈ 3-4 short sentences) is rewritten by the local LLM (Ornith-1.0-9B,
+served from the directory configured in `MODELS_DIR` with `make medliner`) into a shorter text that keeps every
+condition mention verbatim. Only the sampled ~5k batch is sent to the model — never the whole candidate pool — and if
+the LLM is not running, prepare skips shortening with a notice and long texts stay as-is:
 
 ```bash
-make llm            # start llama-server in a detached tmux session, wait for health
-make shorten        # rewrites >max_words rows; writes candidates.shortened.ndjson + manifest
+make llm            # optional; without it prepare just skips the shortening step
+make prepare        # sample → shorten (LLM) → attach GLiNER suggestions
 make llm-stop
 ```
 
-`make shorten` is never run implicitly. Only rows over the word cap are sent (two at a time,
-matching the server's `-np 2 -cb`), every rewrite is validated (non-empty, actually shorter),
-and failures keep the original text and are counted in the manifest. Rows the model judges
-to contain no condition mention are recorded as `empty_hints` — a review signal only, never
-a drop decision. Use `uv run medliner shorten --limit 8` for a trial run, then point
-`MEDLINER_RAW_CANDIDATES` at the shortened file before `make prepare` if the manifest looks
-right. `MEDLINER_LLM_URL` overrides the server address (default `http://127.0.0.1:8080`).
+Every rewrite is validated (non-empty, actually shorter) and failures keep the original text, all counted in the import
+manifest's `sampling.llm_shorten` block. Texts are sent up to `MEDLINER_SHORTEN_WORKERS` at a time (default 4, matching
+the server's four slots). Successful replies are cached in `$MEDLINER_SHORTEN_CACHE` (sqlite), so re-running prepare or
+overlapping texts never hit the model twice. Rows the model judges to contain no condition mention are recorded as
+`empty_hints` — a review signal only, never a drop decision.
+
+The standalone `medliner shorten --input <file>` remains available for rewriting an arbitrary candidates file in place
+(with manifest-based resume via `--limit`; `--force` re-runs everything); `make shorten LIMIT=8 MAX_WORDS=48` wraps it.
 
 ## Raw-pool authoring guidance
 
