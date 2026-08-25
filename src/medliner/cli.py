@@ -476,7 +476,8 @@ def run_shorten(input_path: Path, *, limit: int | None, max_words: int, url: str
     Resumable: when the previous manifest matches this input (same file hash and
     threshold), rows already processed last run keep their rewritten text and only the
     remainder is sent to the model — an interrupted long run loses no work. Pass
-    ``force=True`` (CLI ``--force``) to ignore prior progress and re-run everything.
+    ``force=True`` (CLI ``--force``) to ignore prior progress and cached replies and
+    re-run everything through the server.
 
     Successful replies are also persisted in a sqlite rewrite cache
     ($MEDLINER_SHORTEN_CACHE), so overlapping texts across candidate files are never sent
@@ -526,12 +527,17 @@ def run_shorten(input_path: Path, *, limit: int | None, max_words: int, url: str
 
     workers = max(1, int(os.environ.get("MEDLINER_SHORTEN_WORKERS", str(DEFAULT_SHORTEN_WORKERS))))
     cache_path = llm.default_cache_path()
+    # --force bypasses the sqlite reply cache entirely: every over-limit row is regenerated
+    # through the server, never served a cached reply (and not re-stored either).
+    reply_cache = None if force else cache_path
     resumed_count = len(done_texts)
 
     def shorten_one(index: int) -> tuple[int, str, bool, bool]:
         original = rows[index]["text"]
-        cached_hit = llm.cache_lookup(cache_path, original, max_words=max_words) is not None
-        shortened, empty_hint = llm.shorten_text(original, max_words=max_words, url=url, cache=cache_path)
+        cached_hit = (
+            reply_cache is not None and llm.cache_lookup(reply_cache, original, max_words=max_words) is not None
+        )
+        shortened, empty_hint = llm.shorten_text(original, max_words=max_words, url=url, cache=reply_cache)
         return index, shortened, empty_hint, cached_hit
 
     cached_count = 0
@@ -910,7 +916,11 @@ def build_parser() -> argparse.ArgumentParser:
         f"(default: $MEDLINER_SHORTEN_MAX_WORDS, {DEFAULT_SHORTEN_MAX_WORDS})",
     )
     shorten.add_argument("--url", help="LLM server base URL (default: $MEDLINER_LLM_URL, http://127.0.0.1:8080)")
-    shorten.add_argument("--force", action="store_true", help="ignore previous progress and re-shorten everything")
+    shorten.add_argument(
+        "--force",
+        action="store_true",
+        help="ignore previous progress and cached replies; re-shorten everything through the model",
+    )
     shorten.set_defaults(func=cmd_shorten)
 
     prepare = sub.add_parser("prepare", help="build the sampled import file and attach GLiNER suggestions in one go")

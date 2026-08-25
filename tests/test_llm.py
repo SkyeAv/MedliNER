@@ -214,3 +214,47 @@ def test_run_shorten_resumes_an_interrupted_run(tmp_path, monkeypatch, capsys, s
     # --force re-runs everything despite complete progress.
     assert cli.main(["shorten", "--force"]) == 0
     assert StubHandler.request_count == 6
+
+
+def test_run_shorten_force_bypasses_the_sqlite_reply_cache(tmp_path, monkeypatch, capsys, server):
+    """--force must regenerate over-limit rows through the server, never the sqlite cache.
+
+    The reply cache exists so overlapping texts skip the model across runs; --force is the
+    user's explicit request for fresh model output (e.g. after a prompt or server change).
+    Serving a cached reply would silently defeat the regeneration the flag promises, so the
+    cache must be bypassed entirely on a forced run.
+    """
+    import json
+
+    from medliner import cli
+
+    raw = tmp_path / "candidates.ndjson"
+    rows = [
+        {"text": " ".join(["filler"] * 60), "task": "indication", "source_family": "dailymed"},
+        {"text": " ".join(["filler"] * 70), "task": "indication", "source_family": "dailymed"},
+    ]
+    raw.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+    monkeypatch.setenv("MEDLINER_RAW_CANDIDATES", str(raw))
+    monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
+    monkeypatch.setenv("MEDLINER_LLM_URL", server)
+    StubHandler.reply_content = "first short version"
+
+    # Populate the sqlite reply cache with the first run's answers.
+    assert cli.main(["shorten"]) == 0
+    assert StubHandler.request_count == 2
+    first = [
+        json.loads(line) for line in (tmp_path / "candidates.shortened.ndjson").read_text(encoding="utf-8").splitlines()
+    ]
+    assert all(row["text"] == "first short version" for row in first)
+
+    # --force: every row goes back to the server even though the cache holds a reply.
+    StubHandler.reply_content = "second short version"
+    assert cli.main(["shorten", "--force"]) == 0
+    assert StubHandler.request_count == 4  # 2 fresh model calls, 0 served from cache
+    forced = [
+        json.loads(line) for line in (tmp_path / "candidates.shortened.ndjson").read_text(encoding="utf-8").splitlines()
+    ]
+    assert all(row["text"] == "second short version" for row in forced)
+    manifest = json.loads((tmp_path / "candidates.shortened.manifest.json").read_text(encoding="utf-8"))
+    assert manifest["cached_replies"] == 0
+    assert "0 served from cache" in capsys.readouterr().out

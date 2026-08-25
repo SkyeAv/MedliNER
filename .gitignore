@@ -11,3 +11,6 @@ artifacts/
 .coverage
 htmlcov/
 coverage.xml
+
+# Ralph planning state (machine-written each loop)
+.ralph/
