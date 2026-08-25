@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from medliner.dataset import hash_file, manifest_for, read_examples, write_examples, write_manifest
-from medliner.schema import Annotation, Example
+from medliner.schema import Annotation, DatasetManifest, Example
 from medliner.splits import group_key
 
 
@@ -94,3 +94,50 @@ def test_manifest_counts_how_much_of_the_dataset_is_an_untouched_model_span():
 def test_spans_from_an_export_without_origins_are_counted_as_unrecorded():
     manifest = manifest_for([_example("a")], input_export_hash="h", dataset_id="d")
     assert manifest.origin_counts == {"unrecorded": 1}
+
+
+def test_manifest_counts_annotation_provenance():
+    """The human/synthetic mix must be visible in the manifest artifact itself.
+
+    Downstream consumers (trust policies, training-time weighting) decide based on this count;
+    without it the synthetic share of a dataset is invisible until someone re-derives it.
+    """
+    mixed = Example(
+        id="a",
+        text="asthma and nausea",
+        task="indication",
+        source={"family": "dailymed"},
+        annotations=[
+            Annotation(start=0, end=6, label="disease", text="asthma", provenance="human"),
+            Annotation(start=11, end=17, label="phenotype", text="nausea", provenance="human"),
+        ],
+    )
+    also_synthetic = Example(
+        id="b",
+        text="asthma and nausea",
+        task="indication",
+        source={"family": "synthetic"},
+        annotations=[
+            Annotation(start=0, end=6, label="disease", text="asthma", provenance="synthetic"),
+            Annotation(start=11, end=17, label="phenotype", text="nausea", provenance="synthetic"),
+        ],
+    )
+    manifest = manifest_for([mixed, also_synthetic], input_export_hash="h", dataset_id="d")
+    assert manifest.provenance_counts == {"human": 2, "synthetic": 2}
+
+
+def test_manifests_written_before_provenance_counts_still_validate():
+    """Additive compatibility: a manifest from an older MedliNER version has no provenance_counts.
+
+    The field is optional with a default so historical artifacts keep validating instead of
+    forcing a rewrite of every stored manifest the moment the schema learns about synthetic data.
+    """
+    legacy_json = (
+        '{"schema_version": "medliner.dataset.v1", "dataset_id": "d", '
+        '"input_export_hash": "h", "example_count": 1, '
+        '"label_counts": {"disease": 1}, "task_counts": {"indication": 1}, '
+        '"origin_counts": {"unrecorded": 1}}'
+    )
+    manifest = DatasetManifest.model_validate_json(legacy_json)
+    assert manifest.provenance_counts == {}
+    assert manifest.example_count == 1

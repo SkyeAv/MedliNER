@@ -17,9 +17,15 @@ SCHEMA_VERSION = "medliner.example.v1"
 ALLOWED_LABELS = ("disease", "phenotype")
 ALLOWED_TASKS = ("indication", "contraindication")
 REVIEWED_STATUSES = ("reviewed", "adjudicated")
-Provenance = Literal["human", "adjudicated", "model_suggestion"]
+Provenance = Literal["human", "adjudicated", "model_suggestion", "synthetic"]
 # Derived so the runtime tuple and the annotated type cannot drift apart.
 PROVENANCE_VALUES = get_args(Provenance)
+# "adjudicated" is a human claim too (an adjudicator resolved the span), so both values count
+# as human provenance when policing synthetic examples.
+HUMAN_PROVENANCE_VALUES = ("human", "adjudicated")
+# Source family that marks an example as machine-synthesized. The synthesis engine stamps it on
+# SourceMetadata.family so provenance policing, split grouping, and manifest counts all see it.
+SYNTHETIC_SOURCE_FAMILY = "synthetic"
 # Label Studio stamps each submitted region with where it came from. Pre-labeled projects need
 # this to stay auditable: "prediction" means a human submitted a model span without touching it,
 # which is a weaker signal than a span they drew or corrected themselves.
@@ -142,6 +148,21 @@ class Example(BaseModel):
                 raise ValueError("model suggestions must be accepted or replaced by a human before review")
         return self
 
+    @model_validator(mode="after")
+    def enforce_synthetic_provenance(self) -> Example:
+        # A synthetic example claiming human (or adjudicated) provenance would contaminate every
+        # audit that trusts provenance: review effort counts, dataset manifests, trust policies.
+        if self.source.family.strip().lower() != SYNTHETIC_SOURCE_FAMILY:
+            return self
+        for annotation in self.annotations:
+            if annotation.provenance in HUMAN_PROVENANCE_VALUES:
+                raise ValueError(
+                    f"example {self.id!r} is {SYNTHETIC_SOURCE_FAMILY} but annotation "
+                    f"{annotation.text!r} claims human provenance {annotation.provenance!r}; "
+                    "use provenance='synthetic'"
+                )
+        return self
+
     def canonical_json(self) -> str:
         return json.dumps(self.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
 
@@ -159,6 +180,9 @@ class DatasetManifest(BaseModel):
     # How much of this dataset is an unmodified model suggestion a human merely submitted. The
     # central risk of pre-labeling, and invisible without counting it here.
     origin_counts: dict[str, int] = Field(default_factory=dict)
+    # Annotation provenance mix, so a dataset's synthetic share is visible in the artifact itself
+    # instead of only in the pipeline that produced it. Optional for manifests written before it.
+    provenance_counts: dict[str, int] = Field(default_factory=dict)
     split_hash: str | None = None
     annotation_policy_version: str = "medliner.policy.v1"
 
@@ -182,10 +206,12 @@ __all__ = [
     "DatasetManifest",
     "EntityLabel",
     "Example",
+    "HUMAN_PROVENANCE_VALUES",
     "PROVENANCE_VALUES",
     "Provenance",
     "SCHEMA_VERSION",
     "SPAN_ORIGINS",
+    "SYNTHETIC_SOURCE_FAMILY",
     "SourceMetadata",
     "SpanOrigin",
     "SplitManifest",

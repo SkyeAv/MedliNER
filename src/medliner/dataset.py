@@ -53,6 +53,9 @@ def manifest_for(examples: Iterable[Example], *, input_export_hash: str, dataset
                 Counter(annotation.origin or "unrecorded" for item in values for annotation in item.annotations).items()
             )
         ),
+        provenance_counts=dict(
+            sorted(Counter(annotation.provenance for item in values for annotation in item.annotations).items())
+        ),
     )
 
 

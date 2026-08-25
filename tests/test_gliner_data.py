@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from medliner.gliner_data import ModelLimits, char_span_to_token_span, split_words, to_gliner_record
+from medliner.gliner_data import ModelLimits, char_span_to_token_span, split_words, to_gliner_dataset, to_gliner_record
 from medliner.schema import Annotation, Example
 
 
@@ -102,3 +102,30 @@ def test_limits_are_read_from_the_model_config():
 
     assert model_limits(Model()) == ModelLimits(max_len=384, max_width=12)
     assert model_limits(None) == ModelLimits(max_len=None, max_width=None)
+
+
+def test_record_weight_is_carried_only_when_not_default():
+    """Default-weight records keep the exact pre-weight key set.
+
+    The record shape is a consumed contract (training, packaging, audits); adding a key by
+    default would change every artifact hash for no information gain. A non-default weight is
+    carried so semi-supervised mixes can down-weight synthetic records.
+    """
+    default = to_gliner_record(_example("asthma", [(0, 6, "disease")]))
+    assert "weight" not in default
+    explicit_default = to_gliner_record(_example("asthma", [(0, 6, "disease")]), weight=1.0)
+    assert "weight" not in explicit_default
+    weighted = to_gliner_record(_example("asthma", [(0, 6, "disease")]), weight=0.25)
+    assert weighted["weight"] == 0.25
+
+
+def test_dataset_weight_applies_to_every_record():
+    records = to_gliner_dataset([_example("asthma", [(0, 6, "disease")]), _example("nausea", [])], weight=0.5)
+    assert [record["weight"] for record in records] == [0.5, 0.5]
+
+
+@pytest.mark.parametrize("bad_weight", [0, -1, float("inf"), float("nan")])
+def test_non_positive_or_non_finite_weights_are_rejected(bad_weight):
+    """A zero, negative, or NaN weight would silently corrupt the loss instead of failing loudly."""
+    with pytest.raises(ValueError, match="weight must be a positive finite number"):
+        to_gliner_record(_example("asthma", []), weight=bad_weight)
