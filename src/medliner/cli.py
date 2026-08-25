@@ -515,13 +515,19 @@ def run_splits(dataset_path: Path) -> Path:
     return output_dir
 
 
-def run_training(smoke: bool) -> Path:
+def run_training(smoke: bool, no_synthetic: bool = False) -> Path:
     """Fine-tune the small GLiNER checkpoint (or the one-step smoke check); returns the checkpoint dir."""
     from .training import train_from_split_directory
 
     output = workdir() / "training"
     config_path = os.environ.get("MEDLINER_TRAIN_CONFIG", "configs/train-small.yaml")
-    result = train_from_split_directory(workdir() / "splits", output, config_path=config_path, smoke_test=smoke)
+    result = train_from_split_directory(
+        workdir() / "splits",
+        output,
+        config_path=config_path,
+        smoke_test=smoke,
+        no_synthetic=no_synthetic,
+    )
     print(f"training ({'smoke' if smoke else 'full'}): checkpoint -> {result}")
     return result
 
@@ -1194,7 +1200,7 @@ def cmd_splits(args: argparse.Namespace) -> None:
 
 
 def cmd_train(args: argparse.Namespace) -> None:
-    run_training(smoke=args.smoke)
+    run_training(smoke=args.smoke, no_synthetic=args.no_synthetic)
 
 
 def cmd_evaluate(args: argparse.Namespace) -> None:
@@ -1399,6 +1405,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     train = sub.add_parser("train", help="fine-tune the small GLiNER checkpoint")
     train.add_argument("--smoke", action="store_true", help="one-step GPU sanity check (run this first)")
+    train.add_argument(
+        "--no-synthetic",
+        action="store_true",
+        help="train on gold only; ignore the synthetic pool instead of mixing it in at synthetic_weight",
+    )
     train.set_defaults(func=cmd_train)
 
     evaluate = sub.add_parser("evaluate", help="strict/lenient evaluation report for the tuned checkpoint")

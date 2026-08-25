@@ -39,6 +39,10 @@ bf16: true
 gradient_checkpointing: true
 freeze_text_encoder: false
 
+# Semi-supervised mixing: synthetic examples count 10x less than gold (1.0) in the loss.
+# Requires the pool from 'medliner synthesize'; without it use 'medliner train --no-synthetic'.
+synthetic_weight: 0.1
+
 # Entity vocabulary pinned for every batch. Defaults to the two MedliNER labels.
 labels:
   - disease

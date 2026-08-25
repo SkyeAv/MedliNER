@@ -460,8 +460,9 @@ def test_train_smoke_flag_reaches_training(tmp_path, monkeypatch):
     monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
     calls = {}
 
-    def fake_train(split_dir, output_dir, *, config_path, smoke_test):
+    def fake_train(split_dir, output_dir, *, config_path, smoke_test, no_synthetic=False):
         calls["smoke_test"] = smoke_test
+        calls["no_synthetic"] = no_synthetic
         return Path(output_dir) / "final"
 
     monkeypatch.setattr("medliner.training.train_from_split_directory", fake_train)
@@ -469,6 +470,9 @@ def test_train_smoke_flag_reaches_training(tmp_path, monkeypatch):
     assert calls["smoke_test"] is True
     assert cli.main(["train"]) == 0
     assert calls["smoke_test"] is False
+    assert calls["no_synthetic"] is False
+    assert cli.main(["train", "--no-synthetic"]) == 0
+    assert calls["no_synthetic"] is True
 
 
 def _fake_gliner(monkeypatch, entities_for):
