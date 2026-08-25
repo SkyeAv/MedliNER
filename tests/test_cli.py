@@ -475,6 +475,72 @@ def test_train_smoke_flag_reaches_training(tmp_path, monkeypatch):
     assert calls["no_synthetic"] is True
 
 
+def _patched_pipeline(monkeypatch, tmp_path):
+    """Replace the pipeline's heavy stages with recorders; returns (stage order, training flags)."""
+    order: list[str] = []
+    training_calls: dict[str, object] = {}
+
+    def fake_dataset(export):
+        order.append("dataset")
+        return tmp_path / "normalized" / "examples.jsonl"
+
+    def fake_splits(dataset_path):
+        order.append("splits")
+        return tmp_path / "splits"
+
+    def fake_train(split_dir, output_dir, *, config_path, smoke_test, no_synthetic=False):
+        order.append("train")
+        training_calls["no_synthetic"] = no_synthetic
+        return Path(output_dir) / "final"
+
+    def fake_evaluation(checkpoint, split_dir):
+        order.append("evaluate")
+        return tmp_path / "evaluation" / "report.json"
+
+    def fake_bundle(checkpoint, report, dataset_path, split_dir):
+        order.append("bundle")
+
+    monkeypatch.setattr(cli, "run_dataset", fake_dataset)
+    monkeypatch.setattr(cli, "run_splits", fake_splits)
+    monkeypatch.setattr("medliner.training.train_from_split_directory", fake_train)
+    monkeypatch.setattr(cli, "run_evaluation", fake_evaluation)
+    monkeypatch.setattr(cli, "run_bundle", fake_bundle)
+    return order, training_calls
+
+
+def _pipeline_environment(tmp_path, monkeypatch):
+    """Point the pipeline at a scratch workdir with a readable (unused) reviewed export."""
+    export = tmp_path / "reviewed.json"
+    export.write_text("[]", encoding="utf-8")
+    monkeypatch.setenv("MEDLINER_LABEL_STUDIO_EXPORT", str(export))
+    monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
+
+
+def test_pipeline_trains_gold_only_when_the_synthetic_pool_is_absent(tmp_path, monkeypatch):
+    # `make train` wraps `medliner pipeline`, so the one-command flow must keep working before
+    # `make synthesize` ever ran: the pipeline itself selects the explicit gold-only fallback
+    # instead of failing on a configured synthetic_weight (direct `medliner train` stays strict,
+    # see test_train_smoke_flag_reaches_training), and the stage order is unchanged.
+    _pipeline_environment(tmp_path, monkeypatch)
+    order, training_calls = _patched_pipeline(monkeypatch, tmp_path)
+
+    assert cli.main(["pipeline"]) == 0
+    assert training_calls["no_synthetic"] is True
+    assert order == ["dataset", "splits", "train", "evaluate", "bundle"]
+
+
+def test_pipeline_mixes_in_the_synthetic_pool_when_it_exists(tmp_path, monkeypatch):
+    # A materialized pool is the semi-supervised default: the pipeline must pass
+    # no_synthetic=False so training loads and down-weights it. Presence is decided by the
+    # default artifact path alone; malformed pool contents stay training's loud error.
+    _pipeline_environment(tmp_path, monkeypatch)
+    order, training_calls = _patched_pipeline(monkeypatch, tmp_path)
+    write_examples([_example("gold-1-synth-paraphrase", "doc-1")], tmp_path / "work" / "synthetic" / "examples.jsonl")
+
+    assert cli.main(["pipeline"]) == 0
+    assert training_calls["no_synthetic"] is False
+
+
 def _fake_gliner(monkeypatch, entities_for):
     """Replace model loading with a callable, so CLI tests never touch torch or a GPU."""
     from medliner import prelabel

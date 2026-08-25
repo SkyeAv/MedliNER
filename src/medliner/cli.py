@@ -1226,7 +1226,15 @@ def cmd_pipeline(args: argparse.Namespace) -> None:
     """The full post-annotation chain: dataset → splits → train → evaluate → bundle."""
     dataset_path = run_dataset(export_path(args.export))
     split_dir = run_splits(dataset_path)
-    checkpoint = run_training(smoke=args.smoke)
+    # `make train` must keep working before `make synthesize` ever ran: this one-command flow
+    # selects the gold-only fallback itself, while direct `medliner train` stays strict (a
+    # configured synthetic_weight with no pool errors there). Existence is the only thing
+    # decided here — a present pool still loads, gets weighted, and fails loudly when malformed.
+    synthetic_pool = workdir() / "synthetic" / "examples.jsonl"
+    no_synthetic = not synthetic_pool.exists()
+    if no_synthetic:
+        print(f"pipeline: no synthetic pool at {synthetic_pool}; training gold-only")
+    checkpoint = run_training(smoke=args.smoke, no_synthetic=no_synthetic)
     report = run_evaluation(checkpoint, split_dir)
     run_bundle(checkpoint, report, dataset_path, split_dir)
 
