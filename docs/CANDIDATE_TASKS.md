@@ -60,7 +60,7 @@ before import. Configuration is environment-only:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `MEDLINER_SAMPLE_TASKS` | `indication:3000,contraindication:2000` | `task:count` pairs. Unlisted tasks are dropped; empty or `all` disables sampling entirely. |
+| `MEDLINER_SAMPLE_TASKS` | `indication:600,contraindication:400` | `task:count` pairs. Unlisted tasks are dropped; empty or `all` disables sampling entirely. |
 | `MEDLINER_SAMPLE_SEED` | `2026` | Seed folded into the per-task `blake3` rank; changing it picks a different subset. |
 | `MEDLINER_SAMPLE_MAX_WORDS` | `300` | Drops texts longer than this many whitespace words. `0` disables the cap. |
 | `MEDLINER_SAMPLE_MAX_RUN` | `3` | Cap on consecutive tasks sharing one task value in the import order. |
@@ -68,7 +68,7 @@ before import. Configuration is environment-only:
 
 Behavior:
 
-- The 3,000/2,000 default yields ~5K tasks with more indications than contraindications —
+- The 600/400 default yields ~1K tasks with more indications than contraindications —
   sized for a limited SME annotation session, closer to the real-world mix than the raw
   81/19 pool while still boosting the minority task for fine-tuning. Adjust the pair to
   rebalance.
@@ -98,7 +98,7 @@ Behavior:
 `make prepare` shortens automatically as part of building the import file: after sampling, every sampled text over
 `MEDLINER_SHORTEN_MAX_WORDS` words (default 48, ≈ 3-4 short sentences) is rewritten by the local LLM (Ornith-1.0-9B,
 served from the directory configured in `MODELS_DIR` with `make medliner`) into a shorter text that keeps every
-condition mention verbatim. Only the sampled ~5k batch is sent to the model — never the whole candidate pool — and if
+condition mention verbatim. Only the sampled ~1k batch is sent to the model — never the whole candidate pool — and if
 the LLM is not running, prepare skips shortening with a notice and long texts stay as-is:
 
 ```bash

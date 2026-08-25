@@ -62,7 +62,7 @@ The checked-in `.envrc` exports:
 | `MEDLINER_SHORTEN_WORKERS` | parallel rewrite requests (default `4`, matching the server's four slots) |
 | `MEDLINER_SHORTEN_CACHE` | sqlite cache of successful rewrites (default `<workdir>/shorten-cache.sqlite3`) |
 | `MEDLINER_SYNTH_*` | semi-supervised synthesis knobs: variant ratio per gold train example (default 10) with an acceptance floor (5), attempts per slot (3), rewrite word budget (250), Jaccard similarity floor (0.3), parallel requests (2), and the sqlite reply cache (see [Semi-supervised training](#semi-supervised-training)) |
-| `MEDLINER_SAMPLE_*` | import sampling: per-task targets (default 3,000/2,000), seed, word cap, run cap, edge fraction (see [`docs/CANDIDATE_TASKS.md`](docs/CANDIDATE_TASKS.md)) |
+| `MEDLINER_SAMPLE_*` | import sampling: per-task targets (default 600/400), seed, word cap, run cap, edge fraction (see [`docs/CANDIDATE_TASKS.md`](docs/CANDIDATE_TASKS.md)) |
 | `MEDLINER_SPLIT_SEED` / `MEDLINER_REGRESSION_IDS` | split seed and IDs withheld from every split |
 | `TRITON_LIBCUDA_PATH` | set automatically when the system has no `/sbin/ldconfig` (see [`docs/HARDWARE.md`](docs/HARDWARE.md)) |
 
@@ -73,7 +73,7 @@ MedliNER Python dependency. The pipeline stages are a small set of Makefile targ
 the `medliner` CLI (every stage also runs standalone as `uv run medliner <stage>`). The full flow is:
 
 1. `make setup` — installs the uv environment.
-2. `make prepare` — validates/dedupes the raw candidates, samples the 5K mostly-edge-case
+2. `make prepare` — validates/dedupes the raw candidates, samples the 1K mostly-edge-case
    import batch, and attaches GLiNER suggestions so annotators correct spans instead of
    drawing them. Suggestions only: a human accepts, corrects, or deletes every span
    ([`docs/LABEL_STUDIO.md`](docs/LABEL_STUDIO.md)).

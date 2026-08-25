@@ -11,7 +11,7 @@ waits for health, creates the `MedliNER` project from
 `configs/label_studio_ner.xml`, and imports the tasks built by `make prepare` (run
 automatically when the import file for the current input hash and sampling config is
 missing; see the sampling table in `docs/CANDIDATE_TASKS.md` for the `MEDLINER_SAMPLE_*`
-variables that bound the import to ~5K mostly-edge-case, balanced, staggered tasks):
+variables that bound the import to ~1K mostly-edge-case, balanced, staggered tasks):
 
 ```bash
 make annotate

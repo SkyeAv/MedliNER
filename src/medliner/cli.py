@@ -89,7 +89,7 @@ def repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-DEFAULT_SAMPLE_TARGETS = "indication:3000,contraindication:2000"
+DEFAULT_SAMPLE_TARGETS = "indication:600,contraindication:400"
 DEFAULT_SAMPLE_SEED = 2026
 DEFAULT_SAMPLE_MAX_WORDS = 300
 #: Shorten stage threshold: texts over this many words (≈ 3-4 short sentences) are rewritten.

@@ -6,7 +6,7 @@ The Desktop DAKP export (`$MEDLINER_EXPORT_BUNDLE`) holds 93,328 candidates: 75,
 
 User requirements:
 
-1. **~10K tasks** in Label Studio, **more indications than contraindications** but more even than the raw 81/19 → default **6,000 indication / 4,000 contraindication** (60/40), tunable via env.
+1. **~1K tasks** in Label Studio, **more indications than contraindications** but more even than the raw 81/19 → default **600 indication / 400 contraindication** (60/40), tunable via env.
 2. **Staggered task order** so labelers working top-to-bottom don't hit long runs of one task type.
 3. Project title **`MedliNER`** (drop " medical NER").
 4. Empty/nothing-to-label question answered from existing policy (no code change; see "Empty tasks" below).
@@ -24,12 +24,12 @@ Add pure, deterministic sampling/staggering functions to `candidates.py`, wire t
 
 1. Start from the deduped output of `build_import_tasks` (existing behavior preserved when sampling is disabled).
 2. Drop tasks whose whitespace-word count exceeds `MEDLINER_SAMPLE_MAX_WORDS` (default **300**).
-3. Within each `task`, stratify by `source_family` proportionally (indication 6,000 → ~4,600 dailymed / ~1,400 faers at current ratios) so FAERS short strings stay represented.
+3. Within each `task`, stratify by `source_family` proportionally (indication 600 → ~460 dailymed / ~140 faers at current ratios) so FAERS short strings stay represented.
 4. Deterministic selection: rank candidates by `blake3(f"{seed}:{task_id}")`, take the lowest ranks. No RNG state → same input + same config always yields the same import file (matching the repo's deterministic-by-hash style, e.g. `_task_id`, `split_examples`).
 
 Config via env, parsed in `cli.py`:
 
-- `MEDLINER_SAMPLE_TASKS` — `indication:6000,contraindication:4000` (default). Empty string / `all` disables sampling (current full-import behavior).
+- `MEDLINER_SAMPLE_TASKS` — `indication:600,contraindication:400` (default). Empty string / `all` disables sampling (current full-import behavior).
 - `MEDLINER_SAMPLE_SEED` — default `2026` (matches split seed convention).
 - `MEDLINER_SAMPLE_MAX_WORDS` — default `300`; `0` disables the cap.
 
@@ -67,7 +67,7 @@ Already solved by the repo's annotation policy:
 - `tests/test_candidates.py` — sampling determinism, stratification, word cap, stagger max-run bound, disabled-mode passthrough, manifest block.
 - `tests/test_cli.py` — env parsing, filename sensitivity to sampling config, updated title assertions (currently expect `"MedliNER medical NER"`).
 - `tests/test_label_studio_server.py` — no functional change expected (uses the constant) but verify.
-- `docs/LABEL_STUDIO.md`, `docs/CANDIDATE_TASKS.md` — new titles, sampling env vars, 10K default.
+- `docs/LABEL_STUDIO.md`, `docs/CANDIDATE_TASKS.md` — new titles, sampling env vars, 1K default.
 
 ## Reuse
 
@@ -90,8 +90,8 @@ Already solved by the repo's annotation policy:
 ## Verification
 
 1. `uv run pytest` — new and updated tests green.
-2. `uv run medliner candidates` against the Desktop bundle → manifest shows 10,000 tasks (≈6,000/4,000), sampling block correct; output filename differs from the unsampled name.
+2. `uv run medliner candidates` against the Desktop bundle → manifest shows 1,000 tasks (≈600/400), sampling block correct; output filename differs from the unsampled name.
 3. Spot-check staggering: `jq -r '.[].data.task' <import>.json | awk` max consecutive same-task run ≤ 3, and dailymed/faers indications interleave.
 4. Word cap: `jq` max whitespace-word count over the import file ≤ 300.
 5. `MEDLINER_SAMPLE_TASKS= uv run medliner candidates` still produces the full 93,328-task import (backward compatible).
-6. Optional manual: `make label-studio` creates the `MedliNER` project with 10,000 tasks (fresh title, so a new project appears).
+6. Optional manual: `make label-studio` creates the `MedliNER` project with 1,000 tasks (fresh title, so a new project appears).

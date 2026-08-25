@@ -197,11 +197,11 @@ def test_candidates_missing_input_is_an_explicit_error(tmp_path, monkeypatch, ca
     assert "MEDLINER_RAW_CANDIDATES" in capsys.readouterr().err
 
 
-def test_sampling_defaults_to_the_5k_edge_case_batch(monkeypatch):
+def test_sampling_defaults_to_the_1k_edge_case_batch(monkeypatch):
     monkeypatch.delenv("MEDLINER_SAMPLE_TASKS", raising=False)
     monkeypatch.delenv("MEDLINER_SAMPLE_EDGE_FRACTION", raising=False)
     settings = cli.sampling_settings()
-    assert settings.targets == {"indication": 3000, "contraindication": 2000}
+    assert settings.targets == {"indication": 600, "contraindication": 400}
     assert settings.edge_fraction == 0.8
     assert "edge_fraction=0.8" in (settings.config or "")
 

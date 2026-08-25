@@ -43,7 +43,7 @@ Confirmed requirements:
 - `LabelStudioClient.export_annotations()` and `export_project()` already retrieve Label Studio JSON and preserve per-annotation authorship (`created_username` / `completed_by`).
 - `LabelStudioClient.ensure_project()`, `list_users()`, `create_user()`, and `provision()` already provide idempotent local project/account setup.
 - Existing workdir conventions, JSON manifests, `--annotator` parsing, and focused fake-API tests provide persistence and test seams.
-- The current `make data` target remains responsible for the sampled 5K edge-case production import and GLiNER prelabels; onboarding should not alter its sampling or local-LLM behavior.
+- The current `make data` target remains responsible for the sampled 1K edge-case production import and GLiNER prelabels; onboarding should not alter its sampling or local-LLM behavior.
 
 ## Decisions
 
