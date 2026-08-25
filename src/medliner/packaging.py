@@ -186,7 +186,7 @@ def build_export_bundle(
     )
     (output_dir / "MODEL_CARD_INPUTS.md").write_text(
         "# MedliNER model-card inputs\n\n"
-        "- Labels: disease, phenotype\n"
+        f"- Labels: {', '.join(ALLOWED_LABELS)}\n"
         "- Tasks: indication and contraindication context NER\n"
         "- Base checkpoint and training parameters: see `checkpoint/medliner-training.json` and `training_config.yaml`.\n"
         "- Evaluation: see `metrics.json`.\n"

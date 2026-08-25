@@ -29,10 +29,10 @@ NO_ENTITY_MARKER = "NONE"
 
 SHORTEN_PROMPT = """\
 Shorten the following medical text to at most {max_words} words while preserving every \
-mention of a disease, condition, or phenotype verbatim (same wording as the original). \
+mention of a disease or phenotypic feature verbatim (same wording as the original). \
 Remove boilerplate, cross-references, and dosage/administration detail first. \
 Return only the shortened text, with no commentary. \
-If the text contains no disease, condition, or phenotype mention at all, reply with exactly {marker}.
+If the text contains no disease or phenotypic feature mention at all, reply with exactly {marker}.
 
 Text:
 {text}"""

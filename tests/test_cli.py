@@ -18,7 +18,7 @@ def _example(identifier: str, document: str) -> Example:
         text="asthma",
         task="indication",
         source={"family": "dailymed", "document_id": document},
-        annotations=[Annotation(start=0, end=6, label="disease", text="asthma")],
+        annotations=[Annotation(start=0, end=6, label="DiseaseOrPhenotypicFeature", text="asthma")],
     )
 
 
@@ -59,7 +59,12 @@ def _write_reviewed_export(path: Path, count: int) -> None:
                                     "type": "labels",
                                     "from_name": "label",
                                     "to_name": "text",
-                                    "value": {"start": 33, "end": 39, "text": "asthma", "labels": ["disease"]},
+                                    "value": {
+                                        "start": 33,
+                                        "end": 39,
+                                        "text": "asthma",
+                                        "labels": ["DiseaseOrPhenotypicFeature"],
+                                    },
                                 }
                             ],
                         }
@@ -563,7 +568,7 @@ def _asthma_entities(text):
     if "asthma" not in text:
         return []
     start = text.index("asthma")
-    return [{"start": start, "end": start + 6, "label": "disease", "score": 0.91}]
+    return [{"start": start, "end": start + 6, "label": "DiseaseOrPhenotypicFeature", "score": 0.91}]
 
 
 def test_prelabel_writes_predictions_and_a_manifest(tmp_path, monkeypatch, capsys):
@@ -582,12 +587,12 @@ def test_prelabel_writes_predictions_and_a_manifest(tmp_path, monkeypatch, capsy
         (prediction,) = task["predictions"]
         assert prediction["model_version"].endswith("@0.35")
         (region,) = prediction["result"]
-        assert region["value"]["labels"] == ["disease"]
+        assert region["value"]["labels"] == ["DiseaseOrPhenotypicFeature"]
         assert region["value"]["text"] == "asthma"
     manifest = json.loads(output.with_suffix(".manifest.json").read_text(encoding="utf-8"))
     assert manifest["schema_version"] == "medliner.prelabel.manifest.v1"
-    assert manifest["label_counts"] == {"disease": 2}
-    assert manifest["labels"] == ["disease", "phenotype"]
+    assert manifest["label_counts"] == {"DiseaseOrPhenotypicFeature": 2}
+    assert manifest["labels"] == ["DiseaseOrPhenotypicFeature"]
     assert "2 suggestions" in capsys.readouterr().out
 
 

@@ -4,7 +4,6 @@
   <Header value="Source: $source_family" />
   <Text name="text" value="$text" granularity="word" />
   <Labels name="label" toName="text" choice="single" showInline="true">
-    <Label value="disease" background="#e74c3c" hotkey="1" />
-    <Label value="phenotype" background="#3498db" hotkey="2" />
+    <Label value="DiseaseOrPhenotypicFeature" background="#e74c3c" hotkey="1" />
   </Labels>
 </View>

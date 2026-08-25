@@ -314,12 +314,12 @@ def test_label_config_fixture_is_real_xml():
 
 
 def test_label_config_labels_carry_hotkeys():
-    """Number-key hotkeys keep a live multi-annotator session fast."""
+    """The single condition label keeps a number-key hotkey so live annotation stays fast."""
     import xml.etree.ElementTree as ET
 
     config = Path(__file__).resolve().parents[1] / "configs" / "label_studio_ner.xml"
     labels = {node.get("value"): node.get("hotkey") for node in ET.parse(config).iter("Label")}
-    assert labels == {"disease": "1", "phenotype": "2"}
+    assert labels == {"DiseaseOrPhenotypicFeature": "1"}
 
 
 def test_ensure_container_publish_host_binds_wider(podman, tmp_path):

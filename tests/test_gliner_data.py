@@ -32,7 +32,7 @@ def test_unaligned_span_names_the_nearest_whole_token_span():
 
 def test_span_wider_than_max_width_is_refused_rather_than_silently_dropped():
     words = " ".join(f"w{index}" for index in range(20))
-    example = _example(words, [(0, len(words), "disease")])
+    example = _example(words, [(0, len(words), "DiseaseOrPhenotypicFeature")])
     with pytest.raises(ValueError, match="exceeding GLiNER max_width"):
         to_gliner_record(example, limits=ModelLimits(max_len=384, max_width=12))
 
@@ -40,8 +40,10 @@ def test_span_wider_than_max_width_is_refused_rather_than_silently_dropped():
 def test_span_within_max_width_is_kept():
     words = " ".join(f"w{index}" for index in range(20))
     end = words.index("w5") + len("w5")
-    record = to_gliner_record(_example(words, [(0, end, "disease")]), limits=ModelLimits(max_len=384, max_width=12))
-    assert record["ner"] == [(0, 5, "disease")]
+    record = to_gliner_record(
+        _example(words, [(0, end, "DiseaseOrPhenotypicFeature")]), limits=ModelLimits(max_len=384, max_width=12)
+    )
+    assert record["ner"] == [(0, 5, "DiseaseOrPhenotypicFeature")]
 
 
 def test_text_longer_than_max_len_is_refused_rather_than_truncated():
@@ -52,7 +54,7 @@ def test_text_longer_than_max_len_is_refused_rather_than_truncated():
 
 def test_record_preserves_character_annotations_for_audit():
     text = "asthma"
-    record = to_gliner_record(_example(text, [(0, 6, "disease")]))
+    record = to_gliner_record(_example(text, [(0, 6, "DiseaseOrPhenotypicFeature")]))
     assert record["char_annotations"][0]["start"] == 0
     assert record["char_annotations"][0]["end"] == 6
     assert record["tokenized_text"] == ["asthma"]
@@ -111,16 +113,18 @@ def test_record_weight_is_carried_only_when_not_default():
     default would change every artifact hash for no information gain. A non-default weight is
     carried so semi-supervised mixes can down-weight synthetic records.
     """
-    default = to_gliner_record(_example("asthma", [(0, 6, "disease")]))
+    default = to_gliner_record(_example("asthma", [(0, 6, "DiseaseOrPhenotypicFeature")]))
     assert "weight" not in default
-    explicit_default = to_gliner_record(_example("asthma", [(0, 6, "disease")]), weight=1.0)
+    explicit_default = to_gliner_record(_example("asthma", [(0, 6, "DiseaseOrPhenotypicFeature")]), weight=1.0)
     assert "weight" not in explicit_default
-    weighted = to_gliner_record(_example("asthma", [(0, 6, "disease")]), weight=0.25)
+    weighted = to_gliner_record(_example("asthma", [(0, 6, "DiseaseOrPhenotypicFeature")]), weight=0.25)
     assert weighted["weight"] == 0.25
 
 
 def test_dataset_weight_applies_to_every_record():
-    records = to_gliner_dataset([_example("asthma", [(0, 6, "disease")]), _example("nausea", [])], weight=0.5)
+    records = to_gliner_dataset(
+        [_example("asthma", [(0, 6, "DiseaseOrPhenotypicFeature")]), _example("nausea", [])], weight=0.5
+    )
     assert [record["weight"] for record in records] == [0.5, 0.5]
 
 

@@ -22,6 +22,7 @@ from .schema import (
     AnnotationStatus,
     Example,
     SourceMetadata,
+    canonical_label,
 )
 
 
@@ -196,7 +197,7 @@ def _result_annotations(task: dict[str, Any], annotation_set: dict[str, Any] | N
             raise LabelStudioExportError(
                 f"task {task.get('id', '<unknown>')} span must contain exactly one string label"
             )
-        label = labels[0].strip().lower()
+        label = canonical_label(labels[0]) or labels[0].strip()
         if label not in ALLOWED_LABELS:
             raise LabelStudioExportError(f"unsupported Label Studio label {label!r}; expected {ALLOWED_LABELS}")
         if start < 0 or end <= start or end > len(text):
@@ -224,10 +225,8 @@ def _result_annotations(task: dict[str, Any], annotation_set: dict[str, Any] | N
             origin=_span_origin(task, result),
         )
         key = (start, end)
-        prior = parsed.get(key)
-        if prior is not None and prior.label != annotation.label:
-            raise LabelStudioExportError(f"conflicting duplicate span [{start}, {end}) in task {task.get('id')!r}")
-        # Exact duplicates with the same label are harmless export duplication and are collapsed.
+        # With one canonical label, same-offset spans are always exact duplicates; they are
+        # harmless export duplication and are collapsed.
         parsed[key] = annotation
     return sorted(parsed.values(), key=lambda item: (item.start, item.end, item.label))
 

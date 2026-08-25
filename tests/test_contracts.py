@@ -16,7 +16,7 @@ def _example(identifier: str, document: str) -> Example:
         text=text,
         task="indication",
         source={"family": "dailymed", "document_id": document},
-        annotations=[Annotation(start=0, end=6, label="disease", text=text)],
+        annotations=[Annotation(start=0, end=6, label="DiseaseOrPhenotypicFeature", text=text)],
     )
 
 
@@ -79,8 +79,8 @@ def test_overlapping_annotations_are_rejected_by_the_contract():
             text="pulmonary hypertension",
             task="indication",
             annotations=[
-                Annotation(start=0, end=22, label="disease", text="pulmonary hypertension"),
-                Annotation(start=10, end=22, label="disease", text="hypertension"),
+                Annotation(start=0, end=22, label="DiseaseOrPhenotypicFeature", text="pulmonary hypertension"),
+                Annotation(start=10, end=22, label="DiseaseOrPhenotypicFeature", text="hypertension"),
             ],
         )
 
@@ -91,7 +91,7 @@ def test_annotation_text_must_match_the_source_slice():
             id="x",
             text="asthma",
             task="indication",
-            annotations=[Annotation(start=0, end=6, label="disease", text="ashtma")],
+            annotations=[Annotation(start=0, end=6, label="DiseaseOrPhenotypicFeature", text="ashtma")],
         )
 
 
@@ -103,7 +103,12 @@ def test_reviewed_examples_cannot_carry_model_suggestions():
             task="indication",
             annotations=[
                 Annotation(
-                    start=0, end=6, label="disease", text="asthma", status="draft", provenance="model_suggestion"
+                    start=0,
+                    end=6,
+                    label="DiseaseOrPhenotypicFeature",
+                    text="asthma",
+                    status="draft",
+                    provenance="model_suggestion",
                 )
             ],
         )

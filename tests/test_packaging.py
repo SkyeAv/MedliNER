@@ -43,8 +43,7 @@ def test_bundle_contains_the_uploadable_artifacts(tmp_path):
     assert provenance["checkpoint_tree_sha256"]
     assert provenance["dataset_sha256"]
     assert json.loads((output / "labels.json").read_text(encoding="utf-8"))["labels"] == [
-        "disease",
-        "phenotype",
+        "DiseaseOrPhenotypicFeature",
     ]
 
 

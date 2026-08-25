@@ -96,8 +96,8 @@ on the shared instance sees every project. The managed flow supports a group ses
    promotes the passing ones. `uv run medliner label-studio --warmup` remains available as an
    informal demo; its gold spans are intentionally visible to the presenter and it is not a
    qualification gate.
-5. **Speed up labeling** with the hotkeys baked into `configs/label_studio_ner.xml`:
-   `1` = disease, `2` = phenotype after selecting a span.
+5. **Speed up labeling** with the hotkey baked into `configs/label_studio_ner.xml`:
+   `1` = DiseaseOrPhenotypicFeature after selecting a span.
 
 ## Export
 
@@ -169,7 +169,7 @@ into the project's labeling configuration, and import the JSON file written by
 1. Open a task.
 2. Read the visible indication or contraindication context.
 3. Click-drag/highlight the complete condition phrase.
-4. Choose `disease` or `phenotype`.
+4. Choose `DiseaseOrPhenotypicFeature`.
 5. Correct/delete/add spans as needed.
 6. Submit the task.
 
@@ -185,9 +185,11 @@ make prepare                          # candidates + prelabel: import-<hash>.pre
 make annotate                         # serves the pre-labeled file with prediction pre-fill on
 ```
 
-The suggestions come from `gliner-community/gliner_large-v2.5` prompted with `disease` and
-`phenotype` at threshold `0.35` — the same checkpoint, prompts, and threshold the sibling DAKP
-pipeline mines contraindications with (`MEDLINER_PRELABEL_MODEL` / `MEDLINER_PRELABEL_THRESHOLD`
+The suggestions come from `gliner-community/gliner_large-v2.5` prompted with the single merged
+condition label `DiseaseOrPhenotypicFeature` at threshold `0.35` — the same checkpoint and
+threshold the sibling DAKP pipeline mines contraindications with; DAKP prompts disease/phenotype
+types separately but merges them downstream, so MedliNER prompts the merged label directly
+(`MEDLINER_PRELABEL_MODEL` / `MEDLINER_PRELABEL_THRESHOLD`
 override them). Raw model output does not obey the annotation guide, so the same cleanup DAKP
 applies is applied here: leading hedges are trimmed (`recent myocardial infarction` →
 `myocardial infarction`, guide rule 2), population descriptors are dropped (`patients`, `women of

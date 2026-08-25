@@ -13,7 +13,7 @@ def _example(identifier: str, **source) -> Example:
         text="asthma",
         task="indication",
         source=source or {"family": "dailymed", "document_id": "doc-a"},
-        annotations=[Annotation(start=0, end=6, label="disease", text="asthma")],
+        annotations=[Annotation(start=0, end=6, label="DiseaseOrPhenotypicFeature", text="asthma")],
     )
 
 
@@ -48,7 +48,7 @@ def test_empty_dataset_writes_an_empty_file(tmp_path):
 
 def test_manifest_counts_labels_and_tasks(tmp_path):
     manifest = manifest_for([_example("a"), _example("b")], input_export_hash="abc", dataset_id="def")
-    assert manifest.label_counts == {"disease": 2}
+    assert manifest.label_counts == {"DiseaseOrPhenotypicFeature": 2}
     assert manifest.task_counts == {"indication": 2}
     path = tmp_path / "manifest.json"
     write_manifest(manifest, path)
@@ -75,8 +75,10 @@ def test_manifest_counts_how_much_of_the_dataset_is_an_untouched_model_span():
             task="indication",
             source={"family": "faers"},
             annotations=[
-                Annotation(start=0, end=6, label="disease", text="asthma", origin="prediction"),
-                Annotation(start=11, end=17, label="phenotype", text="nausea", origin="prediction-changed"),
+                Annotation(start=0, end=6, label="DiseaseOrPhenotypicFeature", text="asthma", origin="prediction"),
+                Annotation(
+                    start=11, end=17, label="DiseaseOrPhenotypicFeature", text="nausea", origin="prediction-changed"
+                ),
             ],
         ),
         Example(
@@ -84,7 +86,9 @@ def test_manifest_counts_how_much_of_the_dataset_is_an_untouched_model_span():
             text="asthma",
             task="indication",
             source={"family": "faers"},
-            annotations=[Annotation(start=0, end=6, label="disease", text="asthma", origin="manual")],
+            annotations=[
+                Annotation(start=0, end=6, label="DiseaseOrPhenotypicFeature", text="asthma", origin="manual")
+            ],
         ),
     ]
     manifest = manifest_for(examples, input_export_hash="h", dataset_id="d")
@@ -108,8 +112,8 @@ def test_manifest_counts_annotation_provenance():
         task="indication",
         source={"family": "dailymed"},
         annotations=[
-            Annotation(start=0, end=6, label="disease", text="asthma", provenance="human"),
-            Annotation(start=11, end=17, label="phenotype", text="nausea", provenance="human"),
+            Annotation(start=0, end=6, label="DiseaseOrPhenotypicFeature", text="asthma", provenance="human"),
+            Annotation(start=11, end=17, label="DiseaseOrPhenotypicFeature", text="nausea", provenance="human"),
         ],
     )
     also_synthetic = Example(
@@ -118,8 +122,8 @@ def test_manifest_counts_annotation_provenance():
         task="indication",
         source={"family": "synthetic"},
         annotations=[
-            Annotation(start=0, end=6, label="disease", text="asthma", provenance="synthetic"),
-            Annotation(start=11, end=17, label="phenotype", text="nausea", provenance="synthetic"),
+            Annotation(start=0, end=6, label="DiseaseOrPhenotypicFeature", text="asthma", provenance="synthetic"),
+            Annotation(start=11, end=17, label="DiseaseOrPhenotypicFeature", text="nausea", provenance="synthetic"),
         ],
     )
     manifest = manifest_for([mixed, also_synthetic], input_export_hash="h", dataset_id="d")
@@ -135,7 +139,7 @@ def test_manifests_written_before_provenance_counts_still_validate():
     legacy_json = (
         '{"schema_version": "medliner.dataset.v1", "dataset_id": "d", '
         '"input_export_hash": "h", "example_count": 1, '
-        '"label_counts": {"disease": 1}, "task_counts": {"indication": 1}, '
+        '"label_counts": {"DiseaseOrPhenotypicFeature": 1}, "task_counts": {"indication": 1}, '
         '"origin_counts": {"unrecorded": 1}}'
     )
     manifest = DatasetManifest.model_validate_json(legacy_json)

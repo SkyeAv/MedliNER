@@ -32,7 +32,7 @@ def _benchmark(path: Path, *, changed: bool = False) -> Path:
         else:
             surface = "asthma" if not changed or index != 1 else "migraine"
             text = f"Used for {surface}."
-            mentions = [{"surface": surface, "type": "disease", "start": 9}]
+            mentions = [{"surface": surface, "type": "DiseaseOrPhenotypicFeature", "start": 9}]
         cases.append({"id": f"case-{index}", "source": "faers", "text": text, "mentions": mentions})
     path.write_text(json.dumps({"schema_version": "dakp.ner.gold.v1", "cases": cases}), encoding="utf-8")
     return path
@@ -140,7 +140,9 @@ def test_wrong_label_fails_strict_task_correctness(tmp_path):
     payload = json.loads(export.read_text(encoding="utf-8"))
     index = next(index for index, task in enumerate(payload) if task["annotations"][0]["result"])
     labels = payload[index]["annotations"][0]["result"][0]["value"]["labels"]
-    labels[0] = "phenotype" if labels[0] == "disease" else "disease"
+    # With one merged condition label there is no "valid but different" label to flip to;
+    # an unsupported label must equally fail strict task correctness.
+    labels[0] = "medication"
     export.write_text(json.dumps(payload), encoding="utf-8")
     report = evaluate_attempt(export, tmp_path, manifest, config, attempt)
     assert report.correct_tasks == 3

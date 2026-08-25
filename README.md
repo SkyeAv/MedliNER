@@ -1,6 +1,6 @@
 # MedliNER
 
-MedliNER is a standalone, local pipeline for producing a reviewed medical NER dataset and fine-tuning a small GLiNER checkpoint. Its first use cases are extracting `disease` and `phenotype` mentions from `indication` and `contraindication` text.
+MedliNER is a standalone, local pipeline for producing a reviewed medical NER dataset and fine-tuning a small GLiNER checkpoint. Its first use cases are extracting disease and phenotypic-feature mentions from `indication` and `contraindication` text.
 
 MedliNER consumes DAKP data through a reviewed export bundle or raw candidates file; no DAKP checkout or runtime is required. The only training input is a reviewed Label Studio export. Set machine-specific paths in the ignored `.envrc.local`.
 
@@ -8,15 +8,14 @@ MedliNER consumes DAKP data through a reviewed export bundle or raw candidates f
 
 Entity labels:
 
-- `disease`
-- `phenotype`
+- `DiseaseOrPhenotypicFeature`
 
 Every example also has task metadata:
 
 - `indication`
 - `contraindication`
 
-The task is context metadata, not an entity label. GLiNER is queried with both labels, while evaluation reports indication and contraindication separately.
+The task is context metadata, not an entity label. GLiNER is queried with the single condition label, while evaluation reports indication and contraindication separately.
 
 Read [`docs/ANNOTATION_GUIDE.md`](docs/ANNOTATION_GUIDE.md) before annotation.
 
@@ -86,8 +85,8 @@ the `medliner` CLI (every stage also runs standalone as `uv run medliner <stage>
    passing annotator (3/4 or 4/4). Rerun `make onboarding` for a fresh round; each attempt
    selects a new four-task subset from the ten-case bank.
 4. `make annotate` — starts the production `MedliNER` project with the tasks imported.
-   Annotate in the browser at <http://localhost:9030> (span hotkeys: `1` disease,
-   `2` phenotype), then `make export` downloads the reviewed JSON to
+   Annotate in the browser at <http://localhost:9030> (span hotkey: `1`
+   DiseaseOrPhenotypicFeature), then `make export` downloads the reviewed JSON to
    `MEDLINER_LABEL_STUDIO_EXPORT`. Stop the server with `make stop`; annotations survive in
    the container's data volume directory under `$MEDLINER_WORKDIR/label-studio/server-data`.
 5. `make train` — runs the remaining stages (`dataset` → `splits` → `train` → `evaluate` →

@@ -45,7 +45,9 @@ DEFAULT_WORD_BUDGET = 384
 DEFAULT_MAX_WIDTH = 12
 DEFAULT_BATCH_SIZE = 8
 
-#: The label prompts sent to GLiNER. Identical to DAKP's ``CONTRAINDICATION_DISEASE_TYPES``.
+#: The single condition label sent to GLiNER. DAKP prompts GLiNER with disease and phenotype
+#: types but merges them into one downstream; prompting one merged label directly keeps the
+#: extraction contract aligned with that workflow.
 PRELABEL_LABELS: tuple[str, ...] = ALLOWED_LABELS
 
 #: ``from_name``/``to_name`` are fixed by ``configs/label_studio_ner.xml``; a prediction whose
@@ -61,7 +63,7 @@ CACHE_SCHEMA_VERSION = "medliner.prelabel.cache.v1"
 SENTENCE_PIECE = re.compile(r"[^.!?;]+[.!?;]*\s*")
 _HTML_TAG = re.compile(r"<[^>]+>")
 
-# Population/demographic descriptors GLiNER likes to tag as phenotypes in contraindication text.
+# Population/demographic descriptors GLiNER likes to tag as condition mentions in contraindication text.
 # They are subject populations, not condition mentions — guide rule 3. Verbatim from DAKP
 # ``ner.py`` ``_POPULATION_PHRASES``. Normalized exact match only.
 POPULATION_PHRASES: frozenset[str] = frozenset(
@@ -364,13 +366,14 @@ def suggestions_from_windows(
     cap, de-overlap. ``drops`` accumulates why spans were discarded.
     """
     drops = Counter() if drops is None else drops
-    allowed = {label.strip().lower() for label in labels}
+    allowed = {label.casefold(): label for label in labels}
     spans_by_window: list[list[Suggestion]] = []
     for (window_start, _window), raw in zip(window_spans, raw_by_window, strict=True):
         kept: list[Suggestion] = []
         for entity in raw:
-            label = str(entity.get("label", entity.get("type", ""))).strip().lower()
-            if label not in allowed:
+            raw_label = str(entity.get("label", entity.get("type", ""))).strip().casefold()
+            label = allowed.get(raw_label)
+            if label is None:
                 drops["label"] += 1
                 continue
             start = window_start + int(entity["start"])

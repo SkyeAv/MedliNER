@@ -14,7 +14,11 @@ from typing import Any, Literal, get_args
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 SCHEMA_VERSION = "medliner.example.v1"
-ALLOWED_LABELS = ("disease", "phenotype")
+# One merged label for every condition mention (named disorder or clinical finding/state).
+# Splitting `disease` vs `phenotype` forced annotators to draw a boundary DAKP does not use:
+# DAKP merges both into a single condition type downstream, so MedliNER mirrors that with
+# one label and keeps the boundary decision out of the annotation task entirely.
+ALLOWED_LABELS = ("DiseaseOrPhenotypicFeature",)
 ALLOWED_TASKS = ("indication", "contraindication")
 REVIEWED_STATUSES = ("reviewed", "adjudicated")
 Provenance = Literal["human", "adjudicated", "model_suggestion", "synthetic"]
@@ -26,6 +30,22 @@ HUMAN_PROVENANCE_VALUES = ("human", "adjudicated")
 # Source family that marks an example as machine-synthesized. The synthesis engine stamps it on
 # SourceMetadata.family so provenance policing, split grouping, and manifest counts all see it.
 SYNTHETIC_SOURCE_FAMILY = "synthetic"
+
+
+def canonical_label(value: str) -> str | None:
+    """Case-insensitive match of ``value`` onto :data:`ALLOWED_LABELS`, or None.
+
+    The single shared normalization point for labels arriving from Label Studio exports,
+    GLiNER output, and gold benchmarks; callers get the canonical casing back so stored
+    data never drifts between case variants of the same label.
+    """
+    folded = value.strip().casefold()
+    for allowed in ALLOWED_LABELS:
+        if folded == allowed.casefold():
+            return allowed
+    return None
+
+
 # Label Studio stamps each submitted region with where it came from. Pre-labeled projects need
 # this to stay auditable: "prediction" means a human submitted a model span without touching it,
 # which is a weaker signal than a span they drew or corrected themselves.
@@ -34,8 +54,7 @@ SPAN_ORIGINS = get_args(SpanOrigin)
 
 
 class EntityLabel(StrEnum):
-    DISEASE = "disease"
-    PHENOTYPE = "phenotype"
+    DISEASE_OR_PHENOTYPIC_FEATURE = "DiseaseOrPhenotypicFeature"
 
 
 class TaskKind(StrEnum):
@@ -82,10 +101,10 @@ class Annotation(BaseModel):
     @field_validator("label")
     @classmethod
     def valid_label(cls, value: str) -> str:
-        value = value.strip().lower()
-        if value not in ALLOWED_LABELS:
+        canonical = canonical_label(value)
+        if canonical is None:
             raise ValueError(f"unsupported label {value!r}; expected one of {ALLOWED_LABELS}")
-        return value
+        return canonical
 
     @model_validator(mode="after")
     def valid_span(self) -> Annotation:
@@ -200,6 +219,7 @@ class SplitManifest(BaseModel):
 
 __all__ = [
     "ALLOWED_LABELS",
+    "canonical_label",
     "ALLOWED_TASKS",
     "Annotation",
     "AnnotationStatus",

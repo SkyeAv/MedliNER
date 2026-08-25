@@ -61,13 +61,13 @@ def _gold() -> list[Example]:
     return [
         _annotated(
             "Approved for asthma and chronic eczema.",
-            [("asthma", "disease"), ("chronic eczema", "phenotype")],
+            [("asthma", "DiseaseOrPhenotypicFeature"), ("chronic eczema", "DiseaseOrPhenotypicFeature")],
             id="gold-a",
             task="indication",
         ),
         _annotated(
             "Avoid in patients with severe migraine.",
-            [("severe migraine", "disease")],
+            [("severe migraine", "DiseaseOrPhenotypicFeature")],
             id="gold-b",
             task="contraindication",
         ),
@@ -214,7 +214,7 @@ def test_synthesize_generates_the_target_pool_with_a_full_manifest(server, tmp_p
     assert manifest["trial"] is False and manifest["resumed"] == 0
     assert manifest["similarity"]["min"] is not None and manifest["similarity"]["min"] >= 0.3
     assert manifest["similarity"]["min"] <= manifest["similarity"]["mean"] <= manifest["similarity"]["max"] <= 1.0
-    assert manifest["label_counts"] == {"disease": 20, "phenotype": 10}
+    assert manifest["label_counts"] == {"DiseaseOrPhenotypicFeature": 30}
     assert manifest["task_counts"] == {"contraindication": 10, "indication": 10}
     slots = manifest["slots"]
     assert len(slots) == 20

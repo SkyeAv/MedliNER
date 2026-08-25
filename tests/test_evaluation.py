@@ -16,8 +16,8 @@ def test_strict_boundary_and_no_entity_metrics():
             task="indication",
             source={"family": "faers"},
             annotations=[
-                Annotation(start=0, end=6, label="disease", text="asthma"),
-                Annotation(start=11, end=17, label="phenotype", text="nausea"),
+                Annotation(start=0, end=6, label="DiseaseOrPhenotypicFeature", text="asthma"),
+                Annotation(start=11, end=17, label="DiseaseOrPhenotypicFeature", text="nausea"),
             ],
         ),
         Example(id="negative", text="patients only", task="contraindication", source={"family": "dailymed"}),
@@ -26,17 +26,18 @@ def test_strict_boundary_and_no_entity_metrics():
     def predictor(text):
         if text.startswith("asthma"):
             return [
-                {"start": 0, "end": 6, "label": "disease"},
-                # Right boundary, wrong label: strict counts it a miss, boundary-only a hit.
-                {"start": 11, "end": 17, "label": "disease"},
+                {"start": 0, "end": 6, "label": "DiseaseOrPhenotypicFeature"},
+                # Over-extended right boundary: a strict miss that stays a miss under
+                # boundary-only scoring too, since span boundaries must match exactly.
+                {"start": 11, "end": 18, "label": "DiseaseOrPhenotypicFeature"},
             ]
-        return [{"start": 0, "end": 8, "label": "disease"}]
+        return [{"start": 0, "end": 8, "label": "DiseaseOrPhenotypicFeature"}]
 
     report = score_examples(predictor, examples)
     assert report["overall"]["strict"]["tp"] == 1
     assert report["overall"]["strict"]["fp"] == 2
     assert report["overall"]["strict"]["fn"] == 1
-    assert report["overall"]["boundary_only"]["tp"] == 2
+    assert report["overall"]["boundary_only"]["tp"] == 1
     assert report["no_entity"]["false_positive_rate"] == 1.0
     assert report["by_task"]["indication"]["strict"]["f1"] < 1.0
 
@@ -51,7 +52,7 @@ def test_each_example_is_predicted_exactly_once_per_report():
             text="asthma",
             task="indication",
             source={"family": "faers"},
-            annotations=[Annotation(start=0, end=6, label="disease", text="asthma")],
+            annotations=[Annotation(start=0, end=6, label="DiseaseOrPhenotypicFeature", text="asthma")],
         ),
         Example(id="b", text="patients only", task="contraindication", source={"family": "dailymed"}),
     ]
@@ -84,10 +85,10 @@ def test_degenerate_predictions_are_ignored():
             text="asthma",
             task="indication",
             source={"family": "faers"},
-            annotations=[Annotation(start=0, end=6, label="disease", text="asthma")],
+            annotations=[Annotation(start=0, end=6, label="DiseaseOrPhenotypicFeature", text="asthma")],
         )
     ]
-    report = score_examples(lambda _text: [{"start": 3, "end": 3, "label": "disease"}], examples)
+    report = score_examples(lambda _text: [{"start": 3, "end": 3, "label": "DiseaseOrPhenotypicFeature"}], examples)
     assert report["overall"]["strict"]["fp"] == 0
     assert report["overall"]["strict"]["fn"] == 1
 
@@ -99,10 +100,12 @@ def test_type_key_is_accepted_as_a_label_alias():
             text="asthma",
             task="indication",
             source={"family": "faers"},
-            annotations=[Annotation(start=0, end=6, label="disease", text="asthma")],
+            annotations=[Annotation(start=0, end=6, label="DiseaseOrPhenotypicFeature", text="asthma")],
         )
     ]
-    report = score_examples(lambda _text: [{"start": 0, "end": 6, "type": "Disease"}], examples)
+    # `type` stays accepted as GLiNER's alias for `label`, and the label is matched
+    # case-insensitively onto the canonical form.
+    report = score_examples(lambda _text: [{"start": 0, "end": 6, "type": "diseaseorphenotypicfeature"}], examples)
     assert report["overall"]["strict"]["tp"] == 1
 
 
@@ -116,7 +119,7 @@ def test_gold_benchmark_rejects_an_ambiguous_surface(tmp_path):
                         "id": "c1",
                         "source": "dailymed",
                         "text": "asthma and asthma",
-                        "mentions": [{"surface": "asthma", "type": "disease"}],
+                        "mentions": [{"surface": "asthma", "type": "DiseaseOrPhenotypicFeature"}],
                     }
                 ]
             }
@@ -137,7 +140,7 @@ def test_gold_benchmark_uses_an_explicit_offset_when_supplied(tmp_path):
                         "id": "c1",
                         "source": "faers",
                         "text": "asthma and asthma",
-                        "mentions": [{"surface": "asthma", "type": "disease", "start": 11}],
+                        "mentions": [{"surface": "asthma", "type": "DiseaseOrPhenotypicFeature", "start": 11}],
                     }
                 ]
             }
@@ -164,7 +167,7 @@ def _gold(tmp_path):
         text="asthma",
         task="indication",
         source={"family": "faers"},
-        annotations=[Annotation(start=0, end=6, label="disease", text="asthma")],
+        annotations=[Annotation(start=0, end=6, label="DiseaseOrPhenotypicFeature", text="asthma")],
     )
     return _dataset(tmp_path, [example])
 
@@ -180,7 +183,7 @@ def _write_gold(tmp_path):
                         "id": "g1",
                         "source": "faers",
                         "text": "asthma",
-                        "mentions": [{"surface": "asthma", "type": "disease"}],
+                        "mentions": [{"surface": "asthma", "type": "DiseaseOrPhenotypicFeature"}],
                     }
                 ]
             }
@@ -199,7 +202,7 @@ def test_evaluate_checkpoint_reports_tuned_and_baseline_systems(tmp_path, monkey
     (checkpoint / "medliner-training.json").write_text(json.dumps({"model_id": "base"}), encoding="utf-8")
 
     def perfect(_checkpoint, *, threshold=0.3):
-        return lambda _text: [{"start": 0, "end": 6, "label": "disease"}]
+        return lambda _text: [{"start": 0, "end": 6, "label": "DiseaseOrPhenotypicFeature"}]
 
     monkeypatch.setattr(evaluation, "make_gliner_predictor", perfect)
     monkeypatch.setenv("MEDLINER_BENCHMARK", str(_write_gold(tmp_path)))
@@ -224,7 +227,7 @@ def test_a_missing_baseline_does_not_void_the_tuned_report(tmp_path, monkeypatch
     def only_tuned_is_available(checkpoint_arg, *, threshold=0.3):
         if str(checkpoint_arg) == "base":
             raise ModuleNotFoundError("base checkpoint unavailable")
-        return lambda _text: [{"start": 0, "end": 6, "label": "disease"}]
+        return lambda _text: [{"start": 0, "end": 6, "label": "DiseaseOrPhenotypicFeature"}]
 
     monkeypatch.setattr(evaluation, "make_gliner_predictor", only_tuned_is_available)
     monkeypatch.setenv("MEDLINER_BENCHMARK", str(_write_gold(tmp_path)))
@@ -274,9 +277,11 @@ def test_gliner_predictor_wrapper_normalizes_model_output():
         config = type("Config", (), {"max_len": 384})()
 
         def predict_entities(self, text, labels, threshold):
-            assert labels == ["disease", "phenotype"]
-            return [{"start": 0, "end": 6, "label": "Disease", "score": 0.9}]
+            assert labels == ["DiseaseOrPhenotypicFeature"]
+            return [{"start": 0, "end": 6, "label": "diseaseorphenotypicfeature", "score": 0.9}]
 
     predictor = GLiNERPredictor(Model(), threshold=0.3)
     assert predictor.max_words == 384
-    assert predictor("asthma") == [{"start": 0, "end": 6, "label": "disease", "text": "asthma", "score": 0.9}]
+    assert predictor("asthma") == [
+        {"start": 0, "end": 6, "label": "DiseaseOrPhenotypicFeature", "text": "asthma", "score": 0.9}
+    ]

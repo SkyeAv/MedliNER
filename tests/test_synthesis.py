@@ -29,7 +29,9 @@ def _synthetic_example(provenance: str) -> Example:
         text="asthma",
         task="indication",
         source={"family": "synthetic"},
-        annotations=[Annotation(start=0, end=6, label="disease", text="asthma", provenance=provenance)],
+        annotations=[
+            Annotation(start=0, end=6, label="DiseaseOrPhenotypicFeature", text="asthma", provenance=provenance)
+        ],
     )
 
 
@@ -84,7 +86,7 @@ def _annotated(text: str, mention_labels: list[tuple[str, str]], **kwargs) -> Ex
 def _reviewed() -> Example:
     return _annotated(
         "Approved for asthma and chronic eczema.",
-        [("asthma", "disease"), ("chronic eczema", "phenotype")],
+        [("asthma", "DiseaseOrPhenotypicFeature"), ("chronic eczema", "DiseaseOrPhenotypicFeature")],
         id="src-1",
         task="indication",
     )
@@ -187,8 +189,13 @@ def test_evaluate_reply_accepts_a_clean_paraphrase():
     assert example.source.document_id == "doc-1"  # original traceability survives the copy
     assert example.source.synth_source_id == "src-1" and example.source.synth_variant == "paraphrase"
     asthma, eczema = example.annotations
-    assert (asthma.start, asthma.end, asthma.text, asthma.label) == (14, 20, "asthma", "disease")
-    assert (eczema.start, eczema.end, eczema.text, eczema.label) == (25, 39, "chronic eczema", "phenotype")
+    assert (asthma.start, asthma.end, asthma.text, asthma.label) == (14, 20, "asthma", "DiseaseOrPhenotypicFeature")
+    assert (eczema.start, eczema.end, eczema.text, eczema.label) == (
+        25,
+        39,
+        "chronic eczema",
+        "DiseaseOrPhenotypicFeature",
+    )
     assert all(a.provenance == "synthetic" for a in example.annotations)
     assert Counter((a.text, a.label) for a in example.annotations) == Counter(
         (a.text, a.label) for a in _reviewed().annotations
@@ -268,11 +275,17 @@ def test_length_ratio_gate_rejects_rewrites_outside_bounds():
     Each reply keeps similarity above the floor, so the ratio bound is the only failing gate;
     without it a rewrite could balloon or collapse while still sharing its content words.
     """
-    source = _annotated("asthma eczema flare therapy", [("asthma", "disease"), ("eczema", "phenotype")], id="src-2")
+    source = _annotated(
+        "asthma eczema flare therapy",
+        [("asthma", "DiseaseOrPhenotypicFeature"), ("eczema", "DiseaseOrPhenotypicFeature")],
+        id="src-2",
+    )
     too_long = synthesis.evaluate_reply(source, "asthma eczema flare therapy zebra quill walnut mango peach olive")
     assert not too_long.accepted and too_long.reason == "length_ratio"
     source = _annotated(
-        "asthma eczema flare therapy tonight", [("asthma", "disease"), ("eczema", "phenotype")], id="src-3"
+        "asthma eczema flare therapy tonight",
+        [("asthma", "DiseaseOrPhenotypicFeature"), ("eczema", "DiseaseOrPhenotypicFeature")],
+        id="src-3",
     )
     too_short = synthesis.evaluate_reply(source, "asthma eczema")
     assert not too_short.accepted and too_short.reason == "length_ratio"
@@ -283,7 +296,11 @@ def test_gate_order_length_before_budget():
 
     Pins gate 4 before gate 5 so the cheaper textual check wins and logs stay predictable.
     """
-    source = _annotated("asthma eczema", [("asthma", "disease"), ("eczema", "phenotype")], id="src-4")
+    source = _annotated(
+        "asthma eczema",
+        [("asthma", "DiseaseOrPhenotypicFeature"), ("eczema", "DiseaseOrPhenotypicFeature")],
+        id="src-4",
+    )
     result = synthesis.evaluate_reply(
         source, "asthma eczema zebra quill walnut mango", limits=ModelLimits(max_len=5, max_width=12)
     )
@@ -297,7 +314,11 @@ def test_budget_gate_rejects_rewrites_over_the_word_token_limit():
     the only way supervision cannot be silently amputated. Both the configured limit and the
     real 384-token default are pinned.
     """
-    source = _annotated("asthma eczema flare therapy", [("asthma", "disease"), ("eczema", "phenotype")], id="src-5")
+    source = _annotated(
+        "asthma eczema flare therapy",
+        [("asthma", "DiseaseOrPhenotypicFeature"), ("eczema", "DiseaseOrPhenotypicFeature")],
+        id="src-5",
+    )
     tight = synthesis.evaluate_reply(
         source, "asthma eczema flare therapy zebra", limits=ModelLimits(max_len=4, max_width=12)
     )
@@ -305,7 +326,7 @@ def test_budget_gate_rejects_rewrites_over_the_word_token_limit():
     assert "max_len" in (tight.detail or "")
 
     text = "asthma " + " ".join(f"w{i}" for i in range(200))
-    long_source = _annotated(text, [("asthma", "disease")], id="src-6")
+    long_source = _annotated(text, [("asthma", "DiseaseOrPhenotypicFeature")], id="src-6")
     long_reply = text + " " + " ".join(f"junk{i}" for i in range(184))  # 385 word tokens
     default_limit = synthesis.evaluate_reply(long_source, long_reply)  # default limits: 384/12
     assert not default_limit.accepted and default_limit.reason == "budget_exceeded"
@@ -318,7 +339,9 @@ def test_budget_gate_rejects_spans_wider_than_max_width():
     label would be unreachable — silently dropped supervision. The gate must refuse it, and
     this also protects against source examples whose own spans already violate the budget.
     """
-    source = _annotated("chronic severe asthma care continues", [("chronic severe asthma", "disease")], id="src-7")
+    source = _annotated(
+        "chronic severe asthma care continues", [("chronic severe asthma", "DiseaseOrPhenotypicFeature")], id="src-7"
+    )
     result = synthesis.evaluate_reply(
         source, "chronic severe asthma improved", limits=ModelLimits(max_len=384, max_width=2)
     )
@@ -333,7 +356,7 @@ def test_budget_gate_rejects_mentions_embedded_inside_longer_words():
     whole word tokens and GLiNER could never supervise it. The rewrite must be rejected, never
     accepted on the strength of a substring.
     """
-    source = _annotated("asthma therapy helps patients", [("asthma", "disease")], id="src-8")
+    source = _annotated("asthma therapy helps patients", [("asthma", "DiseaseOrPhenotypicFeature")], id="src-8")
     result = synthesis.evaluate_reply(source, "asthmatics therapy helps folks")
     assert not result.accepted and result.reason == "budget_exceeded"
 
@@ -498,7 +521,11 @@ def test_counters_partition_attempts_exactly(monkeypatch):
     zeros; an unknown reason is refused loudly so counters can never hide a mis-wired gate.
     """
     reviewed = _reviewed()
-    four_words = _annotated("asthma eczema flare therapy", [("asthma", "disease"), ("eczema", "phenotype")], id="src-2")
+    four_words = _annotated(
+        "asthma eczema flare therapy",
+        [("asthma", "DiseaseOrPhenotypicFeature"), ("eczema", "DiseaseOrPhenotypicFeature")],
+        id="src-2",
+    )
 
     def _explode(*_args, **_kwargs):
         raise ValueError("synthetic construction exploded")
@@ -554,7 +581,7 @@ def test_synthesize_variants_counts_and_collects_accepted_examples(server):
     the first, count the second as 'missing_mention', and partition both attempts exactly.
     """
     good = _reviewed()
-    bad = _annotated("treats migraine", [("migraine", "disease")], id="src-9")
+    bad = _annotated("treats migraine", [("migraine", "DiseaseOrPhenotypicFeature")], id="src-9")
     accepted, counters = synthesis.synthesize_variants([good, bad], url=server)
     assert [example.id for example in accepted] == ["src-1-synth-paraphrase"]
     assert accepted[0].source.family == "synthetic"

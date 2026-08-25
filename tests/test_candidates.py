@@ -302,13 +302,13 @@ def test_build_warmup_tasks_maps_gold_cases_to_demo_tasks():
                 "id": "dailymed-ibuprofen",
                 "source": "dailymed",
                 "text": "Contraindicated in patients with asthma.",
-                "mentions": [{"surface": "asthma", "type": "disease"}],
+                "mentions": [{"surface": "asthma", "type": "DiseaseOrPhenotypicFeature"}],
             },
             {
                 "id": "faers-case-1",
                 "source": "faers",
                 "text": "Used for migraine prophylaxis.",
-                "mentions": [{"surface": "migraine", "type": "disease", "start": 9}],
+                "mentions": [{"surface": "migraine", "type": "DiseaseOrPhenotypicFeature", "start": 9}],
             },
         ]
     )
@@ -318,8 +318,12 @@ def test_build_warmup_tasks_maps_gold_cases_to_demo_tasks():
     assert all(task["data"]["warmup"] is True for task in tasks)
     ibuprofen, faers = tasks
     assert ibuprofen["id"].startswith("warmup-")
-    assert ibuprofen["data"]["gold_mentions"] == [{"start": 33, "end": 39, "label": "disease", "text": "asthma"}]
-    assert faers["data"]["gold_mentions"] == [{"start": 9, "end": 17, "label": "disease", "text": "migraine"}]
+    assert ibuprofen["data"]["gold_mentions"] == [
+        {"start": 33, "end": 39, "label": "DiseaseOrPhenotypicFeature", "text": "asthma"}
+    ]
+    assert faers["data"]["gold_mentions"] == [
+        {"start": 9, "end": 17, "label": "DiseaseOrPhenotypicFeature", "text": "migraine"}
+    ]
     # Ids are deterministic (case-id keyed), so re-runs reproduce the same warm-up queue.
     assert [task["id"] for task in build_warmup_tasks(gold)] == [task["id"] for task in tasks]
 
@@ -340,7 +344,7 @@ def test_build_warmup_tasks_rejects_malformed_benchmarks():
                 "id": "x",
                 "source": "faers",
                 "text": "short",
-                "mentions": [{"surface": "absent", "type": "disease"}],
+                "mentions": [{"surface": "absent", "type": "DiseaseOrPhenotypicFeature"}],
             }
         ]
     )

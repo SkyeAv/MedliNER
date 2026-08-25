@@ -12,7 +12,7 @@ from typing import Any
 
 from .dataset import read_examples
 from .gliner_data import split_words
-from .schema import ALLOWED_LABELS, Annotation, Example
+from .schema import ALLOWED_LABELS, Annotation, Example, canonical_label
 
 Predictor = Callable[[str], list[dict[str, Any]]]
 
@@ -86,7 +86,7 @@ def _normalize_prediction(item: dict[str, Any]) -> tuple[int, int, str] | None:
     end = int(item["end"])
     if start >= end:
         return None
-    return start, end, str(item.get("label", item.get("type", ""))).strip().lower()
+    return start, end, canonical_label(str(item.get("label", item.get("type", "")))) or ""
 
 
 def score_example(predictor: Predictor, example: Example) -> ExampleScore:
@@ -167,7 +167,7 @@ class GLiNERPredictor:
             {
                 "start": int(item["start"]),
                 "end": int(item["end"]),
-                "label": str(item.get("label", item.get("type", ""))).lower(),
+                "label": canonical_label(str(item.get("label", item.get("type", "")))) or "",
                 "text": str(item.get("text", text[int(item["start"]) : int(item["end"])])),
                 "score": float(item.get("score", 0.0)),
             }

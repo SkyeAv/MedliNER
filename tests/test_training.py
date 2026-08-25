@@ -45,7 +45,7 @@ def test_fixed_label_collator_supplies_per_example_entity_types():
         seen.update(kwargs)
         return {"features": features}
 
-    labels = ["disease", "phenotype"]
+    labels = ["DiseaseOrPhenotypicFeature"]
     FixedLabelCollator(collator, labels)([{"ner": []}, {"ner": []}])
     # A flat list leaves GLiNER's classes_to_id as one dict, which create_labels then indexes
     # positionally; the batch must carry one label list per example.
@@ -181,9 +181,9 @@ def test_validation_callback_publishes_strict_f1_and_stops_on_patience():
         text="asthma",
         task="indication",
         source={"family": "faers"},
-        annotations=[Annotation(start=0, end=6, label="disease", text="asthma")],
+        annotations=[Annotation(start=0, end=6, label="DiseaseOrPhenotypicFeature", text="asthma")],
     )
-    callback = ValidationF1Callback([example], labels=["disease"], patience=2)
+    callback = ValidationF1Callback([example], labels=["DiseaseOrPhenotypicFeature"], patience=2)
 
     class Model:
         training = True
@@ -195,7 +195,7 @@ def test_validation_callback_publishes_strict_f1_and_stops_on_patience():
             self.training = True
 
         def predict_entities(self, text, labels, threshold):
-            return [{"start": 0, "end": 6, "label": "disease"}]
+            return [{"start": 0, "end": 6, "label": "DiseaseOrPhenotypicFeature"}]
 
     model = Model()
     control = SimpleNamespace(should_training_stop=False)
@@ -216,7 +216,7 @@ def test_validation_callback_publishes_strict_f1_and_stops_on_patience():
 
 
 def test_validation_callback_is_inert_without_a_model_or_metrics():
-    callback = ValidationF1Callback([], labels=["disease"])
+    callback = ValidationF1Callback([], labels=["DiseaseOrPhenotypicFeature"])
     control = SimpleNamespace(should_training_stop=False)
     assert callback.on_evaluate(None, None, control, model=None, metrics={}) is control
     assert callback.best_f1 == -1.0
@@ -390,7 +390,7 @@ def test_mixed_weights_reject_batch_size_above_one():
         return {"num_tokens": torch.tensor([len(f["tokenized_text"]) for f in features])}
 
     with pytest.raises(ValueError, match=r"sample weights 0\.1 and 1\.0"):
-        WeightedCollator(collator, ["disease"])(
+        WeightedCollator(collator, ["DiseaseOrPhenotypicFeature"])(
             [
                 {"tokenized_text": ["a"], "ner": [], "weight": 1.0},
                 {"tokenized_text": ["b"], "ner": [], "weight": 0.1},
@@ -404,10 +404,12 @@ def test_weighted_collator_injects_defaulted_sample_weight_tensor():
     def collator(features, **kwargs):
         return {"num_tokens": torch.tensor([len(f["tokenized_text"]) for f in features])}
 
-    batch = WeightedCollator(collator, ["disease"])([{"tokenized_text": ["a"], "ner": []}])
+    batch = WeightedCollator(collator, ["DiseaseOrPhenotypicFeature"])([{"tokenized_text": ["a"], "ner": []}])
     assert torch.equal(batch["sample_weight"], torch.tensor([1.0]))
 
-    batch = WeightedCollator(collator, ["disease"])([{"tokenized_text": ["b"], "ner": [], "weight": 0.1}])
+    batch = WeightedCollator(collator, ["DiseaseOrPhenotypicFeature"])(
+        [{"tokenized_text": ["b"], "ner": [], "weight": 0.1}]
+    )
     assert torch.equal(batch["sample_weight"], torch.tensor([0.1]))
 
 
@@ -444,7 +446,9 @@ def _gold_example(example_id: str, text: str = "asthma", span: tuple[int, int] =
         text=text,
         task="indication",
         source={"family": "faers"},
-        annotations=[Annotation(start=span[0], end=span[1], label="disease", text=text[span[0] : span[1]])],
+        annotations=[
+            Annotation(start=span[0], end=span[1], label="DiseaseOrPhenotypicFeature", text=text[span[0] : span[1]])
+        ],
     )
 
 
