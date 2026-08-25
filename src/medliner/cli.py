@@ -97,6 +97,31 @@ DEFAULT_SHORTEN_MAX_WORDS = 48
 #: Parallel chat requests; the server serves two slots (-np 2) with continuous batching, so a
 #: small queue in front of it keeps both slots busy without unbounded memory growth.
 DEFAULT_SHORTEN_WORKERS = 4
+#: Synthesis stage defaults (spec): MAX_WORDS is a full-note rewrite budget, deliberately wider
+#: than the shorten stage's; the stage owns its target/floor/retry configuration.
+DEFAULT_SYNTH_RATIO = 10
+DEFAULT_SYNTH_MIN_RATIO = 5.0
+DEFAULT_SYNTH_MAX_ATTEMPTS = 3
+DEFAULT_SYNTH_MAX_WORDS = 250
+DEFAULT_SYNTH_MIN_SIMILARITY = 0.3
+#: The server serves two slots (-np 2) with continuous batching; one in-flight request per slot
+#: keeps both busy without unbounded queue growth.
+DEFAULT_SYNTH_WORKERS = 2
+#: One prompt style per variant slot; with the default ratio of 10 every slot of a source gets a
+#: distinct style (and therefore id and cache key). Ratios beyond the list cycle with a suffix.
+SYNTH_VARIANT_STYLES = (
+    "paraphrase",
+    "plain-language",
+    "clinical-formal",
+    "concise",
+    "patient-friendly",
+    "case-report",
+    "textbook",
+    "nursing-note",
+    "drug-label",
+    "scientific-abstract",
+)
+SYNTH_MANIFEST_SCHEMA = "medliner.synthesis.manifest.v1"
 DEFAULT_SAMPLE_MAX_RUN = 3
 #: Share of each sampling stratum filled with the hardest texts; the rest stays hash-random.
 DEFAULT_SAMPLE_EDGE_FRACTION = 0.8
@@ -154,6 +179,84 @@ def sampling_settings() -> SamplingSettings:
         raise ValueError("MEDLINER_SAMPLE_MAX_RUN must be at least 1")
     if not 0.0 <= settings.edge_fraction <= 1.0:
         raise ValueError("MEDLINER_SAMPLE_EDGE_FRACTION must be between 0 and 1")
+    return settings
+
+
+@dataclass(frozen=True)
+class SynthesisSettings:
+    """Resolved ``MEDLINER_SYNTH_*`` configuration for the synthesis stage."""
+
+    ratio: int
+    min_ratio: float
+    max_attempts: int
+    max_words: int
+    min_similarity: float
+    workers: int
+
+
+def _synth_env_int(name: str, default: int, *, minimum: int) -> int:
+    raw = os.environ.get(name, str(default))
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ValueError(f"{name} must be an integer, got {raw!r}") from None
+    if value < minimum:
+        raise ValueError(f"{name} must be at least {minimum}, got {value}")
+    return value
+
+
+def _synth_env_float(name: str, default: float, *, minimum: float, maximum: float) -> float:
+    raw = os.environ.get(name, str(default))
+    try:
+        value = float(raw)
+    except ValueError:
+        raise ValueError(f"{name} must be a number, got {raw!r}") from None
+    if not minimum <= value <= maximum:
+        raise ValueError(f"{name} must be within [{minimum}, {maximum}], got {value}")
+    return value
+
+
+def synthesis_settings(
+    *,
+    ratio: int | None = None,
+    min_ratio: float | None = None,
+    max_attempts: int | None = None,
+    max_words: int | None = None,
+    min_similarity: float | None = None,
+    workers: int | None = None,
+) -> SynthesisSettings:
+    """Resolve the ``MEDLINER_SYNTH_*`` environment with flags overriding; errors name the variable."""
+    settings = SynthesisSettings(
+        ratio=_synth_env_int("MEDLINER_SYNTH_RATIO", DEFAULT_SYNTH_RATIO, minimum=1) if ratio is None else ratio,
+        min_ratio=(
+            _synth_env_float("MEDLINER_SYNTH_MIN_RATIO", DEFAULT_SYNTH_MIN_RATIO, minimum=0.0, maximum=1000.0)
+            if min_ratio is None
+            else min_ratio
+        ),
+        max_attempts=(
+            _synth_env_int("MEDLINER_SYNTH_MAX_ATTEMPTS", DEFAULT_SYNTH_MAX_ATTEMPTS, minimum=1)
+            if max_attempts is None
+            else max_attempts
+        ),
+        max_words=(
+            _synth_env_int("MEDLINER_SYNTH_MAX_WORDS", DEFAULT_SYNTH_MAX_WORDS, minimum=1)
+            if max_words is None
+            else max_words
+        ),
+        min_similarity=(
+            _synth_env_float("MEDLINER_SYNTH_MIN_SIMILARITY", DEFAULT_SYNTH_MIN_SIMILARITY, minimum=0.0, maximum=1.0)
+            if min_similarity is None
+            else min_similarity
+        ),
+        workers=(
+            _synth_env_int("MEDLINER_SYNTH_WORKERS", DEFAULT_SYNTH_WORKERS, minimum=1) if workers is None else workers
+        ),
+    )
+    if settings.min_ratio > settings.ratio:
+        raise ValueError(
+            f"MEDLINER_SYNTH_MIN_RATIO must not exceed MEDLINER_SYNTH_RATIO "
+            f"({settings.min_ratio} > {settings.ratio}): the floor would be unreachable"
+        )
     return settings
 
 
@@ -596,6 +699,245 @@ def cmd_shorten(args: argparse.Namespace) -> None:
     print("next: MEDLINER_RAW_CANDIDATES=<shortened file> medliner candidates")
 
 
+def synth_variant_name(slot: int) -> str:
+    """Prompt style for a 1-based variant slot; slots beyond the style list cycle with a suffix."""
+    cycle, index = divmod(slot - 1, len(SYNTH_VARIANT_STYLES))
+    style = SYNTH_VARIANT_STYLES[index]
+    return style if cycle == 0 else f"{style}-{cycle + 1}"
+
+
+def run_synthesize(
+    split_dir: Path,
+    settings: SynthesisSettings,
+    *,
+    url: str | None,
+    limit: int | None,
+    force: bool = False,
+) -> Path:
+    """Generate the semi-supervised synthetic pool from the train split; returns its directory.
+
+    For every gold train example the stage fills ``settings.ratio`` variant slots — each a
+    distinct prompt style, so ids and cache keys never collide — retrying a rejected slot up to
+    ``settings.max_attempts`` times through :func:`medliner.synthesis.synthesize_variant`.
+    The engine's divergence gates decide acceptance; this stage only accounts, persists, and
+    enforces the floor.
+
+    The floor is loud: a run ending below ``MEDLINER_SYNTH_MIN_RATIO`` per gold example still
+    writes its outputs and manifest, then raises so the CLI exits non-zero with the shortfall
+    spelled out. ``--limit`` caps how many pending slots are attempted — it can shrink the work,
+    never silently turn the gate off, so a limited trial below the floor also exits non-zero.
+
+    Resumable: the manifest records every accepted slot (source id, slot, variant); a rerun with
+    the same train split and gate configuration keeps those examples and only fills the gaps.
+    ``--force`` ignores previous progress and the reply cache entirely, exactly like ``shorten``.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from . import llm, synthesis
+    from .schema import Example
+
+    train_path = split_dir / "train.jsonl"
+    if not train_path.exists():
+        raise FileNotFoundError(f"train split not found: {train_path} (run 'medliner splits' first)")
+    if not llm.health(url):
+        raise RuntimeError(f"LLM server not healthy at {llm.llm_url(url)} (start it with 'make llm')")
+    # Id-sorted iteration keeps slot scheduling, manifest slot order, and warm-cache replays
+    # byte-identical regardless of the train file's row order.
+    gold = sorted(read_examples(train_path), key=lambda item: item.id)
+    if not gold:
+        raise ValueError(f"train split is empty: {train_path}")
+    unannotated = sorted(item.id for item in gold if not item.annotations)
+    if unannotated:
+        raise ValueError(
+            f"train examples without annotations cannot be synthesized (nothing to preserve): {unannotated[:5]}"
+        )
+
+    output_dir = workdir() / "synthetic"
+    examples_path = output_dir / "examples.jsonl"
+    manifest_path = output_dir / "manifest.json"
+    input_hash = hash_file(train_path)
+    gold_by_id = {item.id: item for item in gold}
+
+    # Slots already accepted by a previous compatible run: (source_id, slot) -> synthetic example.
+    done: dict[tuple[str, int], Example] = {}
+    done_records: dict[tuple[str, int], dict[str, Any]] = {}
+    if not force and manifest_path.exists():
+        try:
+            previous = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except ValueError:
+            previous = {}
+        # The accepted examples stay valid only while the input and the gate configuration are
+        # unchanged; max_attempts is effort, not an acceptance criterion, so it may differ.
+        resumable = (
+            previous.get("schema_version") == SYNTH_MANIFEST_SCHEMA
+            and previous.get("input_hash") == input_hash
+            and previous.get("ratio") == settings.ratio
+            and previous.get("max_words") == settings.max_words
+            and previous.get("similarity_floor") == settings.min_similarity
+            and isinstance(previous.get("slots"), list)
+            and examples_path.exists()
+        )
+        if resumable:
+            previous_examples = {item.id: item for item in read_examples(examples_path)}
+            for record in previous["slots"]:
+                if not isinstance(record, dict):
+                    continue
+                source_id, slot, variant = record.get("source_id"), record.get("slot"), record.get("variant")
+                example = previous_examples.get(f"{source_id}-synth-{variant}")
+                if (
+                    source_id in gold_by_id
+                    and isinstance(slot, int)
+                    and 1 <= slot <= settings.ratio
+                    and isinstance(variant, str)
+                    and example is not None
+                ):
+                    done[(source_id, slot)] = example
+                    done_records[(source_id, slot)] = {
+                        "source_id": source_id,
+                        "slot": slot,
+                        "variant": variant,
+                        "attempts": record.get("attempts"),
+                    }
+
+    pending = [
+        (source, slot) for source in gold for slot in range(1, settings.ratio + 1) if (source.id, slot) not in done
+    ]
+    attempted_slots = pending if limit is None else pending[: max(0, limit)]
+    resumed_count = len(done)
+    cache_path = synthesis.default_cache_path()
+    # --force bypasses the sqlite reply cache in both directions (no reads, no stores): every
+    # slot is regenerated through the server, never served a cached reply.
+    cache = None if force else cache_path
+    counters = synthesis.SynthesisCounters()
+
+    def fill_slot(source: Example, slot: int) -> tuple[list[Any], Example | None, dict[str, Any] | None]:
+        base = synth_variant_name(slot)
+        results = []
+        for attempt in range(1, settings.max_attempts + 1):
+            # Retries must change the cache key, or a warm cache would replay the rejected reply.
+            variant = base if attempt == 1 else f"{base}-r{attempt}"
+            result = synthesis.synthesize_variant(
+                source,
+                variant=variant,
+                max_words=settings.max_words,
+                url=url,
+                cache=cache,
+                similarity_floor=settings.min_similarity,
+            )
+            results.append(result)
+            if result.accepted and result.example is not None:
+                record = {"source_id": source.id, "slot": slot, "variant": variant, "attempts": attempt}
+                return results, result.example, record
+        return results, None, None
+
+    slot_records: list[dict[str, Any]] = list(done_records.values())
+    accepted_new: list[Example] = []
+    source_by_synth_id: dict[str, str] = {example.id: source_id for (source_id, _slot), example in done.items()}
+    with ThreadPoolExecutor(max_workers=settings.workers) as pool:
+        for results, example, record in pool.map(lambda item: fill_slot(*item), attempted_slots):
+            for result in results:  # counters stay in the main thread: the partition stays exact
+                counters.record(result)
+            if example is not None and record is not None:
+                accepted_new.append(example)
+                slot_records.append(record)
+                source_by_synth_id[example.id] = record["source_id"]
+
+    examples = sorted((*done.values(), *accepted_new), key=lambda item: item.id)
+    # Similarity stats are computed over the id-sorted pool, so they cannot depend on worker or
+    # resume ordering (float sums are order-sensitive).
+    similarities = [
+        synthesis.jaccard_similarity(
+            synthesis.content_words(gold_by_id[source_by_synth_id[item.id]].text),
+            synthesis.content_words(item.text),
+        )
+        for item in examples
+    ]
+    accepted_count = len(examples)
+    target_count = settings.ratio * len(gold)
+    floor_count = settings.min_ratio * len(gold)
+    achieved_ratio = accepted_count / len(gold)
+    gate_passed = accepted_count >= floor_count
+    examples_hash = write_examples(examples, examples_path)
+    manifest = {
+        "schema_version": SYNTH_MANIFEST_SCHEMA,
+        "input_path": str(train_path),
+        "input_hash": input_hash,
+        "llm_url": llm.llm_url(url),
+        "ratio": settings.ratio,
+        "min_ratio": settings.min_ratio,
+        "max_attempts": settings.max_attempts,
+        "max_words": settings.max_words,
+        "similarity_floor": settings.min_similarity,  # manifest field predates the MIN_SIMILARITY naming
+        "workers": settings.workers,
+        "cache": str(cache_path),
+        "gold_count": len(gold),
+        "target_count": target_count,
+        "floor_count": floor_count,
+        "accepted": accepted_count,
+        "achieved_ratio": round(achieved_ratio, 3),
+        "counters": {
+            "attempts": counters.attempts,
+            "accepted_this_run": counters.accepted,
+            "rejections": dict(sorted(counters.rejections.items())),
+        },
+        "resumed": resumed_count,
+        "trial": limit is not None,
+        "limit": limit,
+        "example_count": accepted_count,
+        "examples_hash": examples_hash,
+        "label_counts": dict(sorted(Counter(a.label for e in examples for a in e.annotations).items())),
+        "task_counts": dict(sorted(Counter(e.task for e in examples).items())),
+        "similarity": {
+            "min": round(min(similarities), 3) if similarities else None,
+            "mean": round(sum(similarities) / len(similarities), 3) if similarities else None,
+            "max": round(max(similarities), 3) if similarities else None,
+        },
+        "gate": {"passed": gate_passed, "enforced": True, "required": floor_count},
+        "slots": sorted(slot_records, key=lambda record: (record["source_id"], record["slot"])),
+    }
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    print(
+        f"synthesize: {accepted_count}/{target_count} variants accepted for {len(gold)} gold examples "
+        f"(achieved {achieved_ratio:.1f}x of target {settings.ratio}x; attempts {counters.attempts}; "
+        f"rejections {counters.total_rejections()}; resumed {resumed_count}) -> {examples_path}"
+    )
+    if counters.rejections["llm_error"]:
+        print(
+            f"synthesize: warning: {counters.rejections['llm_error']} attempts failed with LLM transport "
+            "errors; check the server (make llm)"
+        )
+    if not gate_passed:
+        shortfall = (
+            f"accepted {accepted_count} synthetic examples but the floor requires {floor_count} "
+            f"(MEDLINER_SYNTH_MIN_RATIO={settings.min_ratio} x {len(gold)} gold; "
+            f"achieved {achieved_ratio:.2f}x of target {settings.ratio}x)"
+            + (f"; trial limited to {limit} of {len(pending)} pending slots" if limit is not None else "")
+            + f"; rejections: {manifest['counters']['rejections']}"
+        )
+        raise RuntimeError(f"{shortfall}; manifest: {manifest_path}")
+    return output_dir
+
+
+def cmd_synthesize(args: argparse.Namespace) -> None:
+    settings = synthesis_settings(
+        ratio=args.ratio,
+        min_ratio=args.min_ratio,
+        max_attempts=args.max_attempts,
+        max_words=args.max_words,
+        min_similarity=args.min_similarity,
+        workers=args.workers,
+    )
+    if args.limit is not None and args.limit < 1:
+        raise ValueError(f"--limit must be a positive number of variant slots, got {args.limit}")
+    run_synthesize(
+        Path(args.splits) if args.splits else workdir() / "splits",
+        settings,
+        url=args.url,
+        limit=args.limit,
+        force=args.force,
+    )
+
+
 def _prelabel_options(args: argparse.Namespace) -> dict[str, Any]:
     from . import prelabel
 
@@ -992,6 +1334,68 @@ def build_parser() -> argparse.ArgumentParser:
     splits = sub.add_parser("splits", help="freeze grouped train/validation/test splits")
     splits.add_argument("--dataset", help="normalized JSONL (default: $MEDLINER_WORKDIR/normalized/examples.jsonl)")
     splits.set_defaults(func=cmd_splits)
+
+    synthesize = sub.add_parser(
+        "synthesize",
+        help="generate the synthetic training pool from the train split through the local LLM",
+        description=(
+            "Generate the semi-supervised synthetic pool: for every gold train example, fill "
+            "MEDLINER_SYNTH_RATIO variant slots through the local LLM (start it with 'make llm'), "
+            "gated by the synthesis engine's divergence checks. A run below "
+            "MEDLINER_SYNTH_MIN_RATIO per gold example exits non-zero after writing its manifest."
+        ),
+    )
+    synthesize.add_argument("--splits", help="split dir (default: $MEDLINER_WORKDIR/splits)")
+    synthesize.add_argument(
+        "--ratio",
+        type=int,
+        help=f"target variants per gold example (default: $MEDLINER_SYNTH_RATIO, {DEFAULT_SYNTH_RATIO})",
+    )
+    synthesize.add_argument(
+        "--min-ratio",
+        type=float,
+        help=(
+            "accepted floor per gold example; runs below it exit non-zero "
+            f"(default: $MEDLINER_SYNTH_MIN_RATIO, {DEFAULT_SYNTH_MIN_RATIO:g})"
+        ),
+    )
+    synthesize.add_argument(
+        "--max-attempts",
+        type=int,
+        help=f"attempts per variant slot (default: $MEDLINER_SYNTH_MAX_ATTEMPTS, {DEFAULT_SYNTH_MAX_ATTEMPTS})",
+    )
+    synthesize.add_argument(
+        "--max-words",
+        type=int,
+        help=f"rewrite length budget in words (default: $MEDLINER_SYNTH_MAX_WORDS, {DEFAULT_SYNTH_MAX_WORDS})",
+    )
+    synthesize.add_argument(
+        "--min-similarity",
+        "--similarity-floor",  # backwards-compatible alias; dest keeps the canonical name
+        dest="min_similarity",
+        type=float,
+        help=f"content-word Jaccard floor (default: $MEDLINER_SYNTH_MIN_SIMILARITY, {DEFAULT_SYNTH_MIN_SIMILARITY})",
+    )
+    synthesize.add_argument(
+        "--workers",
+        type=int,
+        help=f"parallel LLM requests (default: $MEDLINER_SYNTH_WORKERS, {DEFAULT_SYNTH_WORKERS})",
+    )
+    synthesize.add_argument("--url", help="LLM server base URL (default: $MEDLINER_LLM_URL, http://127.0.0.1:8080)")
+    synthesize.add_argument(
+        "--limit",
+        type=int,
+        help=(
+            "attempt at most this many pending variant slots (trial run; the floor gate still "
+            "exits non-zero when the pool ends below it)"
+        ),
+    )
+    synthesize.add_argument(
+        "--force",
+        action="store_true",
+        help="ignore previous progress and cached replies; regenerate every slot through the model",
+    )
+    synthesize.set_defaults(func=cmd_synthesize)
 
     train = sub.add_parser("train", help="fine-tune the small GLiNER checkpoint")
     train.add_argument("--smoke", action="store_true", help="one-step GPU sanity check (run this first)")
