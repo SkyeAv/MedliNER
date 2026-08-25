@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -72,9 +73,16 @@ def char_span_to_token_span(text: str, start: int, end: int, tokens: Sequence[Wo
 
 
 def to_gliner_record(
-    example: Example, model: Any | None = None, *, limits: ModelLimits | None = None
+    example: Example, model: Any | None = None, *, limits: ModelLimits | None = None, weight: float = 1.0
 ) -> dict[str, Any]:
-    """Convert one canonical example to GLiNER 0.2.x's training record shape."""
+    """Convert one canonical example to GLiNER 0.2.x's training record shape.
+
+    ``weight`` is a per-record loss multiplier for semi-supervised mixes (e.g. down-weighting
+    synthetic examples). It is omitted from the record at its default so the existing record
+    shape — and every consumer of it — stays byte-for-byte stable.
+    """
+    if not math.isfinite(weight) or weight <= 0:
+        raise ValueError(f"weight must be a positive finite number, got {weight!r}")
     limits = limits if limits is not None else model_limits(model)
     tokens = split_words(example.text, model=model)
     if limits.max_len is not None and len(tokens) > limits.max_len:
@@ -101,12 +109,15 @@ def to_gliner_record(
         "task": example.task,
         "source": example.source.model_dump(mode="json"),
         "char_annotations": [annotation.model_dump(mode="json") for annotation in example.annotations],
+        **({"weight": weight} if weight != 1.0 else {}),
     }
 
 
-def to_gliner_dataset(examples: Iterable[Example], model: Any | None = None) -> list[dict[str, Any]]:
+def to_gliner_dataset(
+    examples: Iterable[Example], model: Any | None = None, *, weight: float = 1.0
+) -> list[dict[str, Any]]:
     limits = model_limits(model)
-    return [to_gliner_record(example, model=model, limits=limits) for example in examples]
+    return [to_gliner_record(example, model=model, limits=limits, weight=weight) for example in examples]
 
 
 __all__ = [

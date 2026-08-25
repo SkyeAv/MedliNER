@@ -54,6 +54,51 @@ def _run_metadata(checkpoint_dir: Path) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _copy_synthetic_artifacts(
+    run_metadata: dict[str, Any], synthetic_dir: Path | None, output_dir: Path
+) -> dict[str, Any]:
+    """Bundle the synthetic pool the run actually used and prove it is that exact pool.
+
+    The checkpoint's run metadata is the source of truth: a count of zero (or an older gold-only
+    run without the field) bundles nothing even when a stale pool still sits in the workdir,
+    while a positive count without its artifacts fails loudly rather than shipping a provenance
+    claim the bundle cannot back. The examples are re-hashed against the hash the trainer
+    recorded, so a pool regenerated after training cannot pass itself off as the data the
+    checkpoint learned from.
+    """
+    count = run_metadata.get("synthetic_examples")
+    weight = run_metadata.get("synthetic_weight")
+    if not count:
+        return {"synthetic_weight": weight, "synthetic_count": count, "synthetic_manifest_sha256": None}
+    if synthetic_dir is None:
+        raise FileNotFoundError(
+            f"run metadata records {count} synthetic training examples but no synthetic pool "
+            "directory was given (default: $MEDLINER_WORKDIR/synthetic)"
+        )
+    examples = synthetic_dir / "examples.jsonl"
+    manifest = synthetic_dir / "manifest.json"
+    missing = [str(path) for path in (examples, manifest) if not path.exists()]
+    if missing:
+        raise FileNotFoundError(
+            f"run metadata records {count} synthetic training examples but the pool artifacts are missing: {missing}"
+        )
+    actual_hash = hash_file(examples)
+    recorded_hash = run_metadata.get("synthetic_dataset_hash")
+    if recorded_hash is not None and actual_hash != recorded_hash:
+        raise ValueError(
+            f"synthetic pool {examples} changed since training (sha256 {actual_hash} != recorded "
+            f"{recorded_hash}); a bundle can only prove provenance for the exact pool the "
+            "checkpoint learned from"
+        )
+    shutil.copy2(examples, output_dir / "synthetic_examples.jsonl")
+    shutil.copy2(manifest, output_dir / "synthetic_manifest.json")
+    return {
+        "synthetic_weight": weight,
+        "synthetic_count": count,
+        "synthetic_manifest_sha256": hash_file(manifest),
+    }
+
+
 def _write_training_config(checkpoint_dir: Path, fallback: Path, destination: Path) -> None:
     """Prefer the config the run actually used over whatever is in `configs/` today.
 
@@ -78,8 +123,15 @@ def build_export_bundle(
     output_dir: str | Path,
     annotation_policy_path: str | Path = "docs/ANNOTATION_GUIDE.md",
     training_config_path: str | Path = "configs/train-small.yaml",
+    synthetic_dir: str | Path | None = None,
 ) -> Path:
-    """Copy immutable model/data metadata into a later-uploadable directory."""
+    """Copy immutable model/data metadata into a later-uploadable directory.
+
+    A run that mixed in the synthetic pool also ships its evidence — ``synthetic_examples.jsonl``
+    plus the synthesis manifest — and the provenance records the synthetic weight, count, and
+    manifest hash. ``synthetic_dir`` defaults to ``$MEDLINER_WORKDIR/synthetic`` in the CLI; a
+    run whose metadata records no synthetic examples bundles no synthetic artifacts.
+    """
     checkpoint_dir = Path(checkpoint_dir)
     evaluation_path = Path(evaluation_path)
     dataset_path = Path(dataset_path)
@@ -103,6 +155,9 @@ def build_export_bundle(
         json.dumps({"labels": list(ALLOWED_LABELS)}, indent=2) + "\n", encoding="utf-8"
     )
     run_metadata = _run_metadata(checkpoint_dir)
+    synthetic_provenance = _copy_synthetic_artifacts(
+        run_metadata, None if synthetic_dir is None else Path(synthetic_dir), output_dir
+    )
     split_manifest_path = split_dir / "manifest.json"
     split_manifest = json.loads(split_manifest_path.read_text(encoding="utf-8")) if split_manifest_path.exists() else {}
     provenance: dict[str, Any] = {
@@ -116,7 +171,15 @@ def build_export_bundle(
         "metrics_sha256": hash_file(evaluation_path) if evaluation_path.exists() else None,
         "split_hash": split_manifest.get("split_hash"),
         "held_out_example_ids": split_manifest.get("held_out_ids", []),
-        "license_notes": "Review source-data and base-checkpoint licenses before public upload.",
+        **synthetic_provenance,
+        "license_notes": (
+            "Review source-data and base-checkpoint licenses before public upload."
+            + (
+                " Synthetic examples are paraphrases of the reviewed dataset and inherit its source licensing."
+                if synthetic_provenance["synthetic_count"]
+                else ""
+            )
+        ),
     }
     (output_dir / "provenance.json").write_text(
         json.dumps(provenance, indent=2, sort_keys=True) + "\n", encoding="utf-8"

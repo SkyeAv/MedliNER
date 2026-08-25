@@ -5,15 +5,17 @@ from __future__ import annotations
 import dataclasses
 import inspect
 import json
+import os
 import random
 import shutil
 from pathlib import Path
 from typing import Any
 
 import yaml
+from gliner.training import Trainer as GLiNERTrainer
 from transformers import TrainerCallback
 
-from .dataset import read_examples
+from .dataset import hash_file, read_examples
 from .gliner_data import to_gliner_dataset
 from .schema import ALLOWED_LABELS, Example
 
@@ -52,10 +54,86 @@ class FixedLabelCollator:
         return self.collator(features, entity_types=[self.labels for _ in features], **kwargs)
 
 
+class WeightedCollator:
+    """``FixedLabelCollator`` plus a per-batch ``sample_weight`` tensor for gold/synthetic mixes.
+
+    GLiNER reduces the whole batch to a single loss scalar, so a batch can only carry one
+    weight: gold (1.0) and synthetic examples must never share a batch, because their gradients
+    could not be scaled apart afterwards. Mixed-weight batches — only possible with
+    ``per_device_train_batch_size > 1`` — fail loudly here instead of silently averaging the
+    two populations. The trainer pops the tensor before the model call, so the model itself
+    never sees it.
+    """
+
+    def __init__(self, collator: Any, labels: list[str]) -> None:
+        self.fixed = FixedLabelCollator(collator, labels)
+
+    def __call__(self, features: list[dict[str, Any]], **kwargs: Any) -> dict[str, Any]:
+        import torch
+
+        weights = [float(feature.get("weight", 1.0)) for feature in features]
+        distinct = sorted(set(weights))
+        if len(distinct) > 1:
+            raise ValueError(
+                f"batch mixes sample weights {distinct[0]} and {distinct[-1]} "
+                f"({len(features)} examples; requires per_device_train_batch_size > 1); the batch "
+                "loss is one scalar, so gold (1.0) and synthetic examples cannot share a batch — "
+                "set per_device_train_batch_size to 1 or group examples by weight"
+            )
+        batch = self.fixed(features, **kwargs)
+        batch["sample_weight"] = torch.tensor(weights, dtype=torch.float32)
+        return batch
+
+
+class WeightedTrainer(GLiNERTrainer):
+    """GLiNER trainer that scales the batch loss by its ``sample_weight``.
+
+    Only ``compute_loss`` is overridden: the inherited ``training_step`` keeps the CUDA-OOM
+    skip and the gradient-accumulation division untouched, so a weighted micro-batch is scaled
+    *before* accumulation — exactly the standard weighted-sum objective. The popped tensor is
+    consumed here and never forwarded to the model; weight 1.0 everywhere therefore reproduces
+    the unweighted loss bit-for-bit.
+    """
+
+    def compute_loss(
+        self,
+        model: Any,
+        inputs: dict[str, Any],
+        return_outputs: bool = False,
+        num_items_in_batch: int | None = None,
+    ) -> Any:
+        weights = inputs.pop("sample_weight", None)
+        if weights is not None and bool((weights != weights[0]).any()):
+            # Defense in depth: WeightedCollator already rejects mixed batches at collate time;
+            # fail here too, before the forward pass spends work on an unscaleable batch.
+            raise ValueError(
+                f"sample_weight must be uniform within a batch, got {round(float(weights.min()), 6)} and "
+                f"{round(float(weights.max()), 6)}; scale batches with WeightedCollator"
+            )
+        result = super().compute_loss(
+            model, inputs, return_outputs=return_outputs, num_items_in_batch=num_items_in_batch
+        )
+        if weights is None:
+            return result
+        loss, outputs = result if return_outputs else (result, None)
+        scaled = loss * weights[0]
+        return (scaled, outputs) if return_outputs else scaled
+
+
 def load_config(path: str | Path) -> dict[str, Any]:
     value = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
     if not isinstance(value, dict):
         raise ValueError(f"training config {path} must be a mapping")
+    if "synthetic_weight" in value:
+        # The gold weight is fixed at 1.0, so a synthetic weight above 1.0 would up-weight the
+        # noisier population and 0/negative would silently drop it from the loss entirely.
+        raw = value["synthetic_weight"]
+        try:
+            synthetic_weight = float(raw)
+        except (TypeError, ValueError):
+            synthetic_weight = float("nan")
+        if not 0 < synthetic_weight <= 1:
+            raise ValueError(f"training config {path}: synthetic_weight must be a number in (0, 1], got {raw!r}")
     return value
 
 
@@ -264,9 +342,9 @@ def _make_trainer(
     eval_examples: list[Example],
     args: Any,
     config: dict[str, Any],
+    *,
+    weighted: bool = False,
 ) -> Any:
-    from gliner.training import Trainer
-
     labels = list(config.get("labels") or ALLOWED_LABELS)
     callback = ValidationF1Callback(
         eval_examples,
@@ -274,20 +352,72 @@ def _make_trainer(
         threshold=float(config.get("evaluation_threshold", 0.3)),
         patience=int(config.get("early_stopping_patience", 2)),
     )
+    # Weight 1.0 everywhere must stay bit-equivalent to the historical gold-only path, so the
+    # plain FixedLabelCollator + GLiNER Trainer pair is kept verbatim whenever no synthetic
+    # records are mixed in; the weighted pair only ever handles a real mix.
+    collator: Any
+    trainer_cls: Any
+    if weighted:
+        collator = WeightedCollator(model._create_data_collator(), labels)
+        trainer_cls = WeightedTrainer
+    else:
+        collator = FixedLabelCollator(model._create_data_collator(), labels)
+        trainer_cls = GLiNERTrainer
     kwargs: dict[str, Any] = {
         "model": model,
         "args": args,
         "train_dataset": ListDataset(train_records),
         "eval_dataset": ListDataset(eval_records),
-        "data_collator": FixedLabelCollator(model._create_data_collator(), labels),
+        "data_collator": collator,
         "callbacks": [callback],
     }
-    signature = inspect.signature(Trainer).parameters
+    signature = inspect.signature(trainer_cls).parameters
     if "processing_class" in signature:
         kwargs["processing_class"] = model.data_processor.transformer_tokenizer
     else:
         kwargs["tokenizer"] = model.data_processor.transformer_tokenizer
-    return Trainer(**kwargs)
+    return trainer_cls(**kwargs)
+
+
+def _synthetic_pool_path() -> Path:
+    """Where `medliner synthesize` materializes the pool; matches ``cli.workdir()`` resolution."""
+    return Path(os.environ.get("MEDLINER_WORKDIR", "data/materialized")) / "synthetic" / "examples.jsonl"
+
+
+def _load_synthetic_examples(config: dict[str, Any], *, no_synthetic: bool) -> tuple[list[Example], str | None]:
+    """Load the synthetic pool for down-weighted mixing into the train split.
+
+    Both mismatches between the pool and the config are hard errors, not silent fallbacks: a
+    configured ``synthetic_weight`` with no pool would silently train gold-only, and a present
+    pool with no configured ``synthetic_weight`` would silently train synthetic examples at
+    the full gold weight 1.0. Generate the pool, configure the weight, or opt out explicitly
+    with ``--no-synthetic``.
+    """
+    if no_synthetic:
+        return [], None
+    path = _synthetic_pool_path()
+    if not path.exists():
+        if "synthetic_weight" in config:
+            raise ValueError(
+                f"config sets synthetic_weight={config['synthetic_weight']!r} but the synthetic pool "
+                f"is missing at {path}; generate it ('medliner synthesize') or train gold-only "
+                "with --no-synthetic"
+            )
+        return [], None
+    if "synthetic_weight" not in config:
+        raise ValueError(
+            f"synthetic pool found at {path} but the training config sets no synthetic_weight; "
+            "synthetic examples would train at the full gold weight 1.0 — add synthetic_weight "
+            "(e.g. 0.1) to the training config or train gold-only with --no-synthetic"
+        )
+    return read_examples(path), hash_file(path)
+
+
+def _assert_no_synthetic_in_held_out(synthetic: list[Example], held_out: list[Example]) -> None:
+    """Held-out splits must measure gold performance only; synthetic ids never enter them."""
+    synthetic_ids = {example.id for example in synthetic}
+    overlap = sorted(synthetic_ids & {example.id for example in held_out})
+    assert not overlap, f"synthetic examples leaked into validation/test: {overlap[:5]} (of {len(overlap)})"
 
 
 def train_from_split_directory(
@@ -297,6 +427,7 @@ def train_from_split_directory(
     config_path: str | Path = "configs/train-small.yaml",
     resume_from_checkpoint: str | None = None,
     smoke_test: bool = False,
+    no_synthetic: bool = False,
 ) -> Path:
     """Train and save a checkpoint. A one-step smoke test uses the same code path."""
     config = load_config(config_path)
@@ -321,10 +452,26 @@ def train_from_split_directory(
     eval_examples = read_examples(split_dir / "validation.jsonl")
     if not train_examples or not eval_examples:
         raise ValueError("training requires non-empty train and validation splits")
+    test_path = split_dir / "test.jsonl"
+    held_out_examples = eval_examples + (read_examples(test_path) if test_path.exists() else [])
+    synthetic_weight = float(config.get("synthetic_weight", 1.0))
+    synthetic_examples, synthetic_dataset_hash = _load_synthetic_examples(config, no_synthetic=no_synthetic)
+    _assert_no_synthetic_in_held_out(synthetic_examples, held_out_examples)
     train_records = to_gliner_dataset(train_examples, model=model)
+    synthetic_records = (
+        to_gliner_dataset(synthetic_examples, model=model, weight=synthetic_weight) if synthetic_examples else []
+    )
     eval_records = to_gliner_dataset(eval_examples, model=model)
     args = _training_arguments(model, config, output_dir, device)
-    trainer = _make_trainer(model, train_records, eval_records, eval_examples, args, config)
+    trainer = _make_trainer(
+        model,
+        [*train_records, *synthetic_records],
+        eval_records,
+        eval_examples,
+        args,
+        config,
+        weighted=bool(synthetic_records),
+    )
     resume = resume_from_checkpoint or (_latest_checkpoint(output_dir) if bool(config.get("resume", True)) else None)
     trainer.train(resume_from_checkpoint=resume)
     final_dir = output_dir / "final"
@@ -336,7 +483,11 @@ def train_from_split_directory(
         "seed": seed,
         "smoke_test": smoke_test,
         "config": config,
-        "train_examples": len(train_examples),
+        "train_examples": len(train_examples) + len(synthetic_examples),
+        "gold_train_examples": len(train_examples),
+        "synthetic_examples": len(synthetic_examples),
+        "synthetic_weight": synthetic_weight,
+        "synthetic_dataset_hash": synthetic_dataset_hash,
         "validation_examples": len(eval_examples),
         "resume_from_checkpoint": resume,
         "selected_checkpoint": selected_checkpoint,
@@ -359,6 +510,8 @@ __all__ = [
     "FixedLabelCollator",
     "ListDataset",
     "ValidationF1Callback",
+    "WeightedCollator",
+    "WeightedTrainer",
     "load_config",
     "load_model",
     "train_from_split_directory",

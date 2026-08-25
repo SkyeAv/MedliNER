@@ -38,6 +38,29 @@ also matches inference, where all three labels are always queried, and makes the
 of which labels a given batch happened to contain. Override with `labels:` in the training config
 if the schema ever changes.
 
+## Per-sample weighting of synthetic examples
+
+GLiNER 0.2.28 has no native per-sample weighting: `Trainer.compute_loss` reduces the whole
+batch to a single loss scalar, and neither the GLiNER trainer API nor the underlying training
+arguments carry per-example weights. MedliNER implements the semi-supervised mix itself, with
+tests pinning the numerics:
+
+- `WeightedCollator` attaches a per-batch `sample_weight` tensor — gold 1.0, synthetic
+  `synthetic_weight` (default 0.1, i.e. ten times less) — and rejects any batch that mixes the
+  two populations, because the batch's one loss scalar could not scale their gradients apart
+  afterwards. With `per_device_train_batch_size: 1` a mixed batch is impossible anyway; the
+  check keeps larger batch sizes honest.
+- `WeightedTrainer.compute_loss` — a tested override, the only method overridden — pops the
+tensor and multiplies the batch loss by it before gradient accumulation. Weight 1.0 everywhere
+reproduces the unweighted loss exactly, so the gold-only path (`--no-synthetic` or no pool) is
+numerically untouched.
+
+The pool comes from `medliner synthesize` (`make llm` → `make synthesize` → `make train`; ratio,
+gates, and workers are the `MEDLINER_SYNTH_*` environment variables documented in the
+README's semi-supervised section). A configured `synthetic_weight` with no pool present is a
+hard error, not a silent gold-only run: generate the pool or opt out explicitly with
+`medliner train --no-synthetic`.
+
 ## Conversion budgets
 
 GLiNER discards supervision silently in two places, so MedliNER refuses the record instead:

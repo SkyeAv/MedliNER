@@ -57,10 +57,11 @@ The checked-in `.envrc` exports:
 | `MEDLINER_PRELABEL_MODEL` / `_THRESHOLD` / `_DEVICE` | GLiNER checkpoint, score floor, and device used by the pre-labeling step of `make prepare` |
 | `MEDLINER_LABEL_STUDIO_PORT` / `_IMAGE` | podman Label Studio container port and image |
 | `MEDLINER_LABEL_STUDIO_USERNAME` / `_PASSWORD` / `_TOKEN` | Label Studio login created on first container boot, or an explicit API token |
-| `MEDLINER_LLM_URL` | local LLM server used by `make prepare`/`make shorten` (default `http://127.0.0.1:8080`, started by `make llm`; set `MODELS_DIR` for the model checkout) |
+| `MEDLINER_LLM_URL` | local LLM server for `make prepare`, `make shorten`, and `make synthesize` (default `http://127.0.0.1:8080`, started by `make llm`; set `MODELS_DIR` for the model checkout) |
 | `MEDLINER_SHORTEN_MAX_WORDS` | word threshold for shortening, ≈3-4 short sentences (default `48`; applied to the sampled batch during `make prepare`) |
 | `MEDLINER_SHORTEN_WORKERS` | parallel rewrite requests (default `4`, matching the server's four slots) |
 | `MEDLINER_SHORTEN_CACHE` | sqlite cache of successful rewrites (default `<workdir>/shorten-cache.sqlite3`) |
+| `MEDLINER_SYNTH_*` | semi-supervised synthesis knobs: variant ratio per gold train example (default 10) with an acceptance floor (5), attempts per slot (3), rewrite word budget (250), Jaccard similarity floor (0.3), parallel requests (2), and the sqlite reply cache (see [Semi-supervised training](#semi-supervised-training)) |
 | `MEDLINER_SAMPLE_*` | import sampling: per-task targets (default 3,000/2,000), seed, word cap, run cap, edge fraction (see [`docs/CANDIDATE_TASKS.md`](docs/CANDIDATE_TASKS.md)) |
 | `MEDLINER_SPLIT_SEED` / `MEDLINER_REGRESSION_IDS` | split seed and IDs withheld from every split |
 | `TRITON_LIBCUDA_PATH` | set automatically when the system has no `/sbin/ldconfig` (see [`docs/HARDWARE.md`](docs/HARDWARE.md)) |
@@ -91,7 +92,9 @@ the `medliner` CLI (every stage also runs standalone as `uv run medliner <stage>
    the container's data volume directory under `$MEDLINER_WORKDIR/label-studio/server-data`.
 5. `make train` — runs the remaining stages (`dataset` → `splits` → `train` → `evaluate` →
    `bundle`) in order. Onboarding is optional: set `MEDLINER_ONBOARDING_REQUIRED=1` to accept
-   only production annotations from promoted users.
+   only production annotations from promoted users. When no synthetic pool exists yet, the
+   pipeline trains gold-only with a notice; once `make synthesize` has produced a pool, the
+   training step mixes it in at the configured `synthetic_weight` (see below).
 
 For a group session, `MEDLINER_LABEL_STUDIO_HOST=0.0.0.0` exposes the server on the LAN and
 `MEDLINER_LABEL_STUDIO_ANNOTATORS="alice:pw,bob:pw"` pre-creates accounts. See
@@ -146,6 +149,40 @@ candidate. The batch entity vocabulary is also pinned to the two labels, because
 purely no-entity examples otherwise has zero entity types and the loss fails outright. See
 [`docs/TRAINING.md`](docs/TRAINING.md).
 
+## Semi-supervised training
+
+MedliNER can multiply the reviewed gold train split with machine-paraphrased twins of itself.
+The stage is explicit, gated, and fully separate from evaluation: validation/test splits and
+the held-out DAKP gold benchmark never receive synthetic examples (enforced at training time).
+
+1. `make llm` — start the local LLM server (the synthesis engine has no other model backend).
+2. `make synthesize` — for every gold train example, fill ten variant slots
+   (`MEDLINER_SYNTH_RATIO`, the 10x target) with distinct prompt-style paraphrases. Every
+   rewrite must pass the engine's divergence gates — mentions preserved verbatim and in order,
+   content-word Jaccard similarity at or above 0.3, length ratio within `[0.5, 2.0]`,
+   schema-valid, and within GLiNER's budgets — or it is rejected with a counted, stable
+   reason. A run accepting fewer than `MEDLINER_SYNTH_MIN_RATIO` (default 5) variants per gold
+   example exits non-zero after writing its manifest; a `--limit` trial run cannot silently
+   turn that floor off.
+3. `make train` — training mixes the pool into the gold train split at `synthetic_weight: 0.1`:
+   every synthetic example contributes ten times less to the loss than a gold example (weight
+   1.0). GLiNER 0.2.28 has no native per-sample weighting, so MedliNER implements it with a
+   tested `Trainer.compute_loss` override; gold-only numerics are untouched
+   ([`docs/TRAINING.md`](docs/TRAINING.md)).
+
+Accepted paraphrases are stamped `source.family='synthetic'` and can never claim human
+provenance, so machine-made rows stay auditable. The artifact bundle ships the synthetic
+examples, their manifest, and the synthetic weight/count/manifest hash in `provenance.json`.
+
+Fallback semantics: `make train` wraps `medliner pipeline`, which does not expose
+`--no-synthetic`. When no pool exists yet, the pipeline selects the gold-only fallback
+itself and prints a notice instead of failing; when a pool exists, it is mixed in at the
+configured `synthetic_weight`. Direct `medliner train` stays strict: a configured
+`synthetic_weight` with no pool, or a present pool with no configured weight, fails loudly
+rather than silently training gold-only or training synthetic examples at the full gold
+weight. The explicit forced gold-only route is `uv run medliner train --no-synthetic` once
+the dataset/splits stages have produced their artifacts.
+
 ## Evaluation gates
 
 Reports include:
@@ -168,11 +205,14 @@ The tuned model must be compared with the untuned small checkpoint before it is 
 - `labels.json`;
 - `annotation_policy.md`;
 - `dataset.jsonl` and split manifest;
+- `synthetic_examples.jsonl` and `synthetic_manifest.json` — the gated synthetic pool, when the
+  run mixed one in;
 - `training_config.yaml` — the configuration the run actually used, taken from the checkpoint's
   own metadata rather than the current contents of `configs/`;
 - `metrics.json`;
 - `provenance.json` — base model, selected checkpoint, best validation F1, dataset/metrics/tree
-  hashes, split hash, and held-out example IDs;
+  hashes, split hash, held-out example IDs, and (for semi-supervised runs) the synthetic
+  weight, count, and manifest hash;
 - model-card inputs.
 
 Rebuilding over a previous bundle is allowed; the build refuses to delete a non-empty directory
