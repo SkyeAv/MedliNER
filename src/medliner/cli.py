@@ -552,6 +552,9 @@ def run_bundle(checkpoint: Path, report: Path, dataset_path: Path, split_dir: Pa
         output_dir=workdir() / "bundle",
         annotation_policy_path=repo_root() / "docs" / "ANNOTATION_GUIDE.md",
         training_config_path=os.environ.get("MEDLINER_TRAIN_CONFIG", "configs/train-small.yaml"),
+        # No-ops for gold-only runs (run metadata records no synthetic examples); a run that
+        # used the pool must be able to ship it, or the bundle build fails loudly.
+        synthetic_dir=workdir() / "synthetic",
     )
     print(f"bundle: {result}")
     return result

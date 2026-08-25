@@ -19,6 +19,15 @@ export MEDLINER_LABEL_STUDIO_ANNOTATORS ?=
 export MEDLINER_ONBOARDING_CONFIG ?= $(CURDIR)/configs/onboarding.json
 export MEDLINER_ONBOARDING_EXPORT ?= $(CURDIR)/data/materialized/onboarding/export.json
 export MEDLINER_LLM_URL ?= http://127.0.0.1:8080
+# Semi-supervised synthesis (make synthesize; needs the LLM from `make llm` first). Same
+# defaults as the CLI stage and .envrc, so a checkout works without direnv.
+export MEDLINER_SYNTH_RATIO ?= 10
+export MEDLINER_SYNTH_MIN_RATIO ?= 5
+export MEDLINER_SYNTH_MAX_ATTEMPTS ?= 3
+export MEDLINER_SYNTH_MAX_WORDS ?= 250
+export MEDLINER_SYNTH_MIN_SIMILARITY ?= 0.3
+export MEDLINER_SYNTH_WORKERS ?= 2
+export MEDLINER_SYNTH_CACHE ?= $(CURDIR)/data/materialized/synth-cache.sqlite3
 MODELS_DIR ?= $(CURDIR)/models
 LLM_TMUX_SESSION ?= medliner-llm
 
@@ -26,7 +35,7 @@ LLM_TMUX_SESSION ?= medliner-llm
 # the backward pass. An empty value is ignored by Triton, so this is safe on normal systems.
 export TRITON_LIBCUDA_PATH ?= $(shell test -x /sbin/ldconfig || for d in /run/opengl-driver/lib /usr/lib64 /usr/lib/x86_64-linux-gnu /usr/lib; do test -e $$d/libcuda.so.1 && echo $$d && break; done)
 
-.PHONY: help setup llm llm-stop shorten prepare onboarding onboarding-promote annotate stop export train check clean
+.PHONY: help setup llm llm-stop shorten prepare onboarding onboarding-promote annotate stop export synthesize train check clean
 
 help:
 	@printf '%s\n' \
@@ -48,7 +57,10 @@ help:
 		'Training (everything after Label Studio, one command):' \
 		'  make train              dataset → splits → train → evaluate → bundle' \
 		'' \
-		'Local LLM (used only by make shorten):' \
+		'Semi-supervised (optional; requires the local LLM, so run `make llm` first):' \
+		'  make synthesize         Fill the gated synthetic pool: make llm -> make synthesize -> make train' \
+		'' \
+		'Local LLM (used by make shorten and make synthesize):' \
 		'  make llm                Start the LLM via "make medliner" in models/ (detached tmux)' \
 		'  make llm-stop           Kill the LLM tmux session' \
 		'  make shorten            Rewrite over-long candidate texts through the LLM' \
@@ -100,6 +112,9 @@ stop:
 
 export:
 	uv run medliner label-studio-export
+
+synthesize:
+	uv run medliner synthesize
 
 train:
 	uv run medliner pipeline
