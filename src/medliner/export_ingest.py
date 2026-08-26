@@ -21,8 +21,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from .benchmark import load_gold_benchmark
 from .candidates import CandidateInputError, hash_candidates_file, read_candidates
-from .evaluation import load_gold_benchmark
 
 EXPORT_SCHEMA_VERSION = "dakp.medliner.export.v1"
 CANDIDATE_SCHEMA_VERSION = "medliner.candidates.v1"

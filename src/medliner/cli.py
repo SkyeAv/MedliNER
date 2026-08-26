@@ -1,6 +1,6 @@
 """Command-line interface for the MedliNER pipeline stages.
 
-The pipeline runs in three phases, each a subcommand (see the Makefile wrappers):
+The pipeline runs in two phases, each a subcommand (see the Makefile wrappers):
 
 - before Label Studio: ``prepare`` builds the sampled import file and attaches GLiNER
   suggestions in one go (``ingest``, ``candidates``, ``prelabel``, and the opt-in
@@ -9,10 +9,10 @@ The pipeline runs in three phases, each a subcommand (see the Makefile wrappers)
   the optional Onboarding project is provisioned by ``onboarding``, which assigns quiz
   attempts to every annotator account at once (presentation mode), and
   ``onboarding-promote`` exports, scores, and promotes every passing annotator in one go;
-- after Label Studio: ``pipeline`` runs dataset → splits → train → evaluate → bundle.
+  ``label-studio-export`` downloads the reviewed annotations from the running server.
 
 Configuration comes from the ``MEDLINER_*`` environment variables, with flags overriding
-where offered. Heavy ML imports (training, evaluation) are deferred to their subcommands so
+where offered. Heavy ML imports (GLiNER pre-labeling) are deferred to their subcommands so
 the data-stage commands stay stdlib-light.
 """
 
@@ -40,9 +40,7 @@ from .candidates import (
     stagger_tasks,
     write_import_file,
 )
-from .dataset import hash_file, manifest_for, read_examples, write_examples, write_manifest
 from .export_ingest import ingest_export
-from .label_studio import normalize_export
 from .label_studio_server import (
     DEFAULT_IMAGE,
     DEFAULT_PORT,
@@ -53,16 +51,12 @@ from .label_studio_server import (
     provision,
     stop_container,
 )
-from .onboarding import (
-    DEFAULT_CONFIG_PATH as ONBOARDING_CONFIG_PATH,
-)
+from .onboarding import DEFAULT_CONFIG_PATH as ONBOARDING_CONFIG_PATH
 from .onboarding import (
     OnboardingError,
     build_onboarding_tasks,
     build_test_bank,
     evaluate_attempt,
-    filter_production_export,
-    promoted_users,
     read_attempts,
     start_attempt,
     versioned_bank_path,
@@ -70,14 +64,8 @@ from .onboarding import (
     write_report,
     write_test_bank,
 )
-from .onboarding import (
-    load_config as load_onboarding_config,
-)
-from .onboarding import (
-    promote as promote_onboarding_user,
-)
-from .packaging import build_export_bundle
-from .splits import assert_no_group_leakage, group_key, split_examples
+from .onboarding import load_config as load_onboarding_config
+from .onboarding import promote as promote_onboarding_user
 
 
 def workdir() -> Path:
@@ -97,31 +85,6 @@ DEFAULT_SHORTEN_MAX_WORDS = 48
 #: Parallel chat requests; default matches the server's four slots (-np 4) with continuous
 #: batching — extra requests would just queue client-side for no gain.
 DEFAULT_SHORTEN_WORKERS = 4
-#: Synthesis stage defaults (spec): MAX_WORDS is a full-note rewrite budget, deliberately wider
-#: than the shorten stage's; the stage owns its target/floor/retry configuration.
-DEFAULT_SYNTH_RATIO = 10
-DEFAULT_SYNTH_MIN_RATIO = 5.0
-DEFAULT_SYNTH_MAX_ATTEMPTS = 3
-DEFAULT_SYNTH_MAX_WORDS = 250
-DEFAULT_SYNTH_MIN_SIMILARITY = 0.3
-#: The server serves two slots (-np 2) with continuous batching; one in-flight request per slot
-#: keeps both busy without unbounded queue growth.
-DEFAULT_SYNTH_WORKERS = 2
-#: One prompt style per variant slot; with the default ratio of 10 every slot of a source gets a
-#: distinct style (and therefore id and cache key). Ratios beyond the list cycle with a suffix.
-SYNTH_VARIANT_STYLES = (
-    "paraphrase",
-    "plain-language",
-    "clinical-formal",
-    "concise",
-    "patient-friendly",
-    "case-report",
-    "textbook",
-    "nursing-note",
-    "drug-label",
-    "scientific-abstract",
-)
-SYNTH_MANIFEST_SCHEMA = "medliner.synthesis.manifest.v1"
 DEFAULT_SAMPLE_MAX_RUN = 3
 #: Share of each sampling stratum filled with the hardest texts; the rest stays hash-random.
 DEFAULT_SAMPLE_EDGE_FRACTION = 0.8
@@ -182,99 +145,11 @@ def sampling_settings() -> SamplingSettings:
     return settings
 
 
-@dataclass(frozen=True)
-class SynthesisSettings:
-    """Resolved ``MEDLINER_SYNTH_*`` configuration for the synthesis stage."""
-
-    ratio: int
-    min_ratio: float
-    max_attempts: int
-    max_words: int
-    min_similarity: float
-    workers: int
-
-
-def _synth_env_int(name: str, default: int, *, minimum: int) -> int:
-    raw = os.environ.get(name, str(default))
-    try:
-        value = int(raw)
-    except ValueError:
-        raise ValueError(f"{name} must be an integer, got {raw!r}") from None
-    if value < minimum:
-        raise ValueError(f"{name} must be at least {minimum}, got {value}")
-    return value
-
-
-def _synth_env_float(name: str, default: float, *, minimum: float, maximum: float) -> float:
-    raw = os.environ.get(name, str(default))
-    try:
-        value = float(raw)
-    except ValueError:
-        raise ValueError(f"{name} must be a number, got {raw!r}") from None
-    if not minimum <= value <= maximum:
-        raise ValueError(f"{name} must be within [{minimum}, {maximum}], got {value}")
-    return value
-
-
-def synthesis_settings(
-    *,
-    ratio: int | None = None,
-    min_ratio: float | None = None,
-    max_attempts: int | None = None,
-    max_words: int | None = None,
-    min_similarity: float | None = None,
-    workers: int | None = None,
-) -> SynthesisSettings:
-    """Resolve the ``MEDLINER_SYNTH_*`` environment with flags overriding; errors name the variable."""
-    settings = SynthesisSettings(
-        ratio=_synth_env_int("MEDLINER_SYNTH_RATIO", DEFAULT_SYNTH_RATIO, minimum=1) if ratio is None else ratio,
-        min_ratio=(
-            _synth_env_float("MEDLINER_SYNTH_MIN_RATIO", DEFAULT_SYNTH_MIN_RATIO, minimum=0.0, maximum=1000.0)
-            if min_ratio is None
-            else min_ratio
-        ),
-        max_attempts=(
-            _synth_env_int("MEDLINER_SYNTH_MAX_ATTEMPTS", DEFAULT_SYNTH_MAX_ATTEMPTS, minimum=1)
-            if max_attempts is None
-            else max_attempts
-        ),
-        max_words=(
-            _synth_env_int("MEDLINER_SYNTH_MAX_WORDS", DEFAULT_SYNTH_MAX_WORDS, minimum=1)
-            if max_words is None
-            else max_words
-        ),
-        min_similarity=(
-            _synth_env_float("MEDLINER_SYNTH_MIN_SIMILARITY", DEFAULT_SYNTH_MIN_SIMILARITY, minimum=0.0, maximum=1.0)
-            if min_similarity is None
-            else min_similarity
-        ),
-        workers=(
-            _synth_env_int("MEDLINER_SYNTH_WORKERS", DEFAULT_SYNTH_WORKERS, minimum=1) if workers is None else workers
-        ),
-    )
-    if settings.min_ratio > settings.ratio:
-        raise ValueError(
-            f"MEDLINER_SYNTH_MIN_RATIO must not exceed MEDLINER_SYNTH_RATIO "
-            f"({settings.min_ratio} > {settings.ratio}): the floor would be unreachable"
-        )
-    return settings
-
-
 def raw_candidates_path(value: str | None = None) -> Path:
     raw = value or os.environ.get("MEDLINER_RAW_CANDIDATES", "data/label-studio/candidates.ndjson")
     path = Path(raw)
     if not path.exists():
         raise FileNotFoundError(f"raw candidates file not found: {path} (MEDLINER_RAW_CANDIDATES)")
-    return path
-
-
-def export_path(value: str | None = None) -> Path:
-    raw = value or os.environ.get("MEDLINER_LABEL_STUDIO_EXPORT")
-    if not raw:
-        raise RuntimeError("set MEDLINER_LABEL_STUDIO_EXPORT to a reviewed Label Studio export")
-    path = Path(raw)
-    if not path.exists():
-        raise FileNotFoundError(path)
     return path
 
 
@@ -456,7 +331,7 @@ def score_prelabeler(*, model_id: str, threshold: float, device: str | None, wor
     it, so this is the gate to run before showing suggestions to a room full of people.
     """
     from . import prelabel
-    from .evaluation import benchmark_path, load_gold_benchmark, score_examples
+    from .benchmark import benchmark_path, load_gold_benchmark, score_examples
 
     gold = benchmark_path()
     if not gold.exists():
@@ -481,99 +356,6 @@ def score_prelabeler(*, model_id: str, threshold: float, device: str | None, wor
     )
     print(f"prelabel score: boundary-only F1 {boundary['f1']:.3f} over {report['examples']} gold cases")
     print(f"prelabel score: no-entity false-positive rate {report['no_entity']['false_positive_rate']:.3f}")
-
-
-def run_dataset(path: Path) -> Path:
-    """Validate the reviewed export into the normalized dataset; returns the JSONL path."""
-    source_path = path
-    excluded = 0
-    if os.environ.get("MEDLINER_ONBOARDING_REQUIRED", "0").lower() in {"1", "true", "yes", "on"}:
-        _config, bank, _bank_path = _onboarding_context()
-        allowed = promoted_users(workdir(), bank)
-        if not allowed:
-            raise RuntimeError("no annotator has passed onboarding for the current test-bank; run onboarding-promote")
-        source_path, audit_path, excluded = filter_production_export(path, workdir(), bank, allowed)
-        if not source_path.exists():
-            raise RuntimeError(f"onboarding produced no eligible production export; audit: {audit_path}")
-        print(f"dataset: onboarding gate allowed {len(allowed)} users; excluded {excluded} task(s) -> {audit_path}")
-    examples = normalize_export(source_path, require_reviewed=True)
-    if not examples:
-        raise ValueError(f"normalized dataset from {source_path} is empty")
-    output = workdir() / "normalized" / "examples.jsonl"
-    write_examples(examples, output)
-    manifest = manifest_for(examples, input_export_hash=hash_file(source_path), dataset_id=hash_file(output))
-    write_manifest(manifest, output.with_name("manifest.json"))
-    print(f"dataset: {len(examples)} examples -> {output}")
-    return output
-
-
-def run_splits(dataset_path: Path) -> Path:
-    """Freeze grouped train/validation/test splits; returns the split directory."""
-    examples = read_examples(dataset_path)
-    regression_path = os.environ.get("MEDLINER_REGRESSION_IDS")
-    regression_ids = set(json.loads(Path(regression_path).read_text(encoding="utf-8"))) if regression_path else set()
-    splits, manifest = split_examples(
-        examples, seed=int(os.environ.get("MEDLINER_SPLIT_SEED", "2026")), regression_ids=regression_ids
-    )
-    try:
-        assert_no_group_leakage(splits)
-    except AssertionError as exc:
-        raise RuntimeError(str(exc)) from exc
-    # Must be the splitter's own grouping, or this guard measures a different partition.
-    if len({group_key(item) for item in examples}) >= 3 and (not splits["validation"] or not splits["test"]):
-        raise RuntimeError("at least three source groups require non-empty validation and test splits")
-    output_dir = workdir() / "splits"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    for name, members in splits.items():
-        write_examples(members, output_dir / f"{name}.jsonl")
-    (output_dir / "manifest.json").write_text(manifest.model_dump_json(indent=2) + "\n", encoding="utf-8")
-    print(f"splits: {manifest.example_count} examples ({len(manifest.held_out_ids)} held out) -> {output_dir}")
-    return output_dir
-
-
-def run_training(smoke: bool, no_synthetic: bool = False) -> Path:
-    """Fine-tune the small GLiNER checkpoint (or the one-step smoke check); returns the checkpoint dir."""
-    from .training import train_from_split_directory
-
-    output = workdir() / "training"
-    config_path = os.environ.get("MEDLINER_TRAIN_CONFIG", "configs/train-small.yaml")
-    result = train_from_split_directory(
-        workdir() / "splits",
-        output,
-        config_path=config_path,
-        smoke_test=smoke,
-        no_synthetic=no_synthetic,
-    )
-    print(f"training ({'smoke' if smoke else 'full'}): checkpoint -> {result}")
-    return result
-
-
-def run_evaluation(checkpoint: Path, split_dir: Path) -> Path:
-    """Score the tuned checkpoint against baselines; returns the report path."""
-    from .evaluation import evaluate_checkpoint
-
-    output = workdir() / "evaluation" / "report.json"
-    result = evaluate_checkpoint(checkpoint, split_dir, output)
-    print(f"evaluation: strict F1 {result['tuned']['overall']['strict']['f1']:.3f} -> {output}")
-    return output
-
-
-def run_bundle(checkpoint: Path, report: Path, dataset_path: Path, split_dir: Path) -> Path:
-    """Assemble the standalone export bundle; returns its directory."""
-    result = build_export_bundle(
-        checkpoint_dir=checkpoint,
-        evaluation_path=report,
-        dataset_path=dataset_path,
-        split_dir=split_dir,
-        output_dir=workdir() / "bundle",
-        annotation_policy_path=repo_root() / "docs" / "ANNOTATION_GUIDE.md",
-        training_config_path=os.environ.get("MEDLINER_TRAIN_CONFIG", "configs/train-small.yaml"),
-        # No-ops for gold-only runs (run metadata records no synthetic examples); a run that
-        # used the pool must be able to ship it, or the bundle build fails loudly.
-        synthetic_dir=workdir() / "synthetic",
-    )
-    print(f"bundle: {result}")
-    return result
 
 
 def cmd_ingest(args: argparse.Namespace) -> None:
@@ -757,249 +539,10 @@ def cmd_shorten(args: argparse.Namespace) -> None:
         raw_candidates_path(args.input),
         limit=args.limit,
         max_words=args.max_words or shorten_max_words(),
-        url=args.url,
+        url=None,
         force=args.force,
     )
     print("next: MEDLINER_RAW_CANDIDATES=<shortened file> medliner candidates")
-
-
-def synth_variant_name(slot: int) -> str:
-    """Prompt style for a 1-based variant slot; slots beyond the style list cycle with a suffix."""
-    cycle, index = divmod(slot - 1, len(SYNTH_VARIANT_STYLES))
-    style = SYNTH_VARIANT_STYLES[index]
-    return style if cycle == 0 else f"{style}-{cycle + 1}"
-
-
-def run_synthesize(
-    split_dir: Path,
-    settings: SynthesisSettings,
-    *,
-    url: str | None,
-    limit: int | None,
-    force: bool = False,
-) -> Path:
-    """Generate the semi-supervised synthetic pool from the train split; returns its directory.
-
-    For every gold train example the stage fills ``settings.ratio`` variant slots — each a
-    distinct prompt style, so ids and cache keys never collide — retrying a rejected slot up to
-    ``settings.max_attempts`` times through :func:`medliner.synthesis.synthesize_variant`.
-    The engine's divergence gates decide acceptance; this stage only accounts, persists, and
-    enforces the floor.
-
-    The floor is loud: a run ending below ``MEDLINER_SYNTH_MIN_RATIO`` per gold example still
-    writes its outputs and manifest, then raises so the CLI exits non-zero with the shortfall
-    spelled out. ``--limit`` caps how many pending slots are attempted — it can shrink the work,
-    never silently turn the gate off, so a limited trial below the floor also exits non-zero.
-
-    Resumable: the manifest records every accepted slot (source id, slot, variant); a rerun with
-    the same train split and gate configuration keeps those examples and only fills the gaps.
-    ``--force`` ignores previous progress and the reply cache entirely, exactly like ``shorten``.
-    """
-    from concurrent.futures import ThreadPoolExecutor
-
-    from . import llm, synthesis
-    from .schema import Example
-
-    train_path = split_dir / "train.jsonl"
-    if not train_path.exists():
-        raise FileNotFoundError(f"train split not found: {train_path} (run 'medliner splits' first)")
-    if not llm.health(url):
-        raise RuntimeError(f"LLM server not healthy at {llm.llm_url(url)} (start it with 'make llm')")
-    # Id-sorted iteration keeps slot scheduling, manifest slot order, and warm-cache replays
-    # byte-identical regardless of the train file's row order.
-    gold = sorted(read_examples(train_path), key=lambda item: item.id)
-    if not gold:
-        raise ValueError(f"train split is empty: {train_path}")
-    unannotated = sorted(item.id for item in gold if not item.annotations)
-    if unannotated:
-        raise ValueError(
-            f"train examples without annotations cannot be synthesized (nothing to preserve): {unannotated[:5]}"
-        )
-
-    output_dir = workdir() / "synthetic"
-    examples_path = output_dir / "examples.jsonl"
-    manifest_path = output_dir / "manifest.json"
-    input_hash = hash_file(train_path)
-    gold_by_id = {item.id: item for item in gold}
-
-    # Slots already accepted by a previous compatible run: (source_id, slot) -> synthetic example.
-    done: dict[tuple[str, int], Example] = {}
-    done_records: dict[tuple[str, int], dict[str, Any]] = {}
-    if not force and manifest_path.exists():
-        try:
-            previous = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except ValueError:
-            previous = {}
-        # The accepted examples stay valid only while the input and the gate configuration are
-        # unchanged; max_attempts is effort, not an acceptance criterion, so it may differ.
-        resumable = (
-            previous.get("schema_version") == SYNTH_MANIFEST_SCHEMA
-            and previous.get("input_hash") == input_hash
-            and previous.get("ratio") == settings.ratio
-            and previous.get("max_words") == settings.max_words
-            and previous.get("similarity_floor") == settings.min_similarity
-            and isinstance(previous.get("slots"), list)
-            and examples_path.exists()
-        )
-        if resumable:
-            previous_examples = {item.id: item for item in read_examples(examples_path)}
-            for record in previous["slots"]:
-                if not isinstance(record, dict):
-                    continue
-                source_id, slot, variant = record.get("source_id"), record.get("slot"), record.get("variant")
-                example = previous_examples.get(f"{source_id}-synth-{variant}")
-                if (
-                    source_id in gold_by_id
-                    and isinstance(slot, int)
-                    and 1 <= slot <= settings.ratio
-                    and isinstance(variant, str)
-                    and example is not None
-                ):
-                    done[(source_id, slot)] = example
-                    done_records[(source_id, slot)] = {
-                        "source_id": source_id,
-                        "slot": slot,
-                        "variant": variant,
-                        "attempts": record.get("attempts"),
-                    }
-
-    pending = [
-        (source, slot) for source in gold for slot in range(1, settings.ratio + 1) if (source.id, slot) not in done
-    ]
-    attempted_slots = pending if limit is None else pending[: max(0, limit)]
-    resumed_count = len(done)
-    cache_path = synthesis.default_cache_path()
-    # --force bypasses the sqlite reply cache in both directions (no reads, no stores): every
-    # slot is regenerated through the server, never served a cached reply.
-    cache = None if force else cache_path
-    counters = synthesis.SynthesisCounters()
-
-    def fill_slot(source: Example, slot: int) -> tuple[list[Any], Example | None, dict[str, Any] | None]:
-        base = synth_variant_name(slot)
-        results = []
-        for attempt in range(1, settings.max_attempts + 1):
-            # Retries must change the cache key, or a warm cache would replay the rejected reply.
-            variant = base if attempt == 1 else f"{base}-r{attempt}"
-            result = synthesis.synthesize_variant(
-                source,
-                variant=variant,
-                max_words=settings.max_words,
-                url=url,
-                cache=cache,
-                similarity_floor=settings.min_similarity,
-            )
-            results.append(result)
-            if result.accepted and result.example is not None:
-                record = {"source_id": source.id, "slot": slot, "variant": variant, "attempts": attempt}
-                return results, result.example, record
-        return results, None, None
-
-    slot_records: list[dict[str, Any]] = list(done_records.values())
-    accepted_new: list[Example] = []
-    source_by_synth_id: dict[str, str] = {example.id: source_id for (source_id, _slot), example in done.items()}
-    with ThreadPoolExecutor(max_workers=settings.workers) as pool:
-        for results, example, record in pool.map(lambda item: fill_slot(*item), attempted_slots):
-            for result in results:  # counters stay in the main thread: the partition stays exact
-                counters.record(result)
-            if example is not None and record is not None:
-                accepted_new.append(example)
-                slot_records.append(record)
-                source_by_synth_id[example.id] = record["source_id"]
-
-    examples = sorted((*done.values(), *accepted_new), key=lambda item: item.id)
-    # Similarity stats are computed over the id-sorted pool, so they cannot depend on worker or
-    # resume ordering (float sums are order-sensitive).
-    similarities = [
-        synthesis.jaccard_similarity(
-            synthesis.content_words(gold_by_id[source_by_synth_id[item.id]].text),
-            synthesis.content_words(item.text),
-        )
-        for item in examples
-    ]
-    accepted_count = len(examples)
-    target_count = settings.ratio * len(gold)
-    floor_count = settings.min_ratio * len(gold)
-    achieved_ratio = accepted_count / len(gold)
-    gate_passed = accepted_count >= floor_count
-    examples_hash = write_examples(examples, examples_path)
-    manifest = {
-        "schema_version": SYNTH_MANIFEST_SCHEMA,
-        "input_path": str(train_path),
-        "input_hash": input_hash,
-        "llm_url": llm.llm_url(url),
-        "ratio": settings.ratio,
-        "min_ratio": settings.min_ratio,
-        "max_attempts": settings.max_attempts,
-        "max_words": settings.max_words,
-        "similarity_floor": settings.min_similarity,  # manifest field predates the MIN_SIMILARITY naming
-        "workers": settings.workers,
-        "cache": str(cache_path),
-        "gold_count": len(gold),
-        "target_count": target_count,
-        "floor_count": floor_count,
-        "accepted": accepted_count,
-        "achieved_ratio": round(achieved_ratio, 3),
-        "counters": {
-            "attempts": counters.attempts,
-            "accepted_this_run": counters.accepted,
-            "rejections": dict(sorted(counters.rejections.items())),
-        },
-        "resumed": resumed_count,
-        "trial": limit is not None,
-        "limit": limit,
-        "example_count": accepted_count,
-        "examples_hash": examples_hash,
-        "label_counts": dict(sorted(Counter(a.label for e in examples for a in e.annotations).items())),
-        "task_counts": dict(sorted(Counter(e.task for e in examples).items())),
-        "similarity": {
-            "min": round(min(similarities), 3) if similarities else None,
-            "mean": round(sum(similarities) / len(similarities), 3) if similarities else None,
-            "max": round(max(similarities), 3) if similarities else None,
-        },
-        "gate": {"passed": gate_passed, "enforced": True, "required": floor_count},
-        "slots": sorted(slot_records, key=lambda record: (record["source_id"], record["slot"])),
-    }
-    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-    print(
-        f"synthesize: {accepted_count}/{target_count} variants accepted for {len(gold)} gold examples "
-        f"(achieved {achieved_ratio:.1f}x of target {settings.ratio}x; attempts {counters.attempts}; "
-        f"rejections {counters.total_rejections()}; resumed {resumed_count}) -> {examples_path}"
-    )
-    if counters.rejections["llm_error"]:
-        print(
-            f"synthesize: warning: {counters.rejections['llm_error']} attempts failed with LLM transport "
-            "errors; check the server (make llm)"
-        )
-    if not gate_passed:
-        shortfall = (
-            f"accepted {accepted_count} synthetic examples but the floor requires {floor_count} "
-            f"(MEDLINER_SYNTH_MIN_RATIO={settings.min_ratio} x {len(gold)} gold; "
-            f"achieved {achieved_ratio:.2f}x of target {settings.ratio}x)"
-            + (f"; trial limited to {limit} of {len(pending)} pending slots" if limit is not None else "")
-            + f"; rejections: {manifest['counters']['rejections']}"
-        )
-        raise RuntimeError(f"{shortfall}; manifest: {manifest_path}")
-    return output_dir
-
-
-def cmd_synthesize(args: argparse.Namespace) -> None:
-    settings = synthesis_settings(
-        ratio=args.ratio,
-        min_ratio=args.min_ratio,
-        max_attempts=args.max_attempts,
-        max_words=args.max_words,
-        min_similarity=args.min_similarity,
-        workers=args.workers,
-    )
-    if args.limit is not None and args.limit < 1:
-        raise ValueError(f"--limit must be a positive number of variant slots, got {args.limit}")
-    run_synthesize(
-        Path(args.splits) if args.splits else workdir() / "splits",
-        settings,
-        url=args.url,
-        limit=args.limit,
-        force=args.force,
-    )
 
 
 def _prelabel_options(args: argparse.Namespace) -> dict[str, Any]:
@@ -1010,9 +553,9 @@ def _prelabel_options(args: argparse.Namespace) -> dict[str, Any]:
         "threshold": args.threshold
         if args.threshold is not None
         else float(os.environ.get("MEDLINER_PRELABEL_THRESHOLD", str(prelabel.DEFAULT_THRESHOLD))),
-        "device": args.device or os.environ.get("MEDLINER_PRELABEL_DEVICE") or None,
-        "word_budget": args.word_budget or prelabel.DEFAULT_WORD_BUDGET,
-        "max_width": args.max_width or prelabel.DEFAULT_MAX_WIDTH,
+        "device": os.environ.get("MEDLINER_PRELABEL_DEVICE") or None,
+        "word_budget": prelabel.DEFAULT_WORD_BUDGET,
+        "max_width": prelabel.DEFAULT_MAX_WIDTH,
     }
 
 
@@ -1021,21 +564,21 @@ def cmd_prelabel(args: argparse.Namespace) -> None:
     if args.score_gold:
         score_prelabeler(**options)
         return
-    run_prelabel(raw_candidates_path(args.input), batch_size=args.batch_size, force=args.force, **options)
+    run_prelabel(raw_candidates_path(args.input), batch_size=8, force=args.force, **options)
     print("next: medliner label-studio --prelabel")
 
 
 def cmd_prepare(_args: argparse.Namespace) -> None:
     """Build the sampled import file and attach GLiNER suggestions in one go."""
     import_file = run_candidates(raw_candidates_path())
-    options = _prelabel_options(argparse.Namespace(model=None, threshold=None, device=None, word_budget=0, max_width=0))
+    options = _prelabel_options(argparse.Namespace(model=None, threshold=None))
     output = run_prelabel(import_file, batch_size=8, force=False, **options)
     print(f"prepare: import file with suggestions -> {output}")
 
 
 def _onboarding_context() -> tuple[Any, Any, Path]:
     """Load the current versioned onboarding bank, creating its private sidecar if needed."""
-    from .evaluation import benchmark_path
+    from .benchmark import benchmark_path
 
     config_path = Path(os.environ.get("MEDLINER_ONBOARDING_CONFIG", str(repo_root() / ONBOARDING_CONFIG_PATH)))
     config = load_onboarding_config(config_path)
@@ -1074,11 +617,11 @@ def cmd_onboarding(args: argparse.Namespace) -> None:
     result = provision(
         import_file=import_path,
         label_config_path=repo_root() / "configs" / "label_studio_ner.xml",
-        port=args.port or int(os.environ.get("MEDLINER_LABEL_STUDIO_PORT", str(DEFAULT_PORT))),
-        image=args.image or os.environ.get("MEDLINER_LABEL_STUDIO_IMAGE", DEFAULT_IMAGE),
+        port=int(os.environ.get("MEDLINER_LABEL_STUDIO_PORT", str(DEFAULT_PORT))),
+        image=os.environ.get("MEDLINER_LABEL_STUDIO_IMAGE", DEFAULT_IMAGE),
         data_dir=workdir() / "label-studio" / "server-data",
         project_title=config.project_title or ONBOARDING_PROJECT_TITLE,
-        publish_host=args.host or os.environ.get("MEDLINER_LABEL_STUDIO_HOST", "127.0.0.1"),
+        publish_host=os.environ.get("MEDLINER_LABEL_STUDIO_HOST", "127.0.0.1"),
         annotators=_annotator_pairs(annotator_values),
         reimport=args.reimport,
         **_label_studio_credentials(),
@@ -1140,7 +683,7 @@ def cmd_label_studio(args: argparse.Namespace) -> None:
         from . import prelabel as prelabel_module
 
         options = _prelabel_options(args)
-        import_file = run_prelabel(input_path, batch_size=args.batch_size, force=args.force, **options)
+        import_file = run_prelabel(input_path, batch_size=8, force=args.force, **options)
         prelabel_version = prelabel_module.model_version(options["model_id"], options["threshold"])
     else:
         import_file = ensure_import_file(input_path)
@@ -1153,9 +696,9 @@ def cmd_label_studio(args: argparse.Namespace) -> None:
             if manifest_path.exists():
                 prelabel_version = str(json.loads(manifest_path.read_text(encoding="utf-8"))["model_version"])
             print(f"label-studio: serving pre-labeled import file {prelabeled}")
-    port = args.port or int(os.environ.get("MEDLINER_LABEL_STUDIO_PORT", str(DEFAULT_PORT)))
-    image = args.image or os.environ.get("MEDLINER_LABEL_STUDIO_IMAGE", DEFAULT_IMAGE)
-    host = args.host or os.environ.get("MEDLINER_LABEL_STUDIO_HOST", "127.0.0.1")
+    port = int(os.environ.get("MEDLINER_LABEL_STUDIO_PORT", str(DEFAULT_PORT)))
+    image = os.environ.get("MEDLINER_LABEL_STUDIO_IMAGE", DEFAULT_IMAGE)
+    host = os.environ.get("MEDLINER_LABEL_STUDIO_HOST", "127.0.0.1")
     annotator_values = args.annotator
     if not annotator_values:
         env_annotators = os.environ.get("MEDLINER_LABEL_STUDIO_ANNOTATORS")
@@ -1192,13 +735,13 @@ def cmd_label_studio(args: argparse.Namespace) -> None:
     if host not in ("127.0.0.1", "localhost"):
         print(f"label-studio: reachable on the network via {host}:{port} (share http://<this-host>:{port})")
     if args.warmup:
-        from .evaluation import benchmark_path
+        from .benchmark import benchmark_path
 
         gold = benchmark_path()
         if not gold.exists():
             raise FileNotFoundError(f"gold benchmark not found: {gold} (check MEDLINER_BENCHMARK)")
         warmup_file = workdir() / "label-studio" / "warmup.json"
-        write_import_file(build_warmup_tasks(gold, limit=args.warmup_limit), warmup_file)
+        write_import_file(build_warmup_tasks(gold, limit=10), warmup_file)
         warmup = provision(
             import_file=warmup_file,
             label_config_path=repo_root() / "configs" / "label_studio_ner.xml",
@@ -1241,7 +784,6 @@ def cmd_label_studio_export(args: argparse.Namespace) -> None:
         f"label-studio-export: {result['tasks_annotated']}/{result['tasks_exported']} annotated tasks "
         f"-> {result['output']}"
     )
-    print("next: medliner dataset --export <file> (or make train with MEDLINER_LABEL_STUDIO_EXPORT set)")
 
 
 def cmd_label_studio_stop(_args: argparse.Namespace) -> None:
@@ -1249,59 +791,10 @@ def cmd_label_studio_stop(_args: argparse.Namespace) -> None:
     print("label-studio: container removed" if removed else "label-studio: no container to remove")
 
 
-def cmd_dataset(args: argparse.Namespace) -> None:
-    run_dataset(export_path(args.export))
-
-
-def cmd_splits(args: argparse.Namespace) -> None:
-    run_splits(Path(args.dataset) if args.dataset else workdir() / "normalized" / "examples.jsonl")
-
-
-def cmd_train(args: argparse.Namespace) -> None:
-    run_training(smoke=args.smoke, no_synthetic=args.no_synthetic)
-
-
-def cmd_evaluate(args: argparse.Namespace) -> None:
-    checkpoint = Path(args.checkpoint) if args.checkpoint else workdir() / "training" / "final"
-    split_dir = Path(args.splits) if args.splits else workdir() / "splits"
-    run_evaluation(checkpoint, split_dir)
-
-
-def cmd_bundle(args: argparse.Namespace) -> None:
-    materialized = workdir()
-    run_bundle(
-        checkpoint=Path(args.checkpoint) if args.checkpoint else materialized / "training" / "final",
-        report=materialized / "evaluation" / "report.json",
-        dataset_path=materialized / "normalized" / "examples.jsonl",
-        split_dir=materialized / "splits",
-    )
-
-
-def cmd_pipeline(args: argparse.Namespace) -> None:
-    """The full post-annotation chain: dataset → splits → train → evaluate → bundle."""
-    dataset_path = run_dataset(export_path(args.export))
-    split_dir = run_splits(dataset_path)
-    # `make train` must keep working before `make synthesize` ever ran: this one-command flow
-    # selects the gold-only fallback itself, while direct `medliner train` stays strict (a
-    # configured synthetic_weight with no pool errors there). Existence is the only thing
-    # decided here — a present pool still loads, gets weighted, and fails loudly when malformed.
-    synthetic_pool = workdir() / "synthetic" / "examples.jsonl"
-    no_synthetic = not synthetic_pool.exists()
-    if no_synthetic:
-        print(f"pipeline: no synthetic pool at {synthetic_pool}; training gold-only")
-    checkpoint = run_training(smoke=args.smoke, no_synthetic=no_synthetic)
-    report = run_evaluation(checkpoint, split_dir)
-    run_bundle(checkpoint, report, dataset_path, split_dir)
-
-
 def _add_prelabel_arguments(parser: argparse.ArgumentParser) -> None:
     """Flags shared by ``prelabel`` and ``label-studio --prelabel``."""
     parser.add_argument("--model", help="GLiNER checkpoint (default: $MEDLINER_PRELABEL_MODEL)")
     parser.add_argument("--threshold", type=float, help="score floor (default: $MEDLINER_PRELABEL_THRESHOLD, 0.35)")
-    parser.add_argument("--device", help="cuda/cpu override (default: $MEDLINER_PRELABEL_DEVICE, autodetected)")
-    parser.add_argument("--batch-size", type=int, default=8, help="windows per forward pass (default: 8)")
-    parser.add_argument("--word-budget", type=int, help="window size in GLiNER word tokens (default: 384)")
-    parser.add_argument("--max-width", type=int, help="widest suggested span in word tokens (default: 12)")
     parser.add_argument("--force", action="store_true", help="ignore the prelabel cache and re-run the model")
 
 
@@ -1318,8 +811,7 @@ def build_parser() -> argparse.ArgumentParser:
     candidates.set_defaults(func=cmd_candidates)
 
     shorten = sub.add_parser(
-        "shorten",
-        help="rewrite over-long candidate texts through the local LLM (opt-in; start it with 'make llm')",
+        "shorten", help="rewrite over-long candidate texts through the local LLM (opt-in; start it with 'make llm')"
     )
     shorten.add_argument("--input", help="raw candidates NDJSON (default: $MEDLINER_RAW_CANDIDATES)")
     shorten.add_argument("--limit", type=int, help="process at most this many not-yet-processed rows (for trial runs)")
@@ -1329,7 +821,6 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"row length threshold in words, ≈3-4 short sentences "
         f"(default: $MEDLINER_SHORTEN_MAX_WORDS, {DEFAULT_SHORTEN_MAX_WORDS})",
     )
-    shorten.add_argument("--url", help="LLM server base URL (default: $MEDLINER_LLM_URL, http://127.0.0.1:8080)")
     shorten.add_argument(
         "--force",
         action="store_true",
@@ -1353,9 +844,6 @@ def build_parser() -> argparse.ArgumentParser:
     server = sub.add_parser("label-studio", help="start the podman Label Studio server with tasks imported")
     server.add_argument("--input", help="raw candidates NDJSON (default: $MEDLINER_RAW_CANDIDATES)")
     server.add_argument("--reimport", action="store_true", help="replace existing project tasks")
-    server.add_argument("--port", type=int, help="host port (default: $MEDLINER_LABEL_STUDIO_PORT)")
-    server.add_argument("--image", help="container image (default: $MEDLINER_LABEL_STUDIO_IMAGE)")
-    server.add_argument("--host", help="port-publish bind address (default: $MEDLINER_LABEL_STUDIO_HOST, 127.0.0.1)")
     server.add_argument(
         "--annotator",
         action="append",
@@ -1367,7 +855,6 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="also import gold-benchmark warm-up tasks into a separate project (needs the ingested benchmark)",
     )
-    server.add_argument("--warmup-limit", type=int, default=10, help="maximum warm-up tasks to import (default: 10)")
     server.add_argument(
         "--prelabel",
         action="store_true",
@@ -1381,116 +868,18 @@ def build_parser() -> argparse.ArgumentParser:
     export.set_defaults(func=cmd_label_studio_export)
 
     onboarding = sub.add_parser(
-        "onboarding",
-        help="provision the Onboarding project and assign quiz attempts to every annotator account",
+        "onboarding", help="provision the Onboarding project and assign quiz attempts to every annotator account"
     )
     onboarding.add_argument("--reimport", action="store_true", help="replace the Onboarding project tasks")
-    onboarding.add_argument("--port", type=int, help="host port (default: $MEDLINER_LABEL_STUDIO_PORT)")
-    onboarding.add_argument("--image", help="container image (default: $MEDLINER_LABEL_STUDIO_IMAGE)")
-    onboarding.add_argument("--host", help="port-publish bind address (default: $MEDLINER_LABEL_STUDIO_HOST)")
     onboarding.set_defaults(func=cmd_onboarding)
 
     onboarding_promote = sub.add_parser(
-        "onboarding-promote",
-        help="export the Onboarding project, score every attempt, promote everyone passing",
+        "onboarding-promote", help="export the Onboarding project, score every attempt, promote everyone passing"
     )
     onboarding_promote.set_defaults(func=cmd_onboarding_promote)
 
     stop = sub.add_parser("label-studio-stop", help="remove the Label Studio container (annotations survive)")
     stop.set_defaults(func=cmd_label_studio_stop)
-
-    dataset = sub.add_parser("dataset", help="validate the reviewed export into the normalized dataset")
-    dataset.add_argument("--export", help="reviewed export (default: $MEDLINER_LABEL_STUDIO_EXPORT)")
-    dataset.set_defaults(func=cmd_dataset)
-
-    splits = sub.add_parser("splits", help="freeze grouped train/validation/test splits")
-    splits.add_argument("--dataset", help="normalized JSONL (default: $MEDLINER_WORKDIR/normalized/examples.jsonl)")
-    splits.set_defaults(func=cmd_splits)
-
-    synthesize = sub.add_parser(
-        "synthesize",
-        help="generate the synthetic training pool from the train split through the local LLM",
-        description=(
-            "Generate the semi-supervised synthetic pool: for every gold train example, fill "
-            "MEDLINER_SYNTH_RATIO variant slots through the local LLM (start it with 'make llm'), "
-            "gated by the synthesis engine's divergence checks. A run below "
-            "MEDLINER_SYNTH_MIN_RATIO per gold example exits non-zero after writing its manifest."
-        ),
-    )
-    synthesize.add_argument("--splits", help="split dir (default: $MEDLINER_WORKDIR/splits)")
-    synthesize.add_argument(
-        "--ratio",
-        type=int,
-        help=f"target variants per gold example (default: $MEDLINER_SYNTH_RATIO, {DEFAULT_SYNTH_RATIO})",
-    )
-    synthesize.add_argument(
-        "--min-ratio",
-        type=float,
-        help=(
-            "accepted floor per gold example; runs below it exit non-zero "
-            f"(default: $MEDLINER_SYNTH_MIN_RATIO, {DEFAULT_SYNTH_MIN_RATIO:g})"
-        ),
-    )
-    synthesize.add_argument(
-        "--max-attempts",
-        type=int,
-        help=f"attempts per variant slot (default: $MEDLINER_SYNTH_MAX_ATTEMPTS, {DEFAULT_SYNTH_MAX_ATTEMPTS})",
-    )
-    synthesize.add_argument(
-        "--max-words",
-        type=int,
-        help=f"rewrite length budget in words (default: $MEDLINER_SYNTH_MAX_WORDS, {DEFAULT_SYNTH_MAX_WORDS})",
-    )
-    synthesize.add_argument(
-        "--min-similarity",
-        "--similarity-floor",  # backwards-compatible alias; dest keeps the canonical name
-        dest="min_similarity",
-        type=float,
-        help=f"content-word Jaccard floor (default: $MEDLINER_SYNTH_MIN_SIMILARITY, {DEFAULT_SYNTH_MIN_SIMILARITY})",
-    )
-    synthesize.add_argument(
-        "--workers",
-        type=int,
-        help=f"parallel LLM requests (default: $MEDLINER_SYNTH_WORKERS, {DEFAULT_SYNTH_WORKERS})",
-    )
-    synthesize.add_argument("--url", help="LLM server base URL (default: $MEDLINER_LLM_URL, http://127.0.0.1:8080)")
-    synthesize.add_argument(
-        "--limit",
-        type=int,
-        help=(
-            "attempt at most this many pending variant slots (trial run; the floor gate still "
-            "exits non-zero when the pool ends below it)"
-        ),
-    )
-    synthesize.add_argument(
-        "--force",
-        action="store_true",
-        help="ignore previous progress and cached replies; regenerate every slot through the model",
-    )
-    synthesize.set_defaults(func=cmd_synthesize)
-
-    train = sub.add_parser("train", help="fine-tune the small GLiNER checkpoint")
-    train.add_argument("--smoke", action="store_true", help="one-step GPU sanity check (run this first)")
-    train.add_argument(
-        "--no-synthetic",
-        action="store_true",
-        help="train on gold only; ignore the synthetic pool instead of mixing it in at synthetic_weight",
-    )
-    train.set_defaults(func=cmd_train)
-
-    evaluate = sub.add_parser("evaluate", help="strict/lenient evaluation report for the tuned checkpoint")
-    evaluate.add_argument("--checkpoint", help="checkpoint dir (default: $MEDLINER_WORKDIR/training/final)")
-    evaluate.add_argument("--splits", help="split dir (default: $MEDLINER_WORKDIR/splits)")
-    evaluate.set_defaults(func=cmd_evaluate)
-
-    bundle = sub.add_parser("bundle", help="assemble the standalone export bundle")
-    bundle.add_argument("--checkpoint", help="checkpoint dir (default: $MEDLINER_WORKDIR/training/final)")
-    bundle.set_defaults(func=cmd_bundle)
-
-    pipeline = sub.add_parser("pipeline", help="dataset → splits → train → evaluate → bundle")
-    pipeline.add_argument("--export", help="reviewed export (default: $MEDLINER_LABEL_STUDIO_EXPORT)")
-    pipeline.add_argument("--smoke", action="store_true", help="run the one-step smoke training check")
-    pipeline.set_defaults(func=cmd_pipeline)
 
     return parser
 

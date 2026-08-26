@@ -1,4 +1,4 @@
-"""Strict and lenient medical NER evaluation."""
+"""Gold-benchmark loading and strict/boundary span scoring for the pre-labeler."""
 
 from __future__ import annotations
 
@@ -10,9 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .dataset import read_examples
-from .gliner_data import split_words
-from .schema import ALLOWED_LABELS, Annotation, Example, canonical_label
+from .schema import Annotation, Example, canonical_label
 
 Predictor = Callable[[str], list[dict[str, Any]]]
 
@@ -113,21 +111,9 @@ def _aggregate(scores: Iterable[ExampleScore]) -> dict[str, Any]:
     return {"strict": strict.as_dict(), "boundary_only": boundary.as_dict(), "examples": count}
 
 
-def _truncation_report(values: list[Example], max_words: int | None) -> dict[str, Any]:
-    """GLiNER truncates over-budget inputs with only a warning, which silently depresses recall."""
-    if not max_words:
-        return {"max_words": None, "checked": False}
-    over = [example.id for example in values if len(split_words(example.text)) > max_words]
-    return {"max_words": max_words, "checked": True, "over_budget_examples": len(over), "example_ids": over[:20]}
-
-
-def score_examples(
-    predictor: Predictor, examples: Iterable[Example], *, max_words: int | None = None
-) -> dict[str, Any]:
+def score_examples(predictor: Predictor, examples: Iterable[Example]) -> dict[str, Any]:
     """Score once per example, then slice the same counts by task and source family."""
     values = list(examples)
-    if max_words is None:
-        max_words = getattr(predictor, "max_words", None)
     scores = [score_example(predictor, example) for example in values]
     by_task: dict[str, list[ExampleScore]] = defaultdict(list)
     by_source: dict[str, list[ExampleScore]] = defaultdict(list)
@@ -146,53 +132,8 @@ def score_examples(
             "false_positive_examples": len(false_positives),
             "false_positive_rate": len(false_positives) / len(negatives) if negatives else 0.0,
         },
-        "truncation": _truncation_report(values, max_words),
         "examples": len(values),
     }
-
-
-class GLiNERPredictor:
-    """Callable wrapper that also advertises the model's word budget to the scorer."""
-
-    def __init__(self, model: Any, *, threshold: float, labels: Iterable[str] = ALLOWED_LABELS) -> None:
-        self.model = model
-        self.threshold = threshold
-        self.labels = list(labels)
-        max_len = getattr(getattr(model, "config", None), "max_len", None)
-        self.max_words: int | None = max_len if isinstance(max_len, int) else None
-
-    def __call__(self, text: str) -> list[dict[str, Any]]:
-        result = self.model.predict_entities(text, self.labels, threshold=self.threshold)
-        return [
-            {
-                "start": int(item["start"]),
-                "end": int(item["end"]),
-                "label": canonical_label(str(item.get("label", item.get("type", "")))) or "",
-                "text": str(item.get("text", text[int(item["start"]) : int(item["end"])])),
-                "score": float(item.get("score", 0.0)),
-            }
-            for item in result
-        ]
-
-
-def make_gliner_predictor(checkpoint: str | Path, *, threshold: float = 0.3) -> Predictor:
-    from gliner import GLiNER
-
-    model = GLiNER.from_pretrained(str(checkpoint), map_location="cuda" if _cuda_available() else "cpu")
-    model.eval()
-    return GLiNERPredictor(model, threshold=threshold)
-
-
-def _cuda_available() -> bool:
-    try:
-        import torch
-
-        if not torch.cuda.is_available():
-            return False
-        major, minor = torch.cuda.get_device_capability()
-        return f"sm_{major}{minor}" in set(torch.cuda.get_arch_list())
-    except (ImportError, RuntimeError):
-        return False
 
 
 def load_gold_benchmark(path: str | Path) -> list[Example]:
@@ -238,65 +179,4 @@ def load_gold_benchmark(path: str | Path) -> list[Example]:
     return examples
 
 
-def evaluate_checkpoint(
-    checkpoint: str | Path,
-    split_dir: str | Path,
-    output_path: str | Path,
-    *,
-    include_baselines: bool = True,
-    threshold: float = 0.3,
-) -> dict[str, Any]:
-    """Evaluate systems after validating gold, so an actionable ingest error wins model failures."""
-    # Validate and load gold before model or split work: a missing benchmark is actionable, while
-    # model loading can fail for unrelated reasons and would otherwise mask the ingest hint.
-    gold_path = benchmark_path()
-    if not gold_path.exists():
-        raise RuntimeError(
-            f"gold benchmark not found at {gold_path}; point $MEDLINER_BENCHMARK at an existing "
-            "ner_gold.json (or run `medliner ingest` with the older bundle layout)"
-        )
-    benchmark = load_gold_benchmark(gold_path)
-
-    tuned_predictor = make_gliner_predictor(checkpoint, threshold=threshold)
-    split_dir = Path(split_dir)
-    test_path = split_dir / "test.jsonl"
-    evaluated_split = "test" if test_path.exists() else "validation"
-    values = read_examples(test_path if test_path.exists() else split_dir / "validation.jsonl")
-    result: dict[str, Any] = {
-        "tuned": score_examples(tuned_predictor, values),
-        "checkpoint": str(checkpoint),
-        "evaluated_split": evaluated_split,
-        "threshold": threshold,
-    }
-    result["tuned_gold_regression"] = score_examples(tuned_predictor, benchmark)
-    if include_baselines:
-        result["baselines"] = {}
-        metadata_path = Path(checkpoint) / "medliner-training.json"
-        base_model_id = None
-        if metadata_path.exists():
-            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-            base_model_id = metadata.get("model_id")
-        if base_model_id:
-            try:
-                untuned = make_gliner_predictor(str(base_model_id), threshold=threshold)
-                result["baselines"]["untuned_gliner"] = score_examples(untuned, values)
-                result["baselines"]["untuned_gliner_gold_regression"] = score_examples(untuned, benchmark)
-            except Exception as exc:  # noqa: BLE001 - a missing baseline must not void the tuned report
-                result["baselines"]["untuned_gliner_error"] = f"{type(exc).__name__}: {exc}"
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    return result
-
-
-__all__ = [
-    "Counts",
-    "ExampleScore",
-    "GLiNERPredictor",
-    "benchmark_path",
-    "evaluate_checkpoint",
-    "load_gold_benchmark",
-    "make_gliner_predictor",
-    "score_example",
-    "score_examples",
-]
+__all__ = ["Counts", "ExampleScore", "benchmark_path", "load_gold_benchmark", "score_example", "score_examples"]

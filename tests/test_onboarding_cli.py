@@ -46,12 +46,7 @@ def _correct_submissions(manifest, attempts: dict) -> list[dict]:
                 {
                     "id": f"result-{user}-{task_id}-{index}",
                     "type": "labels",
-                    "value": {
-                        "start": span.start,
-                        "end": span.end,
-                        "text": span.text,
-                        "labels": [span.label],
-                    },
+                    "value": {"start": span.start, "end": span.end, "text": span.text, "labels": [span.label]},
                 }
                 for index, span in enumerate(case.gold)
             ]
@@ -88,7 +83,7 @@ def test_onboarding_promote_scores_and_promotes_everyone_at_once(tmp_path, monke
     workdir = tmp_path / "work"
     monkeypatch.setenv("MEDLINER_WORKDIR", str(workdir))
     _run_onboarding(tmp_path, monkeypatch)
-    config, manifest, _bank_path = cli._onboarding_context()
+    _config, manifest, _bank_path = cli._onboarding_context()
     attempts = {item.username: item for item in cli.read_attempts(workdir)}
     payload = _correct_submissions(manifest, attempts)
     export_path = workdir / "onboarding" / "export.json"
@@ -103,17 +98,6 @@ def test_onboarding_promote_scores_and_promotes_everyone_at_once(tmp_path, monke
     output = capsys.readouterr().out
     assert "promoted alice" in output
     assert "promoted bob" in output
-
-
-def test_dataset_gate_requires_a_promotion(tmp_path, monkeypatch, capsys):
-    export = tmp_path / "production.json"
-    export.write_text("[]", encoding="utf-8")
-    monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
-    monkeypatch.setenv("MEDLINER_BENCHMARK", str(FIXTURE))
-    monkeypatch.setenv("MEDLINER_ONBOARDING_REQUIRED", "1")
-    monkeypatch.setenv("MEDLINER_LABEL_STUDIO_EXPORT", str(export))
-    assert cli.main(["dataset"]) == 1
-    assert "no annotator has passed onboarding" in capsys.readouterr().err
 
 
 def test_prepare_runs_candidates_and_prelabel(tmp_path, monkeypatch):

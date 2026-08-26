@@ -129,7 +129,8 @@ def test_ensure_container_creates_when_absent(podman, tmp_path):
     assert run_call[run_call.index("-p") + 1] == "127.0.0.1:8080:8080"
     volume = run_call[run_call.index("-v") + 1]
     assert volume.endswith(":/label-studio/data:Z")
-    assert "LABEL_STUDIO_USERNAME=u" in run_call and "LABEL_STUDIO_PASSWORD=p" in run_call
+    assert "LABEL_STUDIO_USERNAME=u" in run_call
+    assert "LABEL_STUDIO_PASSWORD=p" in run_call
     assert podman.containers["medliner-label-studio"]["state"] == "running"
     # The container runs as UID 1001; the bind-mounted data dir is handed to that user.
     (chown_call,) = [call for call in podman.calls if call[1] == "unshare"]
@@ -150,7 +151,8 @@ def test_ensure_container_replaces_a_stopped_container(podman, tmp_path):
         name="medliner-label-studio", image="img", port=8080, data_dir=tmp_path, username="u", password="p"
     )
     actions = [call[1] for call in podman.calls]
-    assert "rm" in actions and "run" in actions
+    assert "rm" in actions
+    assert "run" in actions
 
 
 def test_stop_container_reports_whether_one_was_removed(podman):
@@ -221,7 +223,8 @@ def test_session_login_drives_the_api_with_cookies_and_csrf(monkeypatch):
     monkeypatch.setattr("urllib.request.build_opener", fake_build_opener)
     client = server.LabelStudioClient("http://localhost:9030", username="u", password="p")
     opener = client._opener
-    assert b"email=u" in opener.posts[0] and b"csrfmiddlewaretoken=csrf-value" in opener.posts[0]
+    assert b"email=u" in opener.posts[0]
+    assert b"csrfmiddlewaretoken=csrf-value" in opener.posts[0]
 
     client.api("GET", "/api/projects")
     # Session path: CSRF header, no Authorization bearer.
@@ -343,14 +346,14 @@ def test_provision_seeds_missing_annotators_idempotently(monkeypatch, podman, tm
     config = tmp_path / "config.xml"
     config.write_text("<View/>", encoding="utf-8")
 
-    common: dict[str, Any] = dict(
-        import_file=import_file,
-        label_config_path=config,
-        data_dir=tmp_path / "data",
-        username="u",
-        password="p",
-        token="test-token",
-    )
+    common: dict[str, Any] = {
+        "import_file": import_file,
+        "label_config_path": config,
+        "data_dir": tmp_path / "data",
+        "username": "u",
+        "password": "p",
+        "token": "test-token",
+    }
     result = server.provision(annotators=[("alice", "pw-a"), ("medliner@localhost", "x")], **common)
     assert result["annotators_created"] == 1  # the existing admin is skipped
     again = server.provision(annotators=[("alice", "pw-a")], **common)
@@ -361,10 +364,7 @@ def test_export_project_writes_file_and_counts_annotations(monkeypatch, podman, 
     annotated = {
         "id": 1,
         "title": server.DEFAULT_PROJECT_TITLE,
-        "tasks": [
-            {"id": "t1", "annotations": [{"result": []}]},
-            {"id": "t2", "annotations": []},
-        ],
+        "tasks": [{"id": "t1", "annotations": [{"result": []}]}, {"id": "t2", "annotations": []}],
     }
     _install_api(monkeypatch, FakeLabelStudio(projects=[annotated]))
 

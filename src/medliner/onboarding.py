@@ -16,7 +16,7 @@ from typing import Any, Literal
 from blake3 import blake3
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from .evaluation import load_gold_benchmark
+from .benchmark import load_gold_benchmark
 from .label_studio import LabelStudioExportError, normalize_task, read_tasks
 
 CONFIG_SCHEMA_VERSION = "medliner.onboarding.config.v1"
@@ -195,10 +195,7 @@ def _case_from_example(example: Any) -> TestBankCase:
 
 
 def build_test_bank(
-    benchmark_path: str | Path,
-    config: OnboardingConfig,
-    *,
-    generated_at: str | None = None,
+    benchmark_path: str | Path, config: OnboardingConfig, *, generated_at: str | None = None
 ) -> TestBankManifest:
     """Build the private, versioned bank from the adjudicated benchmark."""
     try:
@@ -236,13 +233,6 @@ def write_test_bank(manifest: TestBankManifest, path: str | Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(manifest.model_dump_json(indent=2) + "\n", encoding="utf-8")
     return path
-
-
-def read_test_bank(path: str | Path) -> TestBankManifest:
-    try:
-        return TestBankManifest.model_validate_json(Path(path).read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
-        raise OnboardingError(f"cannot read onboarding test bank {path}: {exc}") from exc
 
 
 def build_onboarding_tasks(manifest: TestBankManifest, task_ids: list[str] | None = None) -> list[dict[str, Any]]:
@@ -334,10 +324,7 @@ def _selection(
 
 
 def start_attempt(
-    workdir: str | Path,
-    manifest: TestBankManifest,
-    config: OnboardingConfig,
-    username: str,
+    workdir: str | Path, manifest: TestBankManifest, config: OnboardingConfig, username: str
 ) -> OnboardingAttempt:
     username = username.strip()
     if not username:
@@ -493,19 +480,6 @@ def write_report(report: OnboardingReport, workdir: str | Path) -> Path:
     return path
 
 
-def read_reports(workdir: str | Path) -> list[OnboardingReport]:
-    directory = _report_dir(workdir)
-    if not directory.exists():
-        return []
-    reports: list[OnboardingReport] = []
-    for path in sorted(directory.glob("*.json")):
-        try:
-            reports.append(OnboardingReport.model_validate_json(path.read_text(encoding="utf-8")))
-        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
-            raise OnboardingError(f"invalid onboarding report {path}: {exc}") from exc
-    return reports
-
-
 def promote(workdir: str | Path, report: OnboardingReport, manifest: TestBankManifest) -> PromotionRecord:
     if report.status != "passed":
         raise OnboardingError("only a passing onboarding report can promote an annotator")
@@ -544,10 +518,7 @@ def promoted_users(workdir: str | Path, manifest: TestBankManifest) -> set[str]:
 
 
 def filter_production_export(
-    export_path: str | Path,
-    workdir: str | Path,
-    manifest: TestBankManifest,
-    allowed_users: set[str],
+    export_path: str | Path, workdir: str | Path, manifest: TestBankManifest, allowed_users: set[str]
 ) -> tuple[Path, Path, int]:
     """Keep only production annotations from promoted users and retain excluded audit data.
 
@@ -616,14 +587,14 @@ __all__ = [
     "DEFAULT_CONFIG_PATH",
     "DEFAULT_PROJECT_TITLE",
     "GENERATOR_VERSION",
+    "REPORT_SCHEMA_VERSION",
+    "TEST_BANK_SCHEMA_VERSION",
     "GoldSpan",
     "OnboardingAttempt",
     "OnboardingConfig",
     "OnboardingError",
     "OnboardingReport",
     "PromotionRecord",
-    "REPORT_SCHEMA_VERSION",
-    "TEST_BANK_SCHEMA_VERSION",
     "TestBankCase",
     "TestBankManifest",
     "UnknownAnnotatorError",
@@ -636,8 +607,6 @@ __all__ = [
     "promote",
     "promoted_users",
     "read_attempts",
-    "read_reports",
-    "read_test_bank",
     "start_attempt",
     "state_dir",
     "versioned_bank_path",

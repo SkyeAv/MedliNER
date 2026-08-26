@@ -41,7 +41,7 @@ def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
 
 def _urlopen(request: urllib.request.Request, timeout: float = 30.0):
     """Single HTTP entry point so tests can fake the network."""
-    return urllib.request.urlopen(request, timeout=timeout)  # noqa: S310 — localhost service
+    return urllib.request.urlopen(request, timeout=timeout)
 
 
 def container_state(name: str = DEFAULT_CONTAINER) -> str | None:
@@ -144,12 +144,7 @@ class LabelStudioClient:
     """
 
     def __init__(
-        self,
-        base_url: str,
-        *,
-        token: str | None = None,
-        username: str | None = None,
-        password: str | None = None,
+        self, base_url: str, *, token: str | None = None, username: str | None = None, password: str | None = None
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self._token = token
@@ -174,9 +169,7 @@ class LabelStudioClient:
             {"email": username, "username": username, "password": password, "csrfmiddlewaretoken": csrf}
         ).encode()
         request = urllib.request.Request(
-            f"{self.base_url}/user/login/",
-            data=form,
-            headers={"Referer": f"{self.base_url}/user/login/"},
+            f"{self.base_url}/user/login/", data=form, headers={"Referer": f"{self.base_url}/user/login/"}
         )
         self._opener.open(request, timeout=30.0)
         if not any(cookie.name == "sessionid" for cookie in jar):
@@ -221,9 +214,7 @@ class LabelStudioClient:
         selects which prediction set to pre-fill from when a task carries more than one.
         """
         self.api(
-            "PATCH",
-            f"/api/projects/{project_id}",
-            {"show_collab_predictions": True, "model_version": model_version},
+            "PATCH", f"/api/projects/{project_id}", {"show_collab_predictions": True, "model_version": model_version}
         )
 
     def find_project(self, title: str) -> int | None:
@@ -310,11 +301,7 @@ def provision(
         client.enable_prelabeling(project_id, prelabel_model_version)
     tasks = json.loads(Path(import_file).read_text(encoding="utf-8"))
     existing = client.project_task_count(project_id)
-    imported = 0
-    if existing and not reimport:
-        imported = existing
-    else:
-        imported = client.import_tasks(project_id, tasks)
+    imported = existing if existing and not reimport else client.import_tasks(project_id, tasks)
     annotators_created = 0
     if annotators:
         known = {user.get("username") for user in client.list_users()}

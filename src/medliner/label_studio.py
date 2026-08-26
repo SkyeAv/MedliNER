@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 from collections import Counter
-from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -253,9 +252,7 @@ def _span_origin(task: dict[str, Any], result: dict[str, Any]) -> str | None:
 def _build_annotation(task: dict[str, Any], *, status: AnnotationStatus, **fields: Any) -> Annotation:
     try:
         return Annotation(
-            status=status,
-            provenance="adjudicated" if status == AnnotationStatus.ADJUDICATED else "human",
-            **fields,
+            status=status, provenance="adjudicated" if status == AnnotationStatus.ADJUDICATED else "human", **fields
         )
     except ValidationError as exc:
         raise LabelStudioExportError(f"task {task.get('id', '<unknown>')!r} has an invalid span: {exc}") from exc
@@ -312,12 +309,4 @@ def normalize_export(path: str | Path, *, export_id: str | None = None, require_
     return examples
 
 
-def write_jsonl(examples: Iterable[Example], path: str | Path) -> None:
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as handle:
-        for example in examples:
-            handle.write(example.model_dump_json() + "\n")
-
-
-__all__ = ["LabelStudioExportError", "normalize_export", "normalize_task", "read_tasks", "write_jsonl"]
+__all__ = ["LabelStudioExportError", "normalize_export", "normalize_task", "read_tasks"]

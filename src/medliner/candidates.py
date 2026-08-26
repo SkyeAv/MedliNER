@@ -211,7 +211,7 @@ def difficulty_score(text: str) -> float:
 def _largest_remainder(counts: dict[str, int], total: int) -> dict[str, int]:
     """Split ``total`` across keys proportionally to ``counts`` (largest-remainder rounding)."""
     if total <= 0:
-        return {key: 0 for key in counts}
+        return dict.fromkeys(counts, 0)
     pool = sum(counts.values())
     if total >= pool:
         return dict(counts)
@@ -238,9 +238,9 @@ def sample_tasks(
     a task, the selection is stratified across ``source_family`` in proportion to each
     family's share of the eligible pool, and members are chosen by ``blake3(seed:task_id)``
     rank so the same input plus configuration always reproduce the same subset. ``max_words``
-    drops texts longer than that many whitespace-separated words: GLiNER conversion refuses
-    such texts at training time (``max_length`` in ``configs/train-small.yaml``), so
-    annotating longer passages is wasted effort.
+    drops texts longer than that many whitespace-separated words: GLiNER truncates over-long
+    texts at its ``config.max_len`` word budget with only a warning, so annotating longer
+    passages is wasted effort.
 
     With ``edge_fraction`` above 0, that share of each stratum's allocation goes to the
     highest-``difficulty_score`` members (ties broken by the same blake3 rank) and the

@@ -29,8 +29,10 @@ from typing import Any
 
 from blake3 import blake3
 
-from .gliner_data import GLINER_TOKEN
 from .schema import ALLOWED_LABELS
+
+# Matches GLiNER's documented WhitespaceTokenSplitter in 0.2.x.
+GLINER_TOKEN = re.compile(r"\w+(?:[-_]\w+)*|\S")
 
 #: HuggingFace id of the pre-labeling checkpoint (DAKP ``ner.py`` ``DEFAULT_MODEL``).
 DEFAULT_MODEL_ID = "gliner-community/gliner_large-v2.5"
@@ -40,8 +42,7 @@ DEFAULT_THRESHOLD = 0.35
 #: (DAKP ``ner.py`` ``_DEFAULT_WORD_BUDGET``). The shipped large-v2.5 sets ``max_len: 768``.
 DEFAULT_WORD_BUDGET = 384
 #: GLiNER never enumerates a span candidate wider than ``config.max_width`` (12 for large-v2.5),
-#: and :mod:`medliner.gliner_data` refuses to convert a gold span wider than that, so a wider
-#: suggestion would break the dataset build the moment a human accepted it.
+#: so a wider suggestion would propose a span the model itself cannot produce.
 DEFAULT_MAX_WIDTH = 12
 DEFAULT_BATCH_SIZE = 8
 
@@ -164,13 +165,7 @@ class Suggestion:
     score: float
 
     def as_dict(self) -> dict[str, Any]:
-        return {
-            "start": self.start,
-            "end": self.end,
-            "label": self.label,
-            "text": self.text,
-            "score": self.score,
-        }
+        return {"start": self.start, "end": self.end, "label": self.label, "text": self.text, "score": self.score}
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> Suggestion:
@@ -465,10 +460,7 @@ def build_prediction(task_id: str, spans: Sequence[Suggestion], *, version: str)
 
 
 def attach_predictions(
-    tasks: Sequence[dict[str, Any]],
-    suggestions: dict[str, list[Suggestion]],
-    *,
-    version: str,
+    tasks: Sequence[dict[str, Any]], suggestions: dict[str, list[Suggestion]], *, version: str
 ) -> list[dict[str, Any]]:
     """Copy ``tasks`` with a ``predictions`` array attached to each.
 
@@ -621,12 +613,7 @@ def batch_predictor(
         if not texts:
             return []
         return model.inference(
-            list(texts),
-            list(labels),
-            flat_ner=True,
-            threshold=threshold,
-            multi_label=False,
-            batch_size=batch_size,
+            list(texts), list(labels), flat_ner=True, threshold=threshold, multi_label=False, batch_size=batch_size
         )
 
     return predict
@@ -685,12 +672,7 @@ def prelabel_texts(
 
     for task_id, window_spans in pending.items():
         spans = suggestions_from_windows(
-            texts_by_id[task_id],
-            window_spans,
-            raw_by_id[task_id],
-            max_width=max_width,
-            labels=labels,
-            drops=drops,
+            texts_by_id[task_id], window_spans, raw_by_id[task_id], max_width=max_width, labels=labels, drops=drops
         )
         results[task_id] = spans
         if cache is not None:
@@ -751,9 +733,9 @@ __all__ = [
     "PRELABEL_LABELS",
     "TO_NAME",
     "BatchPredictor",
+    "Predictor",
     "PrelabelCache",
     "PrelabelError",
-    "Predictor",
     "Suggestion",
     "attach_predictions",
     "batch_predictor",

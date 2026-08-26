@@ -13,8 +13,8 @@ from pathlib import Path
 
 import pytest
 
+from medliner.benchmark import load_gold_benchmark, score_examples
 from medliner.candidates import build_import_tasks, hash_candidates_file, read_candidates
-from medliner.evaluation import load_gold_benchmark, score_examples
 from medliner.export_ingest import (
     BENCHMARK_SCHEMA_VERSION,
     EXPORT_SCHEMA_VERSION,
@@ -83,7 +83,7 @@ def test_end_to_end_ingested_bundle_becomes_label_studio_import(tmp_path):
     assert all({"text", "task", "source_family", "generator_version"} <= task["data"].keys() for task in tasks)
     assert sum(task["data"].get("duplicate_count", 1) - 1 for task in tasks) == 0
 
-    # The gold file parses into canonical Examples through the evaluation parser and can be
+    # The gold file parses into canonical Examples through the benchmark parser and can be
     # scored without a model or network access, proving the benchmark side of the contract too.
     examples = load_gold_benchmark(ingested / "ner_gold.json")
     assert len(examples) == bundle_manifest["files"]["ner_gold.json"]["cases"]
@@ -250,13 +250,13 @@ def test_verify_bundle_rejects_a_corrupted_payload(tmp_path):
 def test_verify_bundle_rejects_a_missing_payload_file(tmp_path):
     bundle = _copy_bundle(tmp_path)
     (bundle / "ner_gold.json").unlink()
-    with pytest.raises(ExportIngestError, match="missing payload file ner_gold.json"):
+    with pytest.raises(ExportIngestError, match=r"missing payload file ner_gold\.json"):
         verify_bundle(bundle)
 
 
 def test_verify_bundle_rejects_a_bundle_without_a_manifest(tmp_path):
     """An unknown or empty directory fails naming the manifest, not with a stack trace."""
-    with pytest.raises(ExportIngestError, match="manifest.json"):
+    with pytest.raises(ExportIngestError, match=r"manifest\.json"):
         verify_bundle(tmp_path / "absent")
 
 

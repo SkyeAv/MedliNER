@@ -7,7 +7,6 @@ export MEDLINER_BENCHMARK ?= $(CURDIR)/data/materialized/ingested/ner_gold.json
 export MEDLINER_EXPORT_BUNDLE ?= $(CURDIR)/data/dakp-export
 export MEDLINER_LABEL_STUDIO_EXPORT ?= $(CURDIR)/data/label-studio/reviewed.json
 export MEDLINER_WORKDIR ?= $(CURDIR)/data/materialized
-export MEDLINER_TRAIN_CONFIG ?= $(CURDIR)/configs/train-small.yaml
 # Pre-labeling checkpoint and score floor. Same values the sibling DAKP pipeline mines with.
 export MEDLINER_PRELABEL_MODEL ?= gliner-community/gliner_large-v2.5
 export MEDLINER_PRELABEL_THRESHOLD ?= 0.35
@@ -19,15 +18,6 @@ export MEDLINER_LABEL_STUDIO_ANNOTATORS ?=
 export MEDLINER_ONBOARDING_CONFIG ?= $(CURDIR)/configs/onboarding.json
 export MEDLINER_ONBOARDING_EXPORT ?= $(CURDIR)/data/materialized/onboarding/export.json
 export MEDLINER_LLM_URL ?= http://127.0.0.1:8080
-# Semi-supervised synthesis (make synthesize; needs the LLM from `make llm` first). Same
-# defaults as the CLI stage and .envrc, so a checkout works without direnv.
-export MEDLINER_SYNTH_RATIO ?= 10
-export MEDLINER_SYNTH_MIN_RATIO ?= 5
-export MEDLINER_SYNTH_MAX_ATTEMPTS ?= 3
-export MEDLINER_SYNTH_MAX_WORDS ?= 250
-export MEDLINER_SYNTH_MIN_SIMILARITY ?= 0.3
-export MEDLINER_SYNTH_WORKERS ?= 2
-export MEDLINER_SYNTH_CACHE ?= $(CURDIR)/data/materialized/synth-cache.sqlite3
 # Model checkout with the `medliner` llama-server target; falls back to ~/Desktop/MODELS.
 MODELS_DIR ?= $(if $(wildcard $(CURDIR)/models/Makefile),$(CURDIR)/models,$(HOME)/Desktop/MODELS)
 LLM_TMUX_SESSION ?= medliner-llm
@@ -40,7 +30,7 @@ export MEDLINER_SHORTEN_CACHE ?= $(CURDIR)/data/materialized/shorten-cache.sqlit
 # the backward pass. An empty value is ignored by Triton, so this is safe on normal systems.
 export TRITON_LIBCUDA_PATH ?= $(shell test -x /sbin/ldconfig || for d in /run/opengl-driver/lib /usr/lib64 /usr/lib/x86_64-linux-gnu /usr/lib; do test -e $$d/libcuda.so.1 && echo $$d && break; done)
 
-.PHONY: help setup llm llm-stop shorten prepare onboarding onboarding-promote annotate stop export synthesize train check clean
+.PHONY: help setup llm llm-stop shorten prepare onboarding onboarding-promote annotate stop export lint fmt fmt-check test check clean
 
 help:
 	@printf '%s\n' \
@@ -59,20 +49,13 @@ help:
 		'  make onboarding         Create the Onboarding project and assign a quiz to every annotator' \
 		'  make onboarding-promote Export the quiz, score every attempt, promote everyone passing' \
 		'' \
-		'Training (everything after Label Studio, one command):' \
-		'  make train              dataset → splits → train → evaluate → bundle' \
-		'' \
-		'Semi-supervised (optional; requires the local LLM, so run `make llm` first):' \
-		'  make synthesize         Fill the gated synthetic pool: make llm -> make synthesize -> make train' \
-		'' \
-		'Local LLM (used by make shorten and make synthesize):' \
-		'  make llm                Start the LLM used by make prepare / make shorten / make synthesize (detached tmux)' \
-
+		'Local LLM (used by make prepare and make shorten):' \
+		'  make llm                Start the LLM used by make prepare / make shorten (detached tmux)' \
 		'  make llm-stop           Kill the LLM tmux session' \
 		'  make shorten            Rewrite texts over MAX_WORDS words via the LLM; resumes interrupted runs' \
 		'' \
 		'Development:' \
-		'  make check              Run tests, lint, and formatting checks' \
+		'  make check              Run lint, formatting checks, and tests' \
 		'  make clean              Remove caches and local build output'
 
 setup:
@@ -119,14 +102,22 @@ stop:
 export:
 	uv run medliner label-studio-export
 
-synthesize:
-	uv run medliner synthesize
+# Run Python lint checks.
+lint:
+	uv run ruff check .
 
-train:
-	uv run medliner pipeline
+# Format Python code.
+fmt:
+	uv run ruff format .
 
-check:
-	uv run pytest -q && uv run ruff check src tests && uv run ruff format --check src tests
+# Check Python formatting without changing files.
+fmt-check:
+	uv run ruff format --check .
+
+test:
+	uv run pytest
+
+check: lint fmt-check test
 
 clean:
 	rm -rf .pytest_cache .ruff_cache .coverage htmlcov coverage.xml

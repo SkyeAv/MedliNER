@@ -253,7 +253,8 @@ def test_prediction_control_names_match_the_labeling_config():
     root = ET.parse(CONFIG).getroot()
     labels_node = root.find("Labels")
     text_node = root.find("Text")
-    assert labels_node is not None and text_node is not None
+    assert labels_node is not None
+    assert text_node is not None
     (region,) = build_prediction(
         "medliner-abc", [Suggestion(0, 6, "DiseaseOrPhenotypicFeature", "asthma", 0.9)], version="v"
     )["result"]

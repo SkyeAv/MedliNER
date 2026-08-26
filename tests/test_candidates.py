@@ -4,6 +4,7 @@ import json
 import tempfile
 from collections import Counter
 from datetime import UTC, datetime
+from itertools import pairwise
 from pathlib import Path
 
 import pytest
@@ -221,7 +222,7 @@ def test_sample_tasks_rejects_out_of_range_edge_fraction():
 
 def _max_task_run(kinds: list[str]) -> int:
     longest = current = 1
-    for previous, item in zip(kinds, kinds[1:], strict=False):  # deliberately off-by-one pairing
+    for previous, item in pairwise(kinds):  # successive pairs
         current = current + 1 if item == previous else 1
         longest = max(longest, current)
     return longest
@@ -248,7 +249,8 @@ def test_stagger_task_runs_only_bound_while_multiple_task_types_remain():
     kinds = [task["data"]["task"] for task in staggered]
     last_minority = max(index for index, kind in enumerate(kinds) if kind == "contraindication")
     assert _max_task_run(kinds[: last_minority + 1]) <= 2
-    assert kinds.count("indication") == 8 and kinds.count("contraindication") == 2
+    assert kinds.count("indication") == 8
+    assert kinds.count("contraindication") == 2
 
 
 def test_stagger_tasks_rejects_invalid_max_run():
@@ -263,7 +265,8 @@ def test_import_file_name_legacy_and_sampling_aware():
     digest = "a" * 64
     assert import_file_name(input_hash=digest) == f"import-{digest[:16]}.json"
     sampled = import_file_name(input_hash=digest, sampling="tasks=indication:6000;seed=2026;max_words=300;max_run=3")
-    assert sampled.startswith("import-") and sampled != import_file_name(input_hash=digest)
+    assert sampled.startswith("import-")
+    assert sampled != import_file_name(input_hash=digest)
     other = import_file_name(input_hash=digest, sampling="tasks=indication:5000;seed=2026;max_words=300;max_run=3")
     assert other != sampled  # the configuration is part of the cache key
     assert (

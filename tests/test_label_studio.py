@@ -163,7 +163,7 @@ def test_missing_or_invalid_task_metadata_is_rejected():
 def test_missing_text_is_rejected():
     task = _task([])
     del task["data"]["text"]
-    with pytest.raises(LabelStudioExportError, match="has no string data.text"):
+    with pytest.raises(LabelStudioExportError, match=r"has no string data\.text"):
         normalize_task(task)
 
 

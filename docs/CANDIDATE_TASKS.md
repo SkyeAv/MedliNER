@@ -81,8 +81,8 @@ Behavior:
 - Sampling happens **after** deduplication, so repeated FAERS strings cannot burn multiple slots.
 - Within a task, selection is stratified across `source_family` proportionally (indications
   split dailymed/faers at the pool's ratio), so both families stay represented.
-- Texts over `max_words` are dropped before selection: GLiNER conversion refuses examples
-  beyond `max_length` (`configs/train-small.yaml`), so annotating them is wasted effort. To
+- Texts over `max_words` are dropped before selection: GLiNER truncates texts beyond its
+  `max_len` word budget with only a warning, so annotating them is wasted effort. To
   recover those rows instead, see "LLM shortening" below.
 - Selection and ordering are deterministic (`blake3` ranks) — same input + same env always
   reproduce the same import file, and the import filename is keyed on the input hash **and**

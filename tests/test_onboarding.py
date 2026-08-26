@@ -15,7 +15,6 @@ from medliner.onboarding import (
     filter_production_export,
     promote,
     promoted_users,
-    read_reports,
     start_attempt,
     versioned_bank_path,
     write_report,
@@ -197,7 +196,7 @@ def test_report_and_promotion_are_idempotent(tmp_path):
     record = promote(tmp_path, report, manifest)
     assert promoted_users(tmp_path, manifest) == {"alice"}
     assert promote(tmp_path, report, manifest).promoted_at == record.promoted_at
-    assert len(read_reports(tmp_path)) == 1
+    assert len(list((tmp_path / "onboarding" / "reports").glob("*.json"))) == 1
 
 
 def test_changed_test_bank_version_cannot_score_old_attempt(tmp_path):

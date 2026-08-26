@@ -60,19 +60,16 @@ make onboarding-promote    # exports, scores every attempt, promotes everyone pa
 
 Rerun `make onboarding` for another round; each round selects a new four-task subset per user from
 the ten-case bank. After promotion, run the unchanged production flow (`make annotate`,
-`make export`, `make train`). To accept only production annotations from promoted users, set
-`MEDLINER_ONBOARDING_REQUIRED=1` before `make train`.
+`make export`).
 
 The test-bank and attempt files include benchmark/config hashes, so changing the benchmark starts
-a new onboarding version and old passes do not unlock it. Reports are append-only and non-promoted
-production annotations are retained under the onboarding audit directory rather than entering the
-normalized dataset.
+a new onboarding version and old passes do not unlock it. Reports are append-only and stay on disk
+as the operational record of who passed.
 
 **Community Edition limitation:** CE does not provide per-user project visibility or task
 assignment. A user who already has access to the shared CE instance may technically open the
-production project. When `MEDLINER_ONBOARDING_REQUIRED=1`, the repository gate prevents
-non-promoted annotations from being accepted downstream; a hard UI/API access barrier would
-require a custom proxy/frontend or a separate production instance.
+production project. Onboarding promotion is an operational record, not a hard UI/API access
+barrier; a hard barrier would require a custom proxy/frontend or a separate production instance.
 
 ## Group annotation sessions (e.g. a presentation)
 
@@ -118,7 +115,7 @@ cat > .envrc.local <<'EOF'
 export MEDLINER_LABEL_STUDIO_EXPORT="$PWD/data/label-studio/indications-2026-01.json"
 EOF
 direnv allow
-make train
+make export
 ```
 
 ## Import task JSON
@@ -194,7 +191,8 @@ override them). Raw model output does not obey the annotation guide, so the same
 applies is applied here: leading hedges are trimmed (`recent myocardial infarction` →
 `myocardial infarction`, guide rule 2), population descriptors are dropped (`patients`, `women of
 childbearing potential`, rule 3), overlapping spans collapse to the longest (rule 7), and spans
-wider than the model's `max_width` are dropped because MedliNER refuses to convert them later.
+wider than the model's `max_width` are dropped because GLiNER never enumerates a span candidate
+that wide.
 
 `PRELABEL=1` also turns on the project's `show_collab_predictions`, which is what puts the spans
 in front of the annotator; without it Label Studio stores the predictions and never shows them.
@@ -203,9 +201,8 @@ Opening a pre-labeled task pre-fills the draft annotation with the model's spans
 **They are suggestions.** Accept, correct, or delete each one, and add what the model missed —
 an untouched prediction is not gold. MedliNER's adapter reads only the completed `annotations`
 array and never `predictions`, so a task nobody submitted contributes nothing. Each submitted
-span carries an `origin` (`prediction`, `prediction-changed`, or `manual`) into the normalized
-dataset, and `origin_counts` in the dataset manifest reports how much of the result was accepted
-untouched; see `docs/ADJUDICATION.md`.
+span carries an `origin` (`prediction`, `prediction-changed`, or `manual`) in the export, so an
+untouched model span stays distinguishable from one a human drew or corrected.
 
 Re-running `uv run medliner prelabel` is cheap: suggestions are cached per text under
 `$MEDLINER_WORKDIR/label-studio/prelabel-cache.json`, keyed by model, threshold, labels, window
@@ -218,13 +215,12 @@ Before trusting suggestions in front of a room, score them against the gold benc
 uv run medliner prelabel --score-gold
 ```
 
-That reports strict and boundary-only F1 over the same `ner_gold.json` cases the trained model is
-evaluated on. Pre-labels materially worse than the annotators' own first guess cost time rather
-than saving it.
+That reports strict and boundary-only F1 over the ingested `ner_gold.json` cases. Pre-labels
+materially worse than the annotators' own first guess cost time rather than saving it.
 
 ## Export details worth knowing
 
-The raw export is retained as provenance. MedliNER converts it to its canonical schema and validates offsets, labels, overlap, task metadata, review status, and text slices before training. JSONL is also accepted by MedliNER when one task object is stored per line.
+The raw export is retained as provenance. MedliNER converts it to its canonical schema and validates offsets, labels, overlap, task metadata, review status, and text slices. JSONL is also accepted by MedliNER when one task object is stored per line.
 
 Two export details are worth knowing before the first review round:
 

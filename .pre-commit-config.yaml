@@ -1,0 +1,20 @@
+# Fast, auto-fixing checks only; committing must stay cheap. The pytest suite runs in CI,
+# not here. `rev` below must match the ruff pin resolved in uv.lock, which CI reads via
+# `version-file` — keep all three in sync.
+default_install_hook_types: [pre-commit]
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.3
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+  - repo: local
+    hooks:
+      # Catches a pyproject.toml edit that was never relocked.
+      - id: uv-lock-check
+        name: uv-lock-check
+        entry: uv lock --check
+        language: system
+        files: ^(pyproject\.toml|uv\.lock)$
+        pass_filenames: false

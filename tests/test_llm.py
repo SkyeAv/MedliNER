@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from typing import ClassVar
 
 import pytest
 
@@ -15,8 +16,8 @@ class StubHandler(BaseHTTPRequestHandler):
     """Minimal /health + /v1/chat/completions stub; records the last request body."""
 
     reply_content = "shortened text"
-    reply_reasoning: str | None = None
-    last_body: dict = {}
+    reply_reasoning: ClassVar[str | None] = None
+    last_body: ClassVar[dict] = {}
     request_count = 0
 
     def log_message(self, *_args):  # keep the test output quiet

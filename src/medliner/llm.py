@@ -78,8 +78,7 @@ def cache_store(cache: str | Path, text: str, *, max_words: int, reply: str) -> 
                 ")"
             )
             connection.execute(
-                "INSERT OR REPLACE INTO rewrites (key, reply) VALUES (?, ?)",
-                (_cache_key(text, max_words), reply),
+                "INSERT OR REPLACE INTO rewrites (key, reply) VALUES (?, ?)", (_cache_key(text, max_words), reply)
             )
     except (sqlite3.Error, OSError):
         pass
@@ -104,11 +103,7 @@ def health(url: str | None = None, *, timeout: float = 2.0) -> bool:
 
 
 def chat(
-    messages: list[dict[str, str]],
-    *,
-    url: str | None = None,
-    max_tokens: int = 512,
-    timeout: float = 120.0,
+    messages: list[dict[str, str]], *, url: str | None = None, max_tokens: int = 512, timeout: float = 120.0
 ) -> str:
     """One chat completion with reasoning disabled; falls back to ``reasoning_content``.
 
@@ -118,11 +113,7 @@ def chat(
     request = urllib.request.Request(
         f"{llm_url(url)}/v1/chat/completions",
         data=json.dumps(
-            {
-                "messages": messages,
-                "max_tokens": max_tokens,
-                "chat_template_kwargs": {"enable_thinking": False},
-            }
+            {"messages": messages, "max_tokens": max_tokens, "chat_template_kwargs": {"enable_thinking": False}}
         ).encode(),
         headers={"Content-Type": "application/json"},
     )
@@ -141,12 +132,7 @@ def chat(
 
 
 def shorten_text(
-    text: str,
-    *,
-    max_words: int,
-    url: str | None = None,
-    max_tokens: int = 2048,
-    cache: str | Path | None = None,
+    text: str, *, max_words: int, url: str | None = None, max_tokens: int = 2048, cache: str | Path | None = None
 ) -> tuple[str, bool]:
     """Shorten ``text`` to at most ``max_words`` words, preserving entity mentions.
 

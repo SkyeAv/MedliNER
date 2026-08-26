@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Both syncing jobs install this EXACT set, so they share one warm uv cache instead of
+  # racing to save mutually-useless ones. See the `ci` group in pyproject.toml.
+  SYNC_ARGS: --no-default-groups --group ci
+
+jobs:
+  python-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      # Ruff runs standalone: a full `uv sync` in front of it is pure overhead. `version-file`
+      # reads the resolved pin out of uv.lock — the same version .pre-commit-config.yaml pins,
+      # so local and CI cannot drift.
+      - name: Ruff lint
+        uses: astral-sh/ruff-action@v4.1.0
+        with:
+          version-file: uv.lock
+          args: check --output-format=github
+      - name: Ruff format check
+        uses: astral-sh/ruff-action@v4.1.0
+        with:
+          version-file: uv.lock
+          args: format --check
+
+  python-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.0
+        with:
+          python-version: "3.13"
+          enable-cache: true
+          # Without this the saved cache carries both zipped and unzipped wheels, which matters
+          # a lot with the CUDA torch wheels.
+          prune-cache: true
+      - name: Sync dependencies
+        run: uv sync --frozen ${{ env.SYNC_ARGS }}
+      - name: Run tests
+        run: uv run pytest

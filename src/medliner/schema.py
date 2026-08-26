@@ -1,7 +1,7 @@
 """Canonical MedliNER contracts.
 
 Label Studio is an input UI. These Pydantic models are the stable, reviewable contract used
-by normalization, splitting, evaluation, and packaging.
+by normalization, pre-labeling, and benchmark scoring.
 """
 
 from __future__ import annotations
@@ -162,9 +162,10 @@ class Example(BaseModel):
                 raise ValueError(f"overlapping annotations are not allowed: {previous.text!r} / {annotation.text!r}")
             seen.add(key)
             previous = annotation
-        if self.annotation_status in {AnnotationStatus.REVIEWED, AnnotationStatus.ADJUDICATED}:
-            if any(annotation.provenance == "model_suggestion" for annotation in self.annotations):
-                raise ValueError("model suggestions must be accepted or replaced by a human before review")
+        if self.annotation_status in {AnnotationStatus.REVIEWED, AnnotationStatus.ADJUDICATED} and any(
+            annotation.provenance == "model_suggestion" for annotation in self.annotations
+        ):
+            raise ValueError("model suggestions must be accepted or replaced by a human before review")
         return self
 
     @model_validator(mode="after")
@@ -189,51 +190,21 @@ class Example(BaseModel):
         return hashlib.sha256(self.canonical_json().encode("utf-8")).hexdigest()
 
 
-class DatasetManifest(BaseModel):
-    schema_version: str = "medliner.dataset.v1"
-    dataset_id: str
-    input_export_hash: str
-    example_count: int = Field(ge=0)
-    label_counts: dict[str, int] = Field(default_factory=dict)
-    task_counts: dict[str, int] = Field(default_factory=dict)
-    # How much of this dataset is an unmodified model suggestion a human merely submitted. The
-    # central risk of pre-labeling, and invisible without counting it here.
-    origin_counts: dict[str, int] = Field(default_factory=dict)
-    # Annotation provenance mix, so a dataset's synthetic share is visible in the artifact itself
-    # instead of only in the pipeline that produced it. Optional for manifests written before it.
-    provenance_counts: dict[str, int] = Field(default_factory=dict)
-    split_hash: str | None = None
-    annotation_policy_version: str = "medliner.policy.v1"
-
-
-class SplitManifest(BaseModel):
-    schema_version: str = "medliner.splits.v1"
-    seed: int
-    ratios: dict[str, float]
-    group_count: int
-    example_count: int
-    example_ids: dict[str, list[str]]
-    held_out_ids: list[str] = Field(default_factory=list)
-    split_hash: str
-
-
 __all__ = [
     "ALLOWED_LABELS",
-    "canonical_label",
     "ALLOWED_TASKS",
-    "Annotation",
-    "AnnotationStatus",
-    "DatasetManifest",
-    "EntityLabel",
-    "Example",
     "HUMAN_PROVENANCE_VALUES",
     "PROVENANCE_VALUES",
-    "Provenance",
     "SCHEMA_VERSION",
     "SPAN_ORIGINS",
     "SYNTHETIC_SOURCE_FAMILY",
+    "Annotation",
+    "AnnotationStatus",
+    "EntityLabel",
+    "Example",
+    "Provenance",
     "SourceMetadata",
     "SpanOrigin",
-    "SplitManifest",
     "TaskKind",
+    "canonical_label",
 ]
