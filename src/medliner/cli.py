@@ -6,9 +6,6 @@ The pipeline runs in two phases, each a subcommand (see the Makefile wrappers):
   suggestions in one go (``ingest``, ``candidates``, ``prelabel``, and the opt-in
   ``shorten`` remain available as individual stages);
 - Label Studio: ``label-studio``/``label-studio-stop`` manage the podman annotation server;
-  the optional Onboarding project is provisioned by ``onboarding``, which assigns quiz
-  attempts to every annotator account at once (presentation mode), and
-  ``onboarding-promote`` exports, scores, and promotes every passing annotator in one go;
   ``label-studio-export`` downloads the reviewed annotations from the running server.
 
 Configuration comes from the ``MEDLINER_*`` environment variables, with flags overriding
@@ -47,27 +44,11 @@ from .label_studio_server import (
     DEFAULT_IMAGE,
     DEFAULT_PORT,
     DEFAULT_PROJECT_TITLE,
-    ONBOARDING_PROJECT_TITLE,
     WARMUP_PROJECT_TITLE,
     export_project,
     provision,
     stop_container,
 )
-from .onboarding import DEFAULT_CONFIG_PATH as ONBOARDING_CONFIG_PATH
-from .onboarding import (
-    OnboardingError,
-    build_onboarding_tasks,
-    build_test_bank,
-    evaluate_attempt,
-    read_attempts,
-    start_attempt,
-    versioned_bank_path,
-    write_current_bank_pointer,
-    write_report,
-    write_test_bank,
-)
-from .onboarding import load_config as load_onboarding_config
-from .onboarding import promote as promote_onboarding_user
 
 
 def workdir() -> Path:
@@ -605,106 +586,6 @@ def cmd_prepare(_args: argparse.Namespace) -> None:
     print(f"prepare: import file with suggestions -> {output}")
 
 
-def _onboarding_context() -> tuple[Any, Any, Path]:
-    """Load the current versioned onboarding bank, creating its private sidecar if needed."""
-    from .benchmark import benchmark_path
-
-    config_path = Path(os.environ.get("MEDLINER_ONBOARDING_CONFIG", str(repo_root() / ONBOARDING_CONFIG_PATH)))
-    config = load_onboarding_config(config_path)
-    gold = benchmark_path()
-    if not gold.exists():
-        raise FileNotFoundError(f"gold benchmark not found: {gold} (check MEDLINER_BENCHMARK; run ingest if needed)")
-    manifest = build_test_bank(gold, config)
-    bank_path = versioned_bank_path(workdir(), manifest)
-    if not bank_path.exists():
-        write_test_bank(manifest, bank_path)
-    write_current_bank_pointer(workdir(), manifest)
-    return config, manifest, bank_path
-
-
-def _label_studio_credentials() -> dict[str, Any]:
-    return {
-        "username": os.environ.get("MEDLINER_LABEL_STUDIO_USERNAME", "medliner@localhost"),
-        "password": os.environ.get("MEDLINER_LABEL_STUDIO_PASSWORD", "medliner-local"),
-        "token": os.environ.get("MEDLINER_LABEL_STUDIO_TOKEN") or None,
-    }
-
-
-def _onboarding_import_path(manifest: Any) -> Path:
-    return workdir() / "onboarding" / f"import-{manifest.test_bank_hash}.json"
-
-
-def cmd_onboarding(args: argparse.Namespace) -> None:
-    """Provision the Onboarding project and assign quiz attempts to every account at once."""
-    config, manifest, _bank_path = _onboarding_context()
-    import_path = _onboarding_import_path(manifest)
-    import_was_missing = not import_path.exists()
-    if import_was_missing or args.reimport:
-        write_import_file(build_onboarding_tasks(manifest), import_path)
-    raw = os.environ.get("MEDLINER_LABEL_STUDIO_ANNOTATORS")
-    annotator_values = [item.strip() for item in raw.split(",") if item.strip()] if raw else None
-    result = provision(
-        import_file=import_path,
-        label_config_path=repo_root() / "configs" / "label_studio_ner.xml",
-        port=int(os.environ.get("MEDLINER_LABEL_STUDIO_PORT", str(DEFAULT_PORT))),
-        image=os.environ.get("MEDLINER_LABEL_STUDIO_IMAGE", DEFAULT_IMAGE),
-        data_dir=workdir() / "label-studio" / "server-data",
-        project_title=config.project_title or ONBOARDING_PROJECT_TITLE,
-        publish_host=os.environ.get("MEDLINER_LABEL_STUDIO_HOST", "127.0.0.1"),
-        annotators=_annotator_pairs(annotator_values),
-        reimport=args.reimport,
-        **_label_studio_credentials(),
-    )
-    if import_was_missing and result.get("existing_tasks", 0) and not args.reimport:
-        raise OnboardingError(
-            "a new onboarding bank was prepared but the project already has tasks; "
-            "rerun with --reimport to replace the old bank"
-        )
-    admin = os.environ.get("MEDLINER_LABEL_STUDIO_USERNAME", "medliner@localhost")
-    usernames = [name for name in result["usernames"] if name != admin]
-    for username in usernames:
-        attempt = start_attempt(workdir(), manifest, config, username)
-        print(f"onboarding: {username} -> tasks {', '.join(attempt.selected_task_ids)}")
-    print(
-        f"onboarding: {result['tasks_in_project']} answer-free tasks at {result['url']} "
-        f"for {len(usernames)} annotator(s) (project {config.project_title}; bank {manifest.test_bank_hash})"
-    )
-    print(f"onboarding: private bank -> {_bank_path}")
-
-
-def cmd_onboarding_promote(_args: argparse.Namespace) -> None:
-    """Export the Onboarding project, score every attempt, and promote everyone passing."""
-    config, manifest, _bank_path = _onboarding_context()
-    export_path = Path(os.environ.get("MEDLINER_ONBOARDING_EXPORT") or str(workdir() / "onboarding" / "export.json"))
-    result = export_project(
-        output_path=export_path,
-        port=int(os.environ.get("MEDLINER_LABEL_STUDIO_PORT", str(DEFAULT_PORT))),
-        project_title=config.project_title or ONBOARDING_PROJECT_TITLE,
-        **_label_studio_credentials(),
-    )
-    print(f"onboarding-export: {result['tasks_annotated']}/{result['tasks_exported']} annotated tasks -> {export_path}")
-    attempts = [
-        item
-        for item in read_attempts(workdir())
-        if item.config_hash == manifest.config_hash and item.test_bank_hash == manifest.test_bank_hash
-    ]
-    if not attempts:
-        raise OnboardingError("no onboarding attempts recorded; run 'make onboarding' first")
-    passed: list[Any] = []
-    for attempt in attempts:
-        report = evaluate_attempt(export_path, workdir(), manifest, config, attempt)
-        report_path = write_report(report, workdir())
-        score = "incomplete" if report.score is None else f"{report.correct_tasks}/{report.total_tasks}"
-        print(f"onboarding: {report.username}: {report.status} {score} -> {report_path}")
-        if report.status == "passed":
-            passed.append(report)
-    if not passed:
-        raise OnboardingError("no annotator has a passing attempt yet; nothing promoted")
-    for report in sorted(passed, key=lambda item: item.username):
-        record = promote_onboarding_user(workdir(), report, manifest)
-        print(f"onboarding: promoted {record.username} for production (attempt {record.attempt_id})")
-
-
 def cmd_label_studio(args: argparse.Namespace) -> None:
     input_path = raw_candidates_path(args.input)
     prelabel_version: str | None = None
@@ -895,17 +776,6 @@ def build_parser() -> argparse.ArgumentParser:
     export = sub.add_parser("label-studio-export", help="download the reviewed annotations from the running server")
     export.add_argument("--output", help="export destination (default: $MEDLINER_LABEL_STUDIO_EXPORT)")
     export.set_defaults(func=cmd_label_studio_export)
-
-    onboarding = sub.add_parser(
-        "onboarding", help="provision the Onboarding project and assign quiz attempts to every annotator account"
-    )
-    onboarding.add_argument("--reimport", action="store_true", help="replace the Onboarding project tasks")
-    onboarding.set_defaults(func=cmd_onboarding)
-
-    onboarding_promote = sub.add_parser(
-        "onboarding-promote", help="export the Onboarding project, score every attempt, promote everyone passing"
-    )
-    onboarding_promote.set_defaults(func=cmd_onboarding_promote)
 
     stop = sub.add_parser("label-studio-stop", help="remove the Label Studio container (annotations survive)")
     stop.set_defaults(func=cmd_label_studio_stop)

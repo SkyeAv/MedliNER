@@ -41,40 +41,6 @@ Behavior notes:
   Label Studio ≥ 1.23, which is why the default path uses session login.)
 - Stop the server with `make stop` (removes the container, keeps the data dir).
 
-## Optional annotator onboarding (presentation mode)
-
-The repository ships a separate `Onboarding` project on the same local server for qualifying
-annotators during a live session — for example, onboarding everyone at once during a
-presentation. It is fully optional; production training runs fine without it.
-
-The project contains ten answer-free benchmark tasks; the gold spans are kept in a versioned
-sidecar under `$MEDLINER_WORKDIR/onboarding/`. Each annotator account gets a deterministic
-four-task attempt. At least three of four tasks must be exactly correct (character boundaries and
-label included) before promotion.
-
-Two commands cover the whole flow — nobody is ever named on the command line:
-
-```bash
-make setup
-export MEDLINER_LABEL_STUDIO_ANNOTATORS="alice:pw-a,bob:pw-b"
-make onboarding            # provisions the project and assigns a quiz to EVERY account at once
-# everyone annotates their four assigned tasks in the Onboarding project
-make onboarding-promote    # exports, scores every attempt, promotes everyone passing (≥3/4)
-```
-
-Rerun `make onboarding` for another round; each round selects a new four-task subset per user from
-the ten-case bank. After promotion, run the unchanged production flow (`make annotate`,
-`make export`).
-
-The test-bank and attempt files include benchmark/config hashes, so changing the benchmark starts
-a new onboarding version and old passes do not unlock it. Reports are append-only and stay on disk
-as the operational record of who passed.
-
-**Community Edition limitation:** CE does not provide per-user project visibility or task
-assignment. A user who already has access to the shared CE instance may technically open the
-production project. Onboarding promotion is an operational record, not a hard UI/API access
-barrier; a hard barrier would require a custom proxy/frontend or a separate production instance.
-
 ## Group annotation sessions (e.g. a presentation)
 
 Label Studio Community Edition has **no limits on users, annotators, or tasks**, but it has
@@ -92,15 +58,42 @@ on the shared instance sees every project. The managed flow supports a group ses
    queue order. For a short session either assign each person a slice of the task list, or
    rely on the natural staggering of the sequential queue — both work with this pipeline
    because exports keep per-annotation authorship.
-4. **Use onboarding** with `make onboarding` when annotator qualification matters: it assigns
-   everyone their quiz at once and `make onboarding-promote` records each annotator's score and
-   promotes the passing ones. `uv run medliner label-studio --warmup` remains available as an
-   informal demo; its gold spans are intentionally visible to the presenter and it is not a
-   qualification gate.
+4. **Warm up the room** with `uv run medliner label-studio --warmup` — an informal demo whose
+   gold spans are intentionally visible to the presenter.
 5. **Speed up labeling** with the hotkey baked into `configs/label_studio_ner.xml`:
    `1` = DiseaseOrPhenotypicFeature after selecting a span. The same config states the whole
    task on screen — the span scope, the three mechanical steps, and what not to highlight — so
    a subject-matter expert who has never opened Label Studio can start from the first task.
+6. **Reach annotators off the LAN** with `make tunnel`, which runs `cloudflared` as an
+   account-less *quick tunnel* (no Cloudflare account, token, or DNS record) in the detached tmux
+   session `medliner-tunnel`, forwards it to the Label Studio port on loopback, and prints the
+   random `https://<slug>.trycloudflare.com` URL to share. `make tunnel-stop` ends the tunnel and
+   the URL stops working.
+
+Notes on `make tunnel`:
+
+- **The URL is public on the internet and signup stays open**: the managed container sets only
+  `LABEL_STUDIO_USERNAME`/`LABEL_STUDIO_PASSWORD`, so anyone who finds the URL can register an
+  account and then see every project. Pre-create the accounts you want
+  (`MEDLINER_LABEL_STUDIO_ANNOTATORS`), replace the default `MEDLINER_LABEL_STUDIO_PASSWORD`,
+  share the URL only with the room, and stop the tunnel as soon as the session ends.
+- **`make stop` does not stop the tunnel**: the server goes away but the public URL keeps
+  resolving (502 until you start the server again, and then it serves it once more on the URL
+  people already have). Run `make tunnel-stop` as well.
+- **Needs `cloudflared` and `tmux`** on `PATH`; the target fails with an install hint otherwise.
+- **The slug changes on every start**, so re-share the URL after each `make tunnel-stop`. While a
+  tunnel is up, `make tunnel` is idempotent: it reprints the current URL instead of opening a
+  second tunnel, and it refuses to guess if the session is serving a different origin.
+- **Order does not matter**: `make tunnel` before `make annotate` is fine — the URL answers 502
+  until the server is healthy. `MEDLINER_LABEL_STUDIO_HOST` can stay `127.0.0.1`; a wildcard bind
+  (`0.0.0.0`, `::`) is normalized to loopback for the tunnel origin.
+- **Give it a few seconds** after the URL prints, and do not trust a failure to load *from this
+  machine*: a fresh `*.trycloudflare.com` hostname has to propagate, and some resolvers (a
+  corporate DNS, an IPv6-only answer) never return it. Verify from another device or network; if
+  it fails there too, `data/tunnel/cloudflared.log` shows whether the connector registered
+  (`Registered tunnel connection`).
+- **No uptime guarantee**: quick tunnels are a Cloudflare experimentation feature, so they suit a
+  session-length demo rather than a standing deployment.
 
 ## Export
 
@@ -158,6 +151,13 @@ Label Studio renders a `$var` it cannot resolve as the literal string `$shortene
 `data.ai_shortened` boolean accompanies the note as a filterable Data Manager column. Because
 an import file predating these keys would display them literally, `medliner` rebuilds any
 import file whose manifest records an older `generator_version` instead of reusing it.
+
+Dailymed-sourced tasks additionally carry `section` (the LOINC section code) and
+`source_uri` (a DailyMed URL whose `#<LOINC>` fragment jumps straight to the source
+section). The labeling config (`configs/label_studio_ner.xml`) renders these as a
+`dailymed: $source_document_id` header and a clickable **Open source document** link so
+labelers can open the exact DailyMed section for the task at hand. FAERS tasks carry a
+`source_record_id` plus a `source_uri` pointing at the FAERS data download.
 
 ## Alternative: run Label Studio yourself
 

@@ -25,7 +25,6 @@ DEFAULT_CONTAINER = "medliner-label-studio"
 DEFAULT_IMAGE = "docker.io/heartexlabs/label-studio:latest"
 DEFAULT_PORT = 9030
 DEFAULT_PROJECT_TITLE = "MedliNER"
-ONBOARDING_PROJECT_TITLE = "Onboarding"
 WARMUP_PROJECT_TITLE = "MedliNER — Warm-up"
 HEALTH_TIMEOUT_S = 300.0
 
@@ -199,17 +198,16 @@ class LabelStudioClient:
         return json.loads(body) if body.strip() else {}
 
     def ensure_project(self, title: str, label_config: str) -> int:
-        """Return the project id, creating or updating it to carry ``label_config``.
+        """Return the project id, creating the project with the labeling config when absent.
 
-        The config is not create-only: annotator instructions live in it, and a project created
-        by an earlier run would otherwise keep showing the old screen forever. Editing it only
-        adds views and styles — no label is removed — so Label Studio's check that a config
-        change cannot orphan existing annotations does not fire.
+        An existing project keeps its tasks and annotations; its labeling config is
+        updated in place when it differs from ``label_config``, so config edits reach a
+        live project without a re-import.
         """
         existing = self.find_project(title)
         if existing is not None:
-            current = self.api("GET", f"/api/projects/{existing}")
-            if current.get("label_config") != label_config:
+            current = self.api("GET", f"/api/projects/{existing}").get("label_config")
+            if current != label_config:
                 self.api("PATCH", f"/api/projects/{existing}", {"label_config": label_config})
             return existing
         created = self.api("POST", "/api/projects", {"title": title, "label_config": label_config})
@@ -381,7 +379,6 @@ __all__ = [
     "DEFAULT_IMAGE",
     "DEFAULT_PORT",
     "DEFAULT_PROJECT_TITLE",
-    "ONBOARDING_PROJECT_TITLE",
     "WARMUP_PROJECT_TITLE",
     "LabelStudioClient",
     "LabelStudioServerError",

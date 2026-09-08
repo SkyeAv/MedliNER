@@ -10,6 +10,10 @@ Allowed labels:
 
 "Targets" is the scope rule, and rule 1 below is where it bites: a passage routinely names several conditions the statement is *about* and several it names for another reason. Only the former get spans.
 
+## Source reference
+
+Each task header shows a `dailymed: <set-id>#<LOINC>` identifier and an **Open source document (DailyMed)** link. The link jumps to the exact section of the DailyMed drug label the task text came from (the `#<LOINC>` fragment selects the section, e.g. `34070-3` for contraindications, `34067-9` for indications & usage). Use it whenever the snippet alone is ambiguous. FAERS-sourced tasks link to the FAERS data download instead. Warm-up and onboarding tasks have no source link.
+
 ## Span policy
 
 1. **Annotate what the statement targets — all of it, and only it.** A statement can target more than one condition, and each target gets its own span; conditions the text names for another reason get none. In the contraindication text *"Contraindicated in patients with active liver disease or unexplained persistent transaminase elevations. Patients with a history of asthma should be monitored for bronchospasm."* the spans are `active liver disease` and `transaminase elevations` — `asthma` and `bronchospasm` belong to a monitoring instruction, not to the contraindication. The rule reads the same way for `indication` text: annotate what the drug is indicated *for*.

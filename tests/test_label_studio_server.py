@@ -100,11 +100,7 @@ class FakeLabelStudio:
         project = self.projects[project_id]
         if method == "GET":
             return FakeResponse(
-                {
-                    "id": project_id,
-                    "task_number": len(project["tasks"]),
-                    "label_config": project.get("label_config", ""),
-                }
+                {"id": project_id, "task_number": len(project["tasks"]), "label_config": project.get("label_config")}
             )
         if method == "POST" and path.endswith("/import"):
             project["tasks"] = json.loads(request.data.decode())
@@ -310,6 +306,58 @@ def test_provision_reuses_project_and_skips_existing_tasks(monkeypatch, podman, 
     )
     assert reimported["reimported"] is True
     assert fake.projects[7]["tasks"][0]["id"] == "t1"
+
+
+def test_provision_updates_a_stale_label_config_in_place(monkeypatch, podman, tmp_path):
+    """Config edits must reach a live project: PATCH the label_config, keep tasks/annotations."""
+    existing = {
+        "id": 7,
+        "title": server.DEFAULT_PROJECT_TITLE,
+        "label_config": "<View>old</View>",
+        "tasks": [{"id": "t0", "data": {}, "annotations": [{"result": []}]}],
+    }
+    fake = _install_api(monkeypatch, FakeLabelStudio(projects=[existing]))
+    import_file = tmp_path / "import.json"
+    import_file.write_text(json.dumps([{"id": "t1", "data": {"text": "x", "task": "indication"}}]), encoding="utf-8")
+    config = tmp_path / "config.xml"
+    config.write_text("<View/>", encoding="utf-8")
+
+    result = server.provision(
+        import_file=import_file,
+        label_config_path=config,
+        data_dir=tmp_path / "data",
+        username="u",
+        password="p",
+        token="test-token",
+    )
+    assert result["project_id"] == 7
+    assert fake.projects[7]["label_config"] == "<View/>"
+    assert fake.projects[7]["tasks"][0]["id"] == "t0"  # annotations survive the config update
+    assert ("PATCH", "/api/projects/7") in fake.requests
+
+
+def test_provision_leaves_a_matching_label_config_alone(monkeypatch, podman, tmp_path):
+    existing = {
+        "id": 7,
+        "title": server.DEFAULT_PROJECT_TITLE,
+        "label_config": "<View/>",
+        "tasks": [{"id": "t0", "data": {}}],
+    }
+    fake = _install_api(monkeypatch, FakeLabelStudio(projects=[existing]))
+    import_file = tmp_path / "import.json"
+    import_file.write_text(json.dumps([{"id": "t1", "data": {"text": "x"}}]), encoding="utf-8")
+    config = tmp_path / "config.xml"
+    config.write_text("<View/>", encoding="utf-8")
+
+    server.provision(
+        import_file=import_file,
+        label_config_path=config,
+        data_dir=tmp_path / "data",
+        username="u",
+        password="p",
+        token="test-token",
+    )
+    assert not any(method == "PATCH" for method, _ in fake.requests)
 
 
 def test_provision_surfaces_api_errors(monkeypatch, podman, tmp_path):
