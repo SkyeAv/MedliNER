@@ -104,7 +104,26 @@ class FakeLabelStudio:
             project["tasks"] = json.loads(request.data.decode())
             return FakeResponse({"task_count": len(project["tasks"])})
         if method == "PATCH":
-            project.update(json.loads(request.data.decode()))
+            payload = json.loads(request.data.decode())
+            # Mirror Label Studio's ProjectSerializer.validate_model_version: a changed
+            # model_version must match a live backend or an imported static prediction.
+            version = payload.get("model_version")
+            if version and project.get("model_version") != version:
+                known = {p.get("model_version") for task in project["tasks"] for p in task.get("predictions", [])}
+                if version not in known:
+                    body = json.dumps(
+                        {
+                            "status_code": 400,
+                            "detail": "Validation error",
+                            "validation_errors": {
+                                "model_version": [
+                                    "Model version doesn't exist either as live model or as static predictions."
+                                ]
+                            },
+                        }
+                    ).encode()
+                    raise urllib.error.HTTPError(url, 400, "Bad Request", {}, io.BytesIO(body))
+            project.update(payload)
             return FakeResponse({"id": project_id})
         raise AssertionError(f"unexpected API call: {method} {path}")
 
@@ -387,7 +406,18 @@ def test_provision_turns_on_prediction_prefill_when_asked(monkeypatch, podman, t
     # so the annotator would still draw every span by hand.
     fake = _install_api(monkeypatch, FakeLabelStudio())
     import_file = tmp_path / "import.json"
-    import_file.write_text(json.dumps([{"id": "t1", "data": {"text": "x"}, "predictions": []}]), encoding="utf-8")
+    import_file.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "t1",
+                    "data": {"text": "x"},
+                    "predictions": [{"model_version": "gliner_large-v2.5@0.35", "score": 0.9, "result": []}],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
     config = tmp_path / "config.xml"
     config.write_text("<View/>", encoding="utf-8")
 
@@ -404,6 +434,10 @@ def test_provision_turns_on_prediction_prefill_when_asked(monkeypatch, podman, t
     assert project["show_collab_predictions"] is True
     assert project["model_version"] == "gliner_large-v2.5@0.35"
     assert result["prelabeled"] is True
+    # The prefill PATCH must follow the import: the server only accepts a model_version it can
+    # already see among the imported predictions (the fake PATCH above rejects it otherwise).
+    project_prefix = f"/api/projects/{result['project_id']}"
+    assert fake.requests.index(("POST", f"{project_prefix}/import")) < fake.requests.index(("PATCH", project_prefix))
 
 
 def test_provision_leaves_prefill_alone_for_a_plain_text_project(monkeypatch, podman, tmp_path):

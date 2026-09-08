@@ -211,7 +211,9 @@ class LabelStudioClient:
 
         Without ``show_collab_predictions`` Label Studio stores the predictions but never puts
         them in front of the annotator, so the whole point of pre-labeling is lost. ``model_version``
-        selects which prediction set to pre-fill from when a task carries more than one.
+        selects which prediction set to pre-fill from when a task carries more than one. Label Studio
+        validates ``model_version`` against the project's live ML backends and existing predictions,
+        so this must run *after* the predictions are imported (≥1.23 rejects the PATCH otherwise).
         """
         self.api(
             "PATCH", f"/api/projects/{project_id}", {"show_collab_predictions": True, "model_version": model_version}
@@ -281,8 +283,9 @@ def provision(
 
     ``annotators`` are ``(username, password)`` pairs ensured as additional accounts via
     ``POST /api/users``; existing usernames are skipped so provisioning stays idempotent.
-    ``prelabel_model_version`` turns on prediction pre-fill for the project when the import file
-    carries model suggestions.
+    ``prelabel_model_version`` turns on prediction pre-fill for the project once the import file
+    carries model suggestions; the import always happens first so the server-side validation sees
+    the imported prediction versions.
     """
     container = ensure_container(
         name=name,
@@ -297,11 +300,13 @@ def provision(
     wait_healthy(base_url)
     client = LabelStudioClient(base_url, token=token, username=username, password=password)
     project_id = client.ensure_project(project_title, Path(label_config_path).read_text(encoding="utf-8"))
-    if prelabel_model_version:
-        client.enable_prelabeling(project_id, prelabel_model_version)
     tasks = json.loads(Path(import_file).read_text(encoding="utf-8"))
     existing = client.project_task_count(project_id)
     imported = existing if existing and not reimport else client.import_tasks(project_id, tasks)
+    # Prefill is switched on after the import: Label Studio's project serializer rejects a
+    # model_version it cannot find among the project's live models or imported predictions.
+    if prelabel_model_version:
+        client.enable_prelabeling(project_id, prelabel_model_version)
     annotators_created = 0
     if annotators:
         known = {user.get("username") for user in client.list_users()}
