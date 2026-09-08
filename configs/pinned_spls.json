@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "pins": [
+    {
+      "setid": "2b2f3ff5-9d62-4ad2-8eac-1181e5911513",
+      "notes": ["supports aspergillosis", "supports fever"],
+      "source": "Gwênlyn DMs 2026-09-08"
+    },
+    {
+      "setid": "a0a54943-9ce4-4f3e-b681-a1a9144c16ce",
+      "notes": [
+        "supports blastomycosis",
+        "supports candidiasis",
+        "supports esophageal candidiasis",
+        "supports histoplasmosis",
+        "supports sporotrichosis",
+        "supports zygomycosis"
+      ],
+      "source": "Gwênlyn DMs 2026-09-08"
+    },
+    {
+      "setid": "02aadef1-390b-4270-b56d-33452eb89dde",
+      "notes": [
+        "supports Cryptococcal meningitis",
+        "supports Kala-Azar (aka visceral leishmaniasis)"
+      ],
+      "source": "Gwênlyn DMs 2026-09-08"
+    }
+  ],
+  "unattributed_notes": [
+    {
+      "note": "hematologic disorder is a clear misfire of my method",
+      "source": "Gwênlyn DMs 2026-09-08",
+      "comment": "no SPL URL in the DM; assign to a pin once clarified"
+    }
+  ]
+}

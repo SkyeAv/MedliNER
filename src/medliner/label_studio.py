@@ -110,6 +110,9 @@ def _source(task: dict[str, Any]) -> SourceMetadata:
         section=str(section) if section is not None else None,
         source_uri=str(source_uri) if source_uri is not None else None,
         source_hash=str(source_hash) if source_hash is not None else None,
+        # The invisible pin flag is provenance for finetuning, so it follows the task into the
+        # normalized example (SourceMetadata allows extras). Note text never enters task data.
+        pinned=bool(data.get("pinned", False)),
     )
 
 

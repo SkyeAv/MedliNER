@@ -29,12 +29,15 @@ from typing import Any
 from .candidates import (
     GENERATOR_VERSION,
     SHORTENED_NOTE,
+    PinFile,
+    apply_pins,
     build_import_tasks,
     build_warmup_tasks,
     hash_candidates_file,
     import_file_name,
     import_manifest,
     read_candidates,
+    read_pins,
     sample_tasks,
     stagger_tasks,
     write_import_file,
@@ -136,6 +139,32 @@ def raw_candidates_path(value: str | None = None) -> Path:
     return path
 
 
+DEFAULT_PIN_FILE = "configs/pinned_spls.json"
+
+
+def pin_file() -> Path | None:
+    """Resolve ``MEDLINER_PIN_FILE``; an empty value or a missing file disables pinning."""
+    raw = os.environ.get("MEDLINER_PIN_FILE", DEFAULT_PIN_FILE).strip()
+    if not raw:
+        return None
+    path = Path(raw)
+    return path if path.exists() else None
+
+
+def import_config(settings: SamplingSettings, pin_path: Path | None = None) -> str | None:
+    """The ``sampling=`` argument for :func:`import_file_name`.
+
+    The pin file's content hash is folded in alongside the sampling config so editing the
+    pins changes the import filename — without it, a pin edit would silently reuse the stale
+    import file built from the old pins. Used identically by ``run_candidates`` and
+    ``ensure_import_file``.
+    """
+    parts = [settings.config] if settings.config else []
+    if pin_path is not None:
+        parts.append(f"pins={hash_candidates_file(pin_path)[:8]}")
+    return ";".join(parts) or None
+
+
 def bundle_path(value: str | None = None) -> Path:
     raw = value or os.environ.get("MEDLINER_EXPORT_BUNDLE")
     if not raw:
@@ -146,16 +175,52 @@ def bundle_path(value: str | None = None) -> Path:
     return path
 
 
+def _pins_manifest(pins: PinFile, stats: dict[str, Any], pin_path: Path) -> dict[str, Any]:
+    """The manifest ``pins`` block — the only generated artifact where reviewer notes appear."""
+    by_setid = {pin.setid: pin for pin in pins.pins}
+    return {
+        "file": str(pin_path),
+        "matched": {
+            setid: {"task_count": stats["matched"][setid], "notes": by_setid[setid].notes}
+            for setid in sorted(stats["matched"])
+        },
+        "unmatched": stats["unmatched"],
+        "unattributed_notes": [note.model_dump(exclude_none=True) for note in pins.unattributed_notes],
+    }
+
+
 def run_candidates(input_path: Path) -> Path:
     """Validate/dedupe/sample raw candidates into the Label Studio import file; returns its path."""
     from .candidates import difficulty_score
 
     settings = sampling_settings()
+    pin_path = pin_file()
+    pins = read_pins(pin_path) if pin_path is not None else None
     tasks = build_import_tasks(read_candidates(input_path))
     if not tasks:
         raise ValueError(f"no import tasks produced from {input_path}")
+    # Pinned SPLs bypass every sampling cap and are prepended ahead of the staggered sample,
+    # so they sit at the top of the Label Studio queue. This holds identically when sampling
+    # is disabled: the pins are still flagged and moved to the front.
+    pins_manifest: dict[str, Any] | None = None
+    pinned_tasks: list[dict[str, Any]] = []
+    if pins is not None:
+        stats = apply_pins(tasks, pins.pins)
+        pinned_tasks = [task for task in tasks if task["data"]["pinned"]]
+        tasks = [task for task in tasks if not task["data"]["pinned"]]
+        pins_manifest = _pins_manifest(pins, stats, pin_path)
+        if stats["unmatched"]:
+            print(
+                "candidates: WARNING: pinned setids matched no tasks in the candidate pool "
+                f"(check for typos in {pin_path}): {', '.join(stats['unmatched'])}"
+            )
+        if pinned_tasks:
+            print(
+                f"candidates: {len(pinned_tasks)} tasks from {len(stats['matched'])} pinned SPLs "
+                "forced to the front of the queue"
+            )
     sampling_manifest: dict[str, Any] | None = None
-    if settings.targets:
+    if settings.targets and tasks:
         pool_difficulty = [difficulty_score(task["data"]["text"]) for task in tasks]
         sampling_manifest = {
             "targets": settings.targets,
@@ -198,8 +263,19 @@ def run_candidates(input_path: Path) -> Path:
             )
         selected_difficulty = [difficulty_score(task["data"]["text"]) for task in tasks]
         sampling_manifest["selected_difficulty_mean"] = round(sum(selected_difficulty) / len(selected_difficulty), 3)
+    tasks = pinned_tasks + tasks
+    if not tasks:
+        raise ValueError(
+            f"sampling produced no tasks from {input_path} (targets {settings.targets}, max_words {settings.max_words})"
+        )
     manifest = import_manifest(tasks, input_path=input_path, sampling=sampling_manifest)
-    output = workdir() / "label-studio" / import_file_name(input_hash=manifest["input_hash"], sampling=settings.config)
+    if pins_manifest is not None:
+        manifest["pins"] = pins_manifest
+    output = (
+        workdir()
+        / "label-studio"
+        / import_file_name(input_hash=manifest["input_hash"], sampling=import_config(settings, pin_path))
+    )
     write_import_file(tasks, output)
     output.with_suffix(".manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     composition = ", ".join(f"{count} {name}" for name, count in manifest["task_counts"].items())
@@ -226,7 +302,9 @@ def ensure_import_file(input_path: Path) -> Path:
     expected = (
         workdir()
         / "label-studio"
-        / import_file_name(input_hash=hash_candidates_file(input_path), sampling=sampling_settings().config)
+        / import_file_name(
+            input_hash=hash_candidates_file(input_path), sampling=import_config(sampling_settings(), pin_file())
+        )
     )
     if expected.exists() and _import_generator_version(expected) == GENERATOR_VERSION:
         return expected

@@ -104,6 +104,46 @@ Behavior:
 - The manifest records a `sampling` block (targets, seed, caps, `edge_fraction`, pool counts,
   and pool-vs-selected mean difficulty) for auditability.
 
+## Pinned SPLs
+
+A small git-tracked pin file (default `configs/pinned_spls.json`, override with
+`MEDLINER_PIN_FILE`; an empty value or a missing file disables pinning) lists DailyMed SPL
+setids that must be reviewed first. Every candidate task whose SPL is pinned is
+**force-included** — it bypasses the per-task sampling targets and the `max_words` cap — and
+is **prepended ahead of the staggered sample**, so it sits at the top of the Label Studio
+queue. This holds identically when sampling is disabled: the pins are still flagged and moved
+to the front.
+
+```json
+{
+  "version": 1,
+  "pins": [
+    {
+      "setid": "2b2f3ff5-9d62-4ad2-8eac-1181e5911513",
+      "notes": ["supports aspergillosis", "supports fever"],
+      "source": "who reported it and when"
+    }
+  ],
+  "unattributed_notes": [
+    { "note": "a review comment with no SPL attached yet", "source": "...", "comment": "..." }
+  ]
+}
+```
+
+- Matching is on `source_document_id` up to the `#<LOINC-section>` suffix (real ids look like
+  `<setid>#34070-3`); bare setids match too.
+- **Notes never appear in Label Studio.** Tasks carry only an invisible `pinned: true/false`
+  flag (rendered nowhere; useful as a Data Manager filter column and as provenance in
+  exports). The notes live only in the pin file and in the import manifest's `pins` block —
+  an audit trail on disk, not in the labeling UI.
+- A pinned setid that matches no task in the pool prints a loud `WARNING` and is listed in the
+  manifest's `pins.unmatched` — a typo'd setid never fails silently.
+- The pin file's content hash is part of the import filename, so editing the pins always
+  rebuilds the import instead of silently reusing the old one.
+- To add a pin: append an entry to `pins` in `configs/pinned_spls.json` (setid plus the
+  reviewer's notes), commit it, and re-run `make prepare`. `unattributed_notes` holds review
+  comments whose SPL is not yet known; assign them to a pin once clarified.
+
 ## LLM shortening (sampled batch)
 
 `make prepare` shortens automatically as part of building the import file: after sampling, every sampled text over

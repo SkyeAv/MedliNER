@@ -510,3 +510,150 @@ def test_label_studio_without_prelabel_imports_plain_tasks(tmp_path, monkeypatch
     assert not Path(calls["import_file"]).name.endswith(".prelabeled.json")
     assert calls["prelabel_model_version"] is None
     capsys.readouterr()
+
+
+# --- pinned SPLs ----------------------------------------------------------------------------------
+
+PIN_FIXTURE = Path(__file__).parent / "fixtures" / "pinned_spls.json"
+PIN_SETID_1 = "11111111-2222-3333-4444-555555555555"
+PIN_SETID_2 = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+
+def _write_pinned_candidates(path: Path) -> None:
+    path.write_text(
+        "\n".join(
+            json.dumps(row)
+            for row in [
+                {
+                    "text": "Indicated for asthma.",
+                    "task": "indication",
+                    "source_family": "dailymed",
+                    "source_document_id": f"{PIN_SETID_1}#34067-9",
+                },
+                {
+                    "text": "Indicated for migraine.",
+                    "task": "indication",
+                    "source_family": "dailymed",
+                    "source_document_id": PIN_SETID_2,  # bare setid, no #<LOINC> suffix
+                },
+                {
+                    "text": "Indicated for hypertension.",
+                    "task": "indication",
+                    "source_family": "dailymed",
+                    "source_document_id": "bbbbbbbb-1111-2222-3333-444444444444#34067-9",
+                },
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def test_pin_file_env_parsing(tmp_path, monkeypatch):
+    monkeypatch.setenv("MEDLINER_PIN_FILE", "")
+    assert cli.pin_file() is None  # empty value disables pinning
+    monkeypatch.setenv("MEDLINER_PIN_FILE", str(tmp_path / "absent.json"))
+    assert cli.pin_file() is None  # a missing file disables pinning
+    monkeypatch.setenv("MEDLINER_PIN_FILE", str(PIN_FIXTURE))
+    assert cli.pin_file() == PIN_FIXTURE
+    monkeypatch.delenv("MEDLINER_PIN_FILE")
+    assert cli.pin_file() == Path("configs/pinned_spls.json")  # repo default, resolved from cwd
+
+
+def test_candidates_prepends_pins_and_records_them_in_the_manifest(tmp_path, monkeypatch, capsys):
+    raw = tmp_path / "candidates.ndjson"
+    _write_pinned_candidates(raw)
+    monkeypatch.setenv("MEDLINER_RAW_CANDIDATES", str(raw))
+    monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
+    monkeypatch.setenv("MEDLINER_PIN_FILE", str(PIN_FIXTURE))
+
+    assert cli.main(["candidates"]) == 0
+    out = capsys.readouterr().out
+    assert "forced to the front of the queue" in out
+    import_path = Path(out.split("->")[-1].strip())
+    tasks = json.loads(import_path.read_text(encoding="utf-8"))
+    assert [task["data"]["pinned"] for task in tasks[:2]] == [True, True]
+    assert all(task["data"]["pinned"] is False for task in tasks[2:])
+    manifest = json.loads(import_path.with_suffix(".manifest.json").read_text(encoding="utf-8"))
+    pins = manifest["pins"]
+    assert pins["file"] == str(PIN_FIXTURE)
+    assert pins["matched"][PIN_SETID_1] == {"task_count": 1, "notes": ["supports asthma"]}
+    assert pins["matched"][PIN_SETID_2]["notes"] == ["supports migraine", "supports tension headache"]
+    assert pins["unmatched"] == []
+    assert pins["unattributed_notes"][0]["note"] == "unplaced review comment"
+    # Notes live in the manifest only — never in the import file Label Studio reads.
+    blob = import_path.read_text(encoding="utf-8")
+    for note in ("supports asthma", "supports migraine", "supports tension headache", "unplaced review comment"):
+        assert note not in blob
+
+
+def test_candidates_warns_loudly_on_unmatched_pins(tmp_path, monkeypatch, capsys):
+    raw = tmp_path / "candidates.ndjson"
+    _write_pinned_candidates(raw)
+    pins_file = tmp_path / "pins.json"
+    pins_file.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "pins": [
+                    {"setid": PIN_SETID_1, "notes": ["supports asthma"]},
+                    {"setid": "99999999-8888-7777-6666-555555555555", "notes": ["typo'd setid"]},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MEDLINER_RAW_CANDIDATES", str(raw))
+    monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
+    monkeypatch.setenv("MEDLINER_PIN_FILE", str(pins_file))
+
+    assert cli.main(["candidates"]) == 0
+    out = capsys.readouterr().out
+    assert "WARNING" in out
+    assert "99999999-8888-7777-6666-555555555555" in out
+    import_path = Path(out.split("->")[-1].strip())
+    manifest = json.loads(import_path.with_suffix(".manifest.json").read_text(encoding="utf-8"))
+    assert manifest["pins"]["unmatched"] == ["99999999-8888-7777-6666-555555555555"]
+    assert list(manifest["pins"]["matched"]) == [PIN_SETID_1]
+
+
+def test_import_filename_tracks_the_pin_file_content(tmp_path, monkeypatch, capsys):
+    """Editing the pin file must change the import filename, or a stale import would be reused."""
+    raw = tmp_path / "candidates.ndjson"
+    _write_pinned_candidates(raw)
+    monkeypatch.setenv("MEDLINER_RAW_CANDIDATES", str(raw))
+    monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
+    monkeypatch.setenv("MEDLINER_SAMPLE_TASKS", "")  # isolate the pin hash from sampling config
+    pins_file = tmp_path / "pins.json"
+    pins_file.write_text(PIN_FIXTURE.read_text(encoding="utf-8"), encoding="utf-8")
+    monkeypatch.setenv("MEDLINER_PIN_FILE", str(pins_file))
+
+    assert cli.main(["candidates"]) == 0
+    first = Path(capsys.readouterr().out.split("->")[-1].strip())
+
+    payload = json.loads(pins_file.read_text(encoding="utf-8"))
+    payload["pins"][0]["notes"].append("supports COPD")
+    pins_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    assert cli.main(["candidates"]) == 0
+    second = Path(capsys.readouterr().out.split("->")[-1].strip())
+    assert first.name != second.name
+    # ensure_import_file computes the name the same way: the edited pins reuse, not rebuild.
+    assert cli.ensure_import_file(cli.raw_candidates_path()) == second
+    assert "sampled" not in capsys.readouterr().out
+
+
+def test_pins_are_flagged_and_frontmost_when_sampling_is_disabled(tmp_path, monkeypatch, capsys):
+    raw = tmp_path / "candidates.ndjson"
+    _write_pinned_candidates(raw)
+    monkeypatch.setenv("MEDLINER_RAW_CANDIDATES", str(raw))
+    monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
+    monkeypatch.setenv("MEDLINER_SAMPLE_TASKS", "")
+    monkeypatch.setenv("MEDLINER_PIN_FILE", str(PIN_FIXTURE))
+
+    assert cli.main(["candidates"]) == 0
+    out = capsys.readouterr().out
+    assert "sampled" not in out
+    tasks = json.loads(Path(out.split("->")[-1].strip()).read_text(encoding="utf-8"))
+    assert [task["data"]["pinned"] for task in tasks[:2]] == [True, True]
+    assert all(task["data"]["pinned"] is False for task in tasks[2:])

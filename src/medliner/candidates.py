@@ -115,6 +115,101 @@ def read_candidates(path: str | Path) -> list[CandidateText]:
     return candidates
 
 
+class PinnedSpl(BaseModel):
+    """One SPL forced to the front of the annotation queue, with the reviewer's notes.
+
+    Notes are an audit trail only: they live in the pin file and the import manifest, and
+    are never copied into task ``data``, so Label Studio cannot render them.
+    """
+
+    setid: str
+    notes: list[str] = []
+    source: str | None = None
+
+    @field_validator("setid")
+    @classmethod
+    def setid_is_an_spl_setid(cls, value: str) -> str:
+        value = value.strip().lower()
+        if not _SETID_PATTERN.match(value):
+            raise ValueError(f"pin setid must be a DailyMed SPL setid, got {value!r}")
+        return value
+
+    @field_validator("notes")
+    @classmethod
+    def notes_are_nonempty(cls, value: list[str]) -> list[str]:
+        if any(not note.strip() for note in value):
+            raise ValueError("pin notes must be non-empty strings")
+        return value
+
+
+class UnattributedNote(BaseModel):
+    """A reviewer note with no SPL attached yet, carried into the manifest until assigned."""
+
+    note: str
+    source: str | None = None
+    comment: str | None = None
+
+    @field_validator("note")
+    @classmethod
+    def note_is_nonempty(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("unattributed note must be non-empty")
+        return value
+
+
+class PinFile(BaseModel):
+    """Contents of ``configs/pinned_spls.json`` (or ``$MEDLINER_PIN_FILE``)."""
+
+    version: int = 1
+    pins: list[PinnedSpl] = []
+    unattributed_notes: list[UnattributedNote] = []
+
+
+def read_pins(path: str | Path) -> PinFile:
+    """Read a pin file, with entry-numbered errors in the :func:`read_candidates` style."""
+    path = Path(path)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise CandidateInputError(f"cannot read pin file {path}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise CandidateInputError(f"{path}: pin file must be a JSON object")
+    version = payload.get("version", 1)
+    if version != 1:
+        raise CandidateInputError(f"{path}: unsupported pin file version {version!r}; expected 1")
+    pins: list[PinnedSpl] = []
+    for index, entry in enumerate(payload.get("pins") or [], start=1):
+        try:
+            pins.append(PinnedSpl.model_validate(entry))
+        except ValidationError as exc:
+            raise CandidateInputError(f"invalid pin at line {index}: {exc}") from exc
+    unattributed: list[UnattributedNote] = []
+    for index, entry in enumerate(payload.get("unattributed_notes") or [], start=1):
+        try:
+            unattributed.append(UnattributedNote.model_validate(entry))
+        except ValidationError as exc:
+            raise CandidateInputError(f"invalid unattributed note at line {index}: {exc}") from exc
+    return PinFile(version=version, pins=pins, unattributed_notes=unattributed)
+
+
+def apply_pins(tasks: list[dict[str, Any]], pins: list[PinnedSpl]) -> dict[str, Any]:
+    """Flag every task whose SPL is pinned; returns match stats for the manifest/warnings.
+
+    Real DailyMed ``source_document_id`` values are ``<setid>#<LOINC-section>``, so matching
+    is on the id up to the first ``#``; bare setids match too. A match sets only the invisible
+    ``pinned`` flag — note text never enters task data. Unmatched setids are reported so a
+    typo'd pin cannot fail silently.
+    """
+    wanted = {pin.setid for pin in pins}
+    matched: Counter[str] = Counter()
+    for task in tasks:
+        setid = str(task["data"].get("source_document_id") or "").split("#", 1)[0].lower()
+        if setid in wanted:
+            task["data"]["pinned"] = True
+            matched[setid] += 1
+    return {"matched": {setid: matched[setid] for setid in sorted(matched)}, "unmatched": sorted(wanted - set(matched))}
+
+
 def hash_candidates_file(path: str | Path) -> str:
     digest = blake3()
     with Path(path).open("rb") as handle:
@@ -156,6 +251,9 @@ def build_import_tasks(
             # Display fields for the annotation screen. Both are always present: Label Studio
             # renders an absent "$var" as its literal name.
             "shortened_note": "",
+            # Invisible flag (rendered nowhere): whether this task's SPL is pinned to the
+            # front of the queue. Always present so the column is uniform in the Data Manager.
+            "pinned": False,
             "source_ref": source_reference(
                 family=candidate.source_family,
                 document_id=candidate.source_document_id,
@@ -484,6 +582,7 @@ def build_warmup_tasks(gold_path: str | Path, *, limit: int = 10) -> list[dict[s
                     "source_family": WARMUP_SOURCE_FAMILY,
                     "source_document_id": case_id,
                     "shortened_note": "",
+                    "pinned": False,
                     "source_ref": source_reference(family=WARMUP_SOURCE_FAMILY, document_id=case_id),
                     "generator_version": GENERATOR_VERSION,
                     "generated_at": stamp,
@@ -501,6 +600,10 @@ __all__ = [
     "WARMUP_SOURCE_FAMILY",
     "CandidateInputError",
     "CandidateText",
+    "PinFile",
+    "PinnedSpl",
+    "UnattributedNote",
+    "apply_pins",
     "build_import_tasks",
     "build_warmup_tasks",
     "difficulty_score",
@@ -508,6 +611,7 @@ __all__ = [
     "import_file_name",
     "import_manifest",
     "read_candidates",
+    "read_pins",
     "sample_tasks",
     "source_reference",
     "stagger_tasks",

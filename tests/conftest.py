@@ -24,3 +24,7 @@ def hermetic_medliner_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in tuple(os.environ):
         if name.startswith("MEDLINER_"):
             monkeypatch.delenv(name, raising=False)
+    # The default pin file is the repo's own ``configs/pinned_spls.json``; left enabled it
+    # would leak into every test's import filename and manifest, exactly the kind of ambient
+    # leak this fixture exists to prevent. Tests that exercise pins set the var themselves.
+    monkeypatch.setenv("MEDLINER_PIN_FILE", "")

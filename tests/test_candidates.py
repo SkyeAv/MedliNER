@@ -13,12 +13,15 @@ from medliner.candidates import (
     GENERATOR_VERSION,
     CandidateInputError,
     CandidateText,
+    PinnedSpl,
+    apply_pins,
     build_import_tasks,
     build_warmup_tasks,
     hash_candidates_file,
     import_file_name,
     import_manifest,
     read_candidates,
+    read_pins,
     sample_tasks,
     source_reference,
     stagger_tasks,
@@ -424,3 +427,142 @@ def test_source_reference_escapes_its_inputs():
     rendered = source_reference(family="dailymed", document_id='<script>"x"')
     assert "<script>" not in rendered
     assert "&lt;script&gt;" in rendered
+
+
+# --- pinned SPLs ----------------------------------------------------------------------------------
+
+PIN_FIXTURE = Path(__file__).parent / "fixtures" / "pinned_spls.json"
+PIN_SETID_1 = "11111111-2222-3333-4444-555555555555"
+PIN_SETID_2 = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+
+def test_read_pins_parses_the_fixture():
+    pins = read_pins(PIN_FIXTURE)
+    assert [pin.setid for pin in pins.pins] == [PIN_SETID_1, PIN_SETID_2]
+    assert pins.pins[0].notes == ["supports asthma"]
+    assert pins.pins[1].notes == ["supports migraine", "supports tension headache"]
+    assert pins.unattributed_notes[0].note == "unplaced review comment"
+
+
+def test_read_pins_reports_entry_numbers_and_validates_setids(tmp_path):
+    path = tmp_path / "pins.json"
+    path.write_text(json.dumps({"version": 1, "pins": [{"setid": "not-a-setid"}]}), encoding="utf-8")
+    with pytest.raises(CandidateInputError, match="invalid pin at line 1"):
+        read_pins(path)
+    path.write_text(json.dumps({"version": 1, "pins": [{"setid": PIN_SETID_1}, {"setid": "bad"}]}), encoding="utf-8")
+    with pytest.raises(CandidateInputError, match="invalid pin at line 2"):
+        read_pins(path)
+    path.write_text("not json", encoding="utf-8")
+    with pytest.raises(CandidateInputError, match="cannot read pin file"):
+        read_pins(path)
+    path.write_text(json.dumps({"version": 2, "pins": []}), encoding="utf-8")
+    with pytest.raises(CandidateInputError, match="unsupported pin file version"):
+        read_pins(path)
+    path.write_text(json.dumps({"version": 1, "unattributed_notes": [{"note": "  "}]}), encoding="utf-8")
+    with pytest.raises(CandidateInputError, match="invalid unattributed note at line 1"):
+        read_pins(path)
+
+
+def test_apply_pins_matches_loinc_suffixed_and_bare_setids():
+    pin = PinnedSpl(setid=PIN_SETID_1, notes=["supports asthma"])
+    tasks = build_import_tasks(
+        [
+            CandidateText(
+                text="Indicated for asthma.",
+                task="indication",
+                source_family="dailymed",
+                source_document_id=f"{PIN_SETID_1}#34067-9",
+            ),
+            CandidateText(
+                text="Contraindicated in asthma.",
+                task="contraindication",
+                source_family="dailymed",
+                source_document_id=PIN_SETID_1,  # bare setid, no #<LOINC> suffix
+            ),
+            CandidateText(
+                text="Indicated for migraine.",
+                task="indication",
+                source_family="dailymed",
+                source_document_id="doc-other",
+            ),
+        ]
+    )
+    stats = apply_pins(tasks, [pin])
+    assert stats == {"matched": {PIN_SETID_1: 2}, "unmatched": []}
+    flags = {task["data"]["text"]: task["data"]["pinned"] for task in tasks}
+    assert flags == {
+        "Indicated for asthma.": True,
+        "Contraindicated in asthma.": True,
+        "Indicated for migraine.": False,
+    }
+
+
+def test_apply_pins_reports_unmatched_setids():
+    tasks = build_import_tasks([CandidateText(text="Indicated for asthma.", task="indication")])
+    stats = apply_pins(tasks, read_pins(PIN_FIXTURE).pins)
+    assert stats["matched"] == {}
+    assert stats["unmatched"] == [PIN_SETID_1, PIN_SETID_2]
+
+
+def test_every_task_carries_the_pinned_default():
+    tasks = build_import_tasks([CandidateText(text="Indicated for asthma.", task="indication")])
+    assert all(task["data"]["pinned"] is False for task in tasks)
+    (warmup,) = build_warmup_tasks(
+        _gold(
+            [
+                {
+                    "id": "c1",
+                    "source": "dailymed",
+                    "text": "Contraindicated in asthma.",
+                    "mentions": [{"surface": "asthma", "type": "DiseaseOrPhenotypicFeature"}],
+                }
+            ]
+        )
+    )
+    assert warmup["data"]["pinned"] is False
+
+
+def test_pinned_tasks_bypass_sampling_caps_and_lead_the_order():
+    """Mirrors run_candidates: pins leave the pool before sample_tasks and are prepended after."""
+    long_text = " ".join(["word"] * 301)
+    rows = [
+        CandidateText(
+            text=long_text, task="indication", source_family="dailymed", source_document_id=f"{PIN_SETID_1}#34067-9"
+        )
+    ]
+    rows += [
+        CandidateText(
+            text=f"Indicated for condition number {index}.",
+            task="indication",
+            source_family="dailymed",
+            source_document_id=f"doc-{index}",
+        )
+        for index in range(4)
+    ]
+    tasks = build_import_tasks(rows)
+    apply_pins(tasks, [PinnedSpl(setid=PIN_SETID_1)])
+    pinned = [task for task in tasks if task["data"]["pinned"]]
+    rest = [task for task in tasks if not task["data"]["pinned"]]
+    final = pinned + sample_tasks(rest, {"indication": 1}, max_words=300)
+    assert final[0]["data"]["pinned"] is True
+    # The 301-word pinned text survives both the max_words cap and the per-task target of 1.
+    assert len(final[0]["data"]["text"].split()) == 301
+    assert len(final) == 2
+
+
+def test_note_text_never_enters_task_data():
+    pins = read_pins(PIN_FIXTURE)
+    tasks = build_import_tasks(
+        [
+            CandidateText(
+                text="Indicated for asthma.",
+                task="indication",
+                source_family="dailymed",
+                source_document_id=f"{PIN_SETID_1}#34067-9",
+            )
+        ]
+    )
+    apply_pins(tasks, pins.pins)
+    blob = json.dumps(tasks)
+    for note in ("supports asthma", "supports migraine", "supports tension headache", "unplaced review comment"):
+        assert note not in blob

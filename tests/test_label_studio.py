@@ -289,6 +289,15 @@ def test_an_unknown_span_origin_is_rejected():
         normalize_task(_task([_origin_span(start, end, "DiseaseOrPhenotypicFeature", "teleported")]))
 
 
+def test_pinned_flag_reaches_the_normalized_source_metadata():
+    """The invisible pin flag is finetuning provenance, so it survives export normalization."""
+    task = _task([])
+    task["data"]["pinned"] = True
+    assert normalize_task(task).source.pinned is True
+    # Tasks from before pinning (no flag in data) export it as False, never as note text.
+    assert normalize_task(_task([])).source.pinned is False
+
+
 def test_predictions_on_a_task_are_never_read_as_annotations():
     # The whole safety property of pre-labeling: only the completed `annotations` array counts.
     start = TEXT.index("pulmonary hypertension")

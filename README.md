@@ -48,6 +48,7 @@ The checked-in `.envrc` exports:
 | Variable | Purpose |
 | --- | --- |
 | `MEDLINER_RAW_CANDIDATES` | raw candidates NDJSON (default `data/label-studio/candidates.ndjson`; see [`docs/CANDIDATE_TASKS.md`](docs/CANDIDATE_TASKS.md)) |
+| `MEDLINER_PIN_FILE` | pinned SPL setids forced to the front of the annotation queue (default `configs/pinned_spls.json`; empty disables; see [`docs/CANDIDATE_TASKS.md`](docs/CANDIDATE_TASKS.md)) |
 | `MEDLINER_BENCHMARK` | NER gold benchmark (default `data/materialized/ingested/ner_gold.json`) |
 | `MEDLINER_EXPORT_BUNDLE` | older DAKP bundle layout, only for `uv run medliner ingest` |
 | `MEDLINER_LABEL_STUDIO_EXPORT` | destination for the reviewed production export downloaded by `make export` |

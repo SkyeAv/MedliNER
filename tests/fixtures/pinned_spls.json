@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "pins": [
+    {
+      "setid": "11111111-2222-3333-4444-555555555555",
+      "notes": ["supports asthma"],
+      "source": "test fixture"
+    },
+    {
+      "setid": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+      "notes": ["supports migraine", "supports tension headache"],
+      "source": "test fixture"
+    }
+  ],
+  "unattributed_notes": [
+    {
+      "note": "unplaced review comment",
+      "source": "test fixture",
+      "comment": "no SPL attached yet"
+    }
+  ]
+}
