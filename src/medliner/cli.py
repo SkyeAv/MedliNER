@@ -570,9 +570,12 @@ def cmd_prelabel(args: argparse.Namespace) -> None:
 
 def cmd_prepare(_args: argparse.Namespace) -> None:
     """Build the sampled import file and attach GLiNER suggestions in one go."""
-    import_file = run_candidates(raw_candidates_path())
+    raw_path = raw_candidates_path()
+    run_candidates(raw_path)
     options = _prelabel_options(argparse.Namespace(model=None, threshold=None))
-    output = run_prelabel(import_file, batch_size=8, force=False, **options)
+    # run_prelabel expects raw candidates: ensure_import_file resolves them to the file
+    # run_candidates just wrote; passing that import file here would re-parse it as NDJSON.
+    output = run_prelabel(raw_path, batch_size=8, force=False, **options)
     print(f"prepare: import file with suggestions -> {output}")
 
 

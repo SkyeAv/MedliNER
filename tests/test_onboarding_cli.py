@@ -108,6 +108,13 @@ def test_prepare_runs_candidates_and_prelabel(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cli, "raw_candidates_path", lambda value=None: tmp_path / "raw.ndjson")
     monkeypatch.setattr(cli, "run_candidates", lambda input_path: seen.append("candidates") or import_file)
-    monkeypatch.setattr(cli, "run_prelabel", lambda *args, **kwargs: seen.append("prelabel") or prelabeled)
+
+    def fake_prelabel(input_path, **_kwargs):
+        seen.append(input_path)
+        return prelabeled
+
+    monkeypatch.setattr(cli, "run_prelabel", fake_prelabel)
     assert cli.main(["prepare"]) == 0
-    assert seen == ["candidates", "prelabel"]
+    # run_prelabel must receive the raw candidates path: it resolves the built import file
+    # itself, and feeding it that import file would re-parse pretty-printed JSON as NDJSON.
+    assert seen == ["candidates", tmp_path / "raw.ndjson"]
