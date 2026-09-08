@@ -37,40 +37,6 @@ Behavior notes:
   Label Studio ≥ 1.23, which is why the default path uses session login.)
 - Stop the server with `make stop` (removes the container, keeps the data dir).
 
-## Optional annotator onboarding (presentation mode)
-
-The repository ships a separate `Onboarding` project on the same local server for qualifying
-annotators during a live session — for example, onboarding everyone at once during a
-presentation. It is fully optional; production training runs fine without it.
-
-The project contains ten answer-free benchmark tasks; the gold spans are kept in a versioned
-sidecar under `$MEDLINER_WORKDIR/onboarding/`. Each annotator account gets a deterministic
-four-task attempt. At least three of four tasks must be exactly correct (character boundaries and
-label included) before promotion.
-
-Two commands cover the whole flow — nobody is ever named on the command line:
-
-```bash
-make setup
-export MEDLINER_LABEL_STUDIO_ANNOTATORS="alice:pw-a,bob:pw-b"
-make onboarding            # provisions the project and assigns a quiz to EVERY account at once
-# everyone annotates their four assigned tasks in the Onboarding project
-make onboarding-promote    # exports, scores every attempt, promotes everyone passing (≥3/4)
-```
-
-Rerun `make onboarding` for another round; each round selects a new four-task subset per user from
-the ten-case bank. After promotion, run the unchanged production flow (`make annotate`,
-`make export`).
-
-The test-bank and attempt files include benchmark/config hashes, so changing the benchmark starts
-a new onboarding version and old passes do not unlock it. Reports are append-only and stay on disk
-as the operational record of who passed.
-
-**Community Edition limitation:** CE does not provide per-user project visibility or task
-assignment. A user who already has access to the shared CE instance may technically open the
-production project. Onboarding promotion is an operational record, not a hard UI/API access
-barrier; a hard barrier would require a custom proxy/frontend or a separate production instance.
-
 ## Group annotation sessions (e.g. a presentation)
 
 Label Studio Community Edition has **no limits on users, annotators, or tasks**, but it has
@@ -88,11 +54,8 @@ on the shared instance sees every project. The managed flow supports a group ses
    queue order. For a short session either assign each person a slice of the task list, or
    rely on the natural staggering of the sequential queue — both work with this pipeline
    because exports keep per-annotation authorship.
-4. **Use onboarding** with `make onboarding` when annotator qualification matters: it assigns
-   everyone their quiz at once and `make onboarding-promote` records each annotator's score and
-   promotes the passing ones. `uv run medliner label-studio --warmup` remains available as an
-   informal demo; its gold spans are intentionally visible to the presenter and it is not a
-   qualification gate.
+4. **Warm up the room** with `uv run medliner label-studio --warmup` — an informal demo whose
+   gold spans are intentionally visible to the presenter.
 5. **Speed up labeling** with the hotkey baked into `configs/label_studio_ner.xml`:
    `1` = DiseaseOrPhenotypicFeature after selecting a span.
 6. **Reach annotators off the LAN** with `make tunnel`, which runs `cloudflared` as an
