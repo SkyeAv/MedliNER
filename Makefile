@@ -13,10 +13,8 @@ export MEDLINER_PRELABEL_THRESHOLD ?= 0.35
 export MEDLINER_LABEL_STUDIO_PORT ?= 9030
 export MEDLINER_LABEL_STUDIO_IMAGE ?= docker.io/heartexlabs/label-studio:latest
 export MEDLINER_LABEL_STUDIO_HOST ?= 127.0.0.1
-# Comma-separated user:password accounts ensured at start; onboarding assigns everyone a quiz.
+# Comma-separated user:password accounts ensured at start.
 export MEDLINER_LABEL_STUDIO_ANNOTATORS ?=
-export MEDLINER_ONBOARDING_CONFIG ?= $(CURDIR)/configs/onboarding.json
-export MEDLINER_ONBOARDING_EXPORT ?= $(CURDIR)/data/materialized/onboarding/export.json
 export MEDLINER_LLM_URL ?= http://127.0.0.1:8080
 # Model checkout with the `medliner` llama-server target; falls back to ~/Desktop/MODELS.
 MODELS_DIR ?= $(if $(wildcard $(CURDIR)/models/Makefile),$(CURDIR)/models,$(HOME)/Desktop/MODELS)
@@ -46,7 +44,7 @@ export MEDLINER_SHORTEN_CACHE ?= $(CURDIR)/data/materialized/shorten-cache.sqlit
 # the backward pass. An empty value is ignored by Triton, so this is safe on normal systems.
 export TRITON_LIBCUDA_PATH ?= $(shell test -x /sbin/ldconfig || for d in /run/opengl-driver/lib /usr/lib64 /usr/lib/x86_64-linux-gnu /usr/lib; do test -e $$d/libcuda.so.1 && echo $$d && break; done)
 
-.PHONY: help setup llm llm-stop shorten prepare onboarding onboarding-promote annotate stop export tunnel tunnel-stop lint fmt fmt-check test check clean
+.PHONY: help setup llm llm-stop shorten prepare annotate stop export tunnel tunnel-stop lint fmt fmt-check test check clean
 
 help:
 	@printf '%s\n' \
@@ -62,10 +60,6 @@ help:
 		'  make export             Download the reviewed production annotations from the running server' \
 		'  make tunnel             Publish the server on a public trycloudflare.com URL (detached tmux)' \
 		'  make tunnel-stop        End the public tunnel' \
-		'' \
-		'Optional Onboarding (presentation mode; quizzes assigned to every account at once):' \
-		'  make onboarding         Create the Onboarding project and assign a quiz to every annotator' \
-		'  make onboarding-promote Export the quiz, score every attempt, promote everyone passing' \
 		'' \
 		'Local LLM (used by make prepare and make shorten):' \
 		'  make llm                Start the LLM used by make prepare / make shorten (detached tmux)' \
@@ -104,12 +98,6 @@ shorten:
 
 prepare:
 	uv run medliner prepare
-
-onboarding:
-	uv run medliner onboarding
-
-onboarding-promote:
-	uv run medliner onboarding-promote
 
 annotate:
 	uv run medliner label-studio

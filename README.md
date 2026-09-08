@@ -48,9 +48,7 @@ The checked-in `.envrc` exports:
 | `MEDLINER_BENCHMARK` | NER gold benchmark (default `data/materialized/ingested/ner_gold.json`) |
 | `MEDLINER_EXPORT_BUNDLE` | older DAKP bundle layout, only for `uv run medliner ingest` |
 | `MEDLINER_LABEL_STUDIO_EXPORT` | destination for the reviewed production export downloaded by `make export` |
-| `MEDLINER_ONBOARDING_CONFIG` | onboarding policy config (default `configs/onboarding.json`) |
-| `MEDLINER_ONBOARDING_EXPORT` | downloaded `Onboarding` project export |
-| `MEDLINER_WORKDIR` | root for ingested data, Label Studio import files, and onboarding state |
+| `MEDLINER_WORKDIR` | root for ingested data, Label Studio import files, and manifests |
 | `MEDLINER_PRELABEL_MODEL` / `_THRESHOLD` / `_DEVICE` | GLiNER checkpoint, score floor, and device used by the pre-labeling step of `make prepare` |
 | `MEDLINER_LABEL_STUDIO_PORT` / `_IMAGE` | podman Label Studio container port and image |
 | `MEDLINER_LABEL_STUDIO_USERNAME` / `_PASSWORD` / `_TOKEN` | Label Studio login created on first container boot, or an explicit API token |
@@ -74,13 +72,7 @@ the `medliner` CLI (every stage also runs standalone as `uv run medliner <stage>
    ([`docs/LABEL_STUDIO.md`](docs/LABEL_STUDIO.md)).
    `uv run medliner prelabel --score-gold` scores the suggestions against the gold
    benchmark before they go in front of a room.
-3. (Optional, for a live session) `make onboarding` — provisions the separate answer-free
-   `Onboarding` project and assigns a four-task quiz to **every** annotator account at once,
-   so nobody has to be named on the command line. After everyone annotates their tasks,
-   `make onboarding-promote` exports the quiz, scores every attempt, and promotes every
-   passing annotator (3/4 or 4/4). Rerun `make onboarding` for a fresh round; each attempt
-   selects a new four-task subset from the ten-case bank.
-4. `make annotate` — starts the production `MedliNER` project with the tasks imported.
+3. `make annotate` — starts the production `MedliNER` project with the tasks imported.
    Annotate in the browser at <http://localhost:9030> (span hotkey: `1`
    DiseaseOrPhenotypicFeature), then `make export` downloads the reviewed JSON to
    `MEDLINER_LABEL_STUDIO_EXPORT`. Stop the server with `make stop`; annotations survive in
@@ -88,8 +80,8 @@ the `medliner` CLI (every stage also runs standalone as `uv run medliner <stage>
 
 For a group session, `MEDLINER_LABEL_STUDIO_HOST=0.0.0.0` exposes the server on the LAN and
 `MEDLINER_LABEL_STUDIO_ANNOTATORS="alice:pw,bob:pw"` pre-creates accounts. See
-[`docs/LABEL_STUDIO.md`](docs/LABEL_STUDIO.md) for onboarding details and the Community Edition
-limitation: project separation is an operational gate, not per-user API access control.
+[`docs/LABEL_STUDIO.md`](docs/LABEL_STUDIO.md) for the Community Edition limitation: everyone
+with an account on the shared instance sees every project.
 
 Annotators outside the LAN reach the same server with `make tunnel` (needs `cloudflared` and
 `tmux`): it runs an account-less Cloudflare quick tunnel in a detached tmux session and prints a
