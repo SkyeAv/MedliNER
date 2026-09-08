@@ -389,6 +389,48 @@ def test_label_config_fixture_is_real_xml():
     assert config.exists()
 
 
+def test_label_config_speaks_to_annotators_not_machines():
+    """The screen instructs a first-time SME; no key-value metadata dumps survive.
+
+    Subject-matter experts annotate without ever having opened Label Studio, so the config is
+    the only place the mechanics and the span scope are stated.
+    """
+    import xml.etree.ElementTree as ET
+
+    config = Path(__file__).resolve().parents[1] / "configs" / "label_studio_ner.xml"
+    headers = [node.get("value", "") for node in ET.parse(config).iter("Header")]
+    assert not [value for value in headers if value.startswith(("Task:", "Source:"))]
+    joined = " ".join(headers)
+    # Scope: only the conditions the statement targets, and there can be several.
+    assert "only the conditions this $task text is about" in joined
+    assert "Repeat for each one" in joined
+    # Mechanics: the three steps a newcomer cannot guess.
+    assert "Drag across the whole phrase" in joined
+    assert "Press 1 to label it." in joined
+    assert "Submit" in joined
+
+
+def test_label_config_interpolates_every_field_the_import_file_supplies():
+    """Label Studio renders an unresolved "$var" literally, so the keys must be a known set."""
+    import re
+    import xml.etree.ElementTree as ET
+
+    config = Path(__file__).resolve().parents[1] / "configs" / "label_studio_ner.xml"
+    values = [node.get("value", "") for node in ET.parse(config).iter() if node.get("value")]
+    referenced = {match for value in values for match in re.findall(r"\$([a-z_]+)", value)}
+    assert referenced == {"task", "text", "shortened_note", "source_ref"}
+
+
+def test_label_config_source_line_is_actually_clickable():
+    """HyperText's clickableLinks defaults to false — the SPL link would render but do nothing."""
+    import xml.etree.ElementTree as ET
+
+    config = Path(__file__).resolve().parents[1] / "configs" / "label_studio_ner.xml"
+    (source,) = ET.parse(config).iter("HyperText")
+    assert source.get("clickableLinks") == "true"
+    assert source.get("inline") == "true"  # embed the one-line footer, not an iframe
+
+
 def test_label_config_labels_carry_hotkeys():
     """The single condition label keeps a number-key hotkey so live annotation stays fast."""
     import xml.etree.ElementTree as ET
@@ -398,11 +440,20 @@ def test_label_config_labels_carry_hotkeys():
     assert labels == {"DiseaseOrPhenotypicFeature": "1"}
 
 
-def test_label_config_links_to_the_source_document():
-    """Labelers get the dailymed: identifier and a clickable link to the source section."""
-    config = (Path(__file__).resolve().parents[1] / "configs" / "label_studio_ner.xml").read_text(encoding="utf-8")
-    assert "$source_document_id" in config
-    assert "$source_uri" in config
+def test_ensure_project_updates_a_stale_label_config(monkeypatch, tmp_path):
+    """Instructions live in the config, so a project created by an earlier run must be updated."""
+    fake = _install_api(
+        monkeypatch, FakeLabelStudio(projects=[{"id": 7, "title": "MedliNER", "label_config": "<View/>"}])
+    )
+    client = server.LabelStudioClient("http://127.0.0.1:9030", token="test-token")
+
+    assert client.ensure_project("MedliNER", "<View>new</View>") == 7
+    assert ("PATCH", "/api/projects/7") in fake.requests
+    assert fake.projects[7]["label_config"] == "<View>new</View>"
+
+    fake.requests.clear()
+    assert client.ensure_project("MedliNER", "<View>new</View>") == 7
+    assert not [call for call in fake.requests if call[0] == "PATCH"]  # unchanged config, no write
 
 
 def test_ensure_container_publish_host_binds_wider(podman, tmp_path):

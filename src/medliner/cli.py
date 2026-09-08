@@ -27,6 +27,8 @@ from pathlib import Path
 from typing import Any
 
 from .candidates import (
+    GENERATOR_VERSION,
+    SHORTENED_NOTE,
     build_import_tasks,
     build_warmup_tasks,
     hash_candidates_file,
@@ -214,13 +216,32 @@ def run_candidates(input_path: Path) -> Path:
 
 
 def ensure_import_file(input_path: Path) -> Path:
-    """Return the import file for the current input hash and sampling config, building when absent."""
+    """Return the import file for the current input hash and sampling config, building when absent.
+
+    A file left over from an older generator is rebuilt rather than reused: the import file name
+    encodes the input and sampling config but not the generator, so a stale file would be served
+    with none of the ``data`` keys the current labeling config interpolates, and Label Studio
+    would print ``$shortened_note`` at the annotator.
+    """
     expected = (
         workdir()
         / "label-studio"
         / import_file_name(input_hash=hash_candidates_file(input_path), sampling=sampling_settings().config)
     )
-    return expected if expected.exists() else run_candidates(input_path)
+    if expected.exists() and _import_generator_version(expected) == GENERATOR_VERSION:
+        return expected
+    return run_candidates(input_path)
+
+
+def _import_generator_version(import_file: Path) -> str | None:
+    """``generator_version`` from an import file's manifest sidecar, or None when unreadable."""
+    manifest_path = import_file.with_suffix(".manifest.json")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    version = manifest.get("generator_version") if isinstance(manifest, dict) else None
+    return version if isinstance(version, str) else None
 
 
 def run_prelabel(
@@ -405,6 +426,11 @@ def shorten_task_texts(tasks: list[dict[str, Any]], *, max_words: int, url: str 
         original = tasks[index]["data"]["text"]
         if shortened != original:
             tasks[index]["data"]["text"] = shortened
+            # An annotator reading a rewritten passage is not reading the source label, and has
+            # a right to know. The note is what the labeling config renders; the boolean is the
+            # filterable Data Manager column and the machine-readable record in the export.
+            tasks[index]["data"]["ai_shortened"] = True
+            tasks[index]["data"]["shortened_note"] = SHORTENED_NOTE
             stats["shortened"] += 1
         stats["empty_hints"] += empty_hint
         stats["cached_replies"] += cached_hit

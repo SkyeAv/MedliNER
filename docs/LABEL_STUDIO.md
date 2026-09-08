@@ -30,6 +30,10 @@ Behavior notes:
 - Re-running `make annotate` reuses a running container and an existing project, and skips
   the import when the project already has tasks. To replace project tasks, run
   `uv run medliner label-studio --reimport`.
+- The labeling config is **not** create-only: annotator instructions live in it, so every run
+  compares `configs/label_studio_ner.xml` against the project's stored config and PATCHes it
+  when they differ. Editing the XML and re-running `make annotate` updates the screen an
+  existing project shows; no project needs to be deleted.
 - If the default-account login ever fails (e.g. image behavior changes), create an account in
   the browser, copy an access token from Account & Settings, and set
   `MEDLINER_LABEL_STUDIO_TOKEN` in `.envrc.local`; the client then sends it as a Bearer
@@ -57,7 +61,9 @@ on the shared instance sees every project. The managed flow supports a group ses
 4. **Warm up the room** with `uv run medliner label-studio --warmup` — an informal demo whose
    gold spans are intentionally visible to the presenter.
 5. **Speed up labeling** with the hotkey baked into `configs/label_studio_ner.xml`:
-   `1` = DiseaseOrPhenotypicFeature after selecting a span.
+   `1` = DiseaseOrPhenotypicFeature after selecting a span. The same config states the whole
+   task on screen — the span scope, the three mechanical steps, and what not to highlight — so
+   a subject-matter expert who has never opened Label Studio can start from the first task.
 6. **Reach annotators off the LAN** with `make tunnel`, which runs `cloudflared` as an
    account-less *quick tunnel* (no Cloudflare account, token, or DNS record) in the detached tmux
    session `medliner-tunnel`, forwards it to the Label Studio port on loopback, and prints the
@@ -123,12 +129,28 @@ task exposes at least:
     "text": "Contraindicated in patients with pulmonary hypertension.",
     "task": "contraindication",
     "source_family": "dailymed",
-    "source_document_id": "spl-document-001"
+    "source_document_id": "spl-document-001",
+    "shortened_note": "",
+    "source_ref": "DailyMed SPL spl-document-001"
   }
 }
 ```
 
-The task and source fields are displayed for context and are preserved when exported. They are not labels to be highlighted.
+The task and source fields are context, preserved when exported. They are not labels to be highlighted.
+
+Three keys exist only to be rendered on the annotation screen:
+
+| Key | Purpose |
+| --- | --- |
+| `task` | interpolated into the instruction heading ("…this **contraindication** text is about…") |
+| `shortened_note` | the AI-shortened warning, or `""`. Set by the shortening step of `make prepare` on exactly the tasks it rewrote |
+| `source_ref` | concise provenance for the annotator — an `<a>` to the exact DailyMed SPL when the id is a setid or a `source_uri` is present, otherwise plain text |
+
+`shortened_note` and `source_ref` are present on **every** task, including the empty case:
+Label Studio renders a `$var` it cannot resolve as the literal string `$shortened_note`. A
+`data.ai_shortened` boolean accompanies the note as a filterable Data Manager column. Because
+an import file predating these keys would display them literally, `medliner` rebuilds any
+import file whose manifest records an older `generator_version` instead of reusing it.
 
 Dailymed-sourced tasks additionally carry `section` (the LOINC section code) and
 `source_uri` (a DailyMed URL whose `#<LOINC>` fragment jumps straight to the source
@@ -198,8 +220,12 @@ that wide.
 in front of the annotator; without it Label Studio stores the predictions and never shows them.
 Opening a pre-labeled task pre-fills the draft annotation with the model's spans.
 
-**They are suggestions.** Accept, correct, or delete each one, and add what the model missed —
-an untouched prediction is not gold. MedliNER's adapter reads only the completed `annotations`
+**They are suggestions, and they over-suggest.** GLiNER is prompted with the bare condition
+label, so it has no idea which conditions the statement actually targets: it proposes every
+condition mention in the text, including ones that belong to a monitoring note or an adverse
+event (rule 1 of `docs/ANNOTATION_GUIDE.md`). Deleting suggestions is routine review work.
+Accept, correct, or delete each one, and add what the model missed — an untouched prediction is
+not gold. MedliNER's adapter reads only the completed `annotations`
 array and never `predictions`, so a task nobody submitted contributes nothing. Each submitted
 span carries an `origin` (`prediction`, `prediction-changed`, or `manual`) in the export, so an
 untouched model span stays distinguishable from one a human drew or corrected.

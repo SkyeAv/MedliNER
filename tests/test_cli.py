@@ -144,6 +144,54 @@ def test_ensure_import_file_respects_the_sampling_config(tmp_path, monkeypatch, 
     assert other != first  # a changed config must not silently reuse the stale import
 
 
+def test_ensure_import_file_rebuilds_a_file_from_an_older_generator(tmp_path, monkeypatch, capsys):
+    """A stale import file lacks the data keys the labeling config interpolates.
+
+    The file name encodes the input hash and sampling config but not the generator, so without
+    this check a returning user would be served an old file and Label Studio would print
+    "$shortened_note" at the annotator.
+    """
+    raw = tmp_path / "candidates.ndjson"
+    _write_raw_candidates(raw)
+    monkeypatch.setenv("MEDLINER_RAW_CANDIDATES", str(raw))
+    monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
+    monkeypatch.setenv("MEDLINER_SAMPLE_TASKS", "indication:1")
+
+    built = cli.ensure_import_file(cli.raw_candidates_path())
+    manifest_path = built.with_suffix(".manifest.json")
+    capsys.readouterr()
+
+    assert cli.ensure_import_file(cli.raw_candidates_path()) == built
+    assert "sampled" not in capsys.readouterr().out  # current generator: reused, not rebuilt
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["generator_version"] = "medliner.candidates.v0"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    built.write_text("[]", encoding="utf-8")
+
+    assert cli.ensure_import_file(cli.raw_candidates_path()) == built
+    assert "sampled 1 tasks" in capsys.readouterr().out  # older generator: rebuilt
+    assert json.loads(built.read_text(encoding="utf-8"))[0]["data"]["shortened_note"] == ""
+
+
+def test_shorten_task_texts_flags_only_the_texts_it_rewrote(monkeypatch):
+    """An annotator reading an LLM rewrite must be told; one reading the source must not be."""
+    tasks = [
+        {"id": "a", "data": {"text": "long " * 10, "task": "indication", "shortened_note": ""}},
+        {"id": "b", "data": {"text": "long " * 10, "task": "indication", "shortened_note": ""}},
+    ]
+    replies = iter([("short text", False, False), ("long " * 10, False, False)])
+    monkeypatch.setattr(cli, "rewrite_texts", lambda texts, **kwargs: [next(replies) for _ in texts])
+
+    stats = cli.shorten_task_texts(tasks, max_words=5, url=None)
+
+    assert stats["shortened"] == 1
+    assert tasks[0]["data"]["ai_shortened"] is True
+    assert tasks[0]["data"]["shortened_note"].startswith("An AI shortened this text")
+    assert "ai_shortened" not in tasks[1]["data"]  # unchanged text makes no claim
+    assert tasks[1]["data"]["shortened_note"] == ""
+
+
 def test_candidates_missing_input_is_an_explicit_error(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("MEDLINER_RAW_CANDIDATES", str(tmp_path / "absent.jsonl"))
     assert cli.main(["candidates"]) == 1

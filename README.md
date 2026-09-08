@@ -25,9 +25,12 @@ Label Studio Community Edition is free to self-host locally and provides a brows
 pipeline runs it in a podman container via `make annotate` — no separate
 install needed; see [`docs/LABEL_STUDIO.md`](docs/LABEL_STUDIO.md).
 
+The labeling screen states the whole task, so a subject-matter expert who has never opened
+Label Studio can start from the first task: what to highlight (the conditions the statement
+targets — there can be several), the three mechanical steps, and what to leave alone.
 Annotators do not count offsets:
 
-> open task → click-drag/highlight the condition phrase → choose label → submit
+> open task → click-drag/highlight the condition phrase → press `1` → submit
 
 Label Studio records character offsets automatically; MedliNER validates them against the canonical schema.
 
@@ -74,7 +77,9 @@ the `medliner` CLI (every stage also runs standalone as `uv run medliner <stage>
    benchmark before they go in front of a room.
 3. `make annotate` — starts the production `MedliNER` project with the tasks imported.
    Annotate in the browser at <http://localhost:9030> (span hotkey: `1`
-   DiseaseOrPhenotypicFeature), then `make export` downloads the reviewed JSON to
+   DiseaseOrPhenotypicFeature; the on-screen instructions come from
+   `configs/label_studio_ner.xml` and are re-synced to the project on every run), then
+   `make export` downloads the reviewed JSON to
    `MEDLINER_LABEL_STUDIO_EXPORT`. Stop the server with `make stop`; annotations survive in
    the container's data volume directory under `$MEDLINER_WORKDIR/label-studio/server-data`.
 

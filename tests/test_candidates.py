@@ -20,6 +20,7 @@ from medliner.candidates import (
     import_manifest,
     read_candidates,
     sample_tasks,
+    source_reference,
     stagger_tasks,
     write_import_file,
 )
@@ -355,3 +356,71 @@ def test_build_warmup_tasks_rejects_malformed_benchmarks():
         build_warmup_tasks(bad_offset)
     with pytest.raises(ValueError, match="at least 1"):
         build_warmup_tasks(_gold([{"id": "a", "source": "faers", "text": "t", "mentions": []}]), limit=0)
+
+
+# --- annotation-screen display fields -----------------------------------------------------------
+
+
+def test_import_tasks_always_carry_the_screen_display_fields():
+    """Label Studio renders a missing "$var" literally, so both keys exist on every task."""
+    tasks = build_import_tasks(
+        [
+            CandidateText(text="Contraindicated in asthma.", task="contraindication"),
+            CandidateText(
+                text="Indicated for asthma.", task="indication", source_family="dailymed", source_document_id="spl-1"
+            ),
+        ]
+    )
+    assert all("shortened_note" in task["data"] and "source_ref" in task["data"] for task in tasks)
+    assert all(task["data"]["shortened_note"] == "" for task in tasks)  # nothing shortened yet
+
+
+def test_warmup_tasks_carry_the_screen_display_fields():
+    payload = {
+        "cases": [
+            {
+                "id": "c1",
+                "source": "dailymed",
+                "text": "Contraindicated in asthma.",
+                "mentions": [{"surface": "asthma", "type": "DiseaseOrPhenotypicFeature"}],
+            }
+        ]
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        gold = Path(tmp) / "ner_gold.json"
+        gold.write_text(json.dumps(payload), encoding="utf-8")
+        (task,) = build_warmup_tasks(gold)
+    assert task["data"]["shortened_note"] == ""
+    assert "source_ref" in task["data"]
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "expected"),
+    [
+        # An explicit URI is the most trustworthy link and wins over any derived one.
+        (
+            {"family": "dailymed", "document_id": "spl-1", "source_uri": "https://example.test/spl-1"},
+            '<a href="https://example.test/spl-1" target="_blank" rel="noopener">DailyMed SPL spl-1</a>',
+        ),
+        # A real setid is linkable; DailyMed resolves it directly.
+        (
+            {"family": "dailymed", "document_id": "3e2f1a0b-4c5d-6e7f-8a9b-0c1d2e3f4a5b"},
+            '<a href="https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=3e2f1a0b-4c5d-6e7f-8a9b-0c1d2e3f4a5b"'
+            ' target="_blank" rel="noopener">DailyMed SPL 3e2f1a0b-4c5d-6e7f-8a9b-0c1d2e3f4a5b</a>',
+        ),
+        # A placeholder id stays plain text: a dead link is worse than no link.
+        ({"family": "dailymed", "document_id": "spl-document-001"}, "DailyMed SPL spl-document-001"),
+        ({"family": "faers", "record_id": "case-12345"}, "FAERS case case-12345"),
+        ({"family": "unknown", "document_id": "doc-9"}, "unknown doc-9"),
+        ({"family": "dailymed"}, ""),  # nothing to point at
+    ],
+)
+def test_source_reference_links_only_what_it_can_resolve(kwargs, expected):
+    assert source_reference(**kwargs) == expected
+
+
+def test_source_reference_escapes_its_inputs():
+    """The value is rendered as HTML by <HyperText>, so it may never carry raw markup."""
+    rendered = source_reference(family="dailymed", document_id='<script>"x"')
+    assert "<script>" not in rendered
+    assert "&lt;script&gt;" in rendered

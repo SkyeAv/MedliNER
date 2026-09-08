@@ -251,8 +251,9 @@ def test_a_mention_cut_by_a_hard_window_split_is_rejoined():
 def test_prediction_control_names_match_the_labeling_config():
     # Label Studio silently ignores a prediction whose from_name/to_name it cannot resolve.
     root = ET.parse(CONFIG).getroot()
-    labels_node = root.find("Labels")
-    text_node = root.find("Text")
+    # Descendant search, not direct children: the controls sit inside layout <View> wrappers.
+    labels_node = root.find(".//Labels")
+    text_node = root.find(".//Text")
     assert labels_node is not None
     assert text_node is not None
     (region,) = build_prediction(
