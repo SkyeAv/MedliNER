@@ -31,7 +31,18 @@ Fields:
   leakage-safe grouped splitting later, so fill them in whenever the source has a document
   or case identity.
 - `section`, `source_uri`, `source_hash` (optional): extra provenance, preserved into the
-  imported task and the normalized dataset.
+  imported task and the normalized dataset. `source_uri` doubles as the annotator's link to
+  the source document (see below).
+
+`build_import_tasks` derives two further `data` keys that exist only to be rendered on the
+annotation screen, and are present on every task because Label Studio prints an unresolved
+`$var` literally:
+
+- `source_ref`: a concise provenance line for the annotator — `DailyMed SPL <id>` or
+  `FAERS case <id>`, wrapped in a link when `source_uri` is set or when a DailyMed
+  `source_document_id` is a real SPL setid. A placeholder id stays plain text; a dead link is
+  worse than none.
+- `shortened_note`: empty until the shortening step rewrites the text (see below).
 
 Deriving rows from DAKP intermediates: pull section text from the DailyMed SPL inputs
 (contraindication sections `LOINC 34070-3`, indications-and-usage `LOINC 34067-9`) and
@@ -106,6 +117,10 @@ make llm            # optional; without it prepare just skips the shortening ste
 make prepare        # sample → shorten (LLM) → attach GLiNER suggestions
 make llm-stop
 ```
+
+A rewritten task is flagged for the annotator: `data.ai_shortened` becomes `true` (a filterable Data Manager column)
+and `data.shortened_note` carries the notice the labeling config renders above the passage, so nobody reviews an LLM
+rewrite believing it is the source label's own wording. Tasks left as-is keep `shortened_note: ""` and carry no flag.
 
 Every rewrite is validated (non-empty, actually shorter) and failures keep the original text, all counted in the import
 manifest's `sampling.llm_shorten` block. Texts are sent up to `MEDLINER_SHORTEN_WORKERS` at a time (default 4, matching

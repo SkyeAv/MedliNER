@@ -1,9 +1,40 @@
 <View>
-  <Header value="MedliNER" />
-  <Header value="Task: $task" />
-  <Header value="Source: $source_family" />
-  <Text name="text" value="$text" granularity="word" />
+  <Style>
+    .medliner-steps { background:#f3f7fc; border-left:4px solid #2b6cb0;
+                      padding:10px 16px; margin:0 0 14px; border-radius:4px; }
+    .medliner-steps h6, .medliner-note h6 { font-weight:400; margin:3px 0; }
+    .medliner-avoid h6, .medliner-note h6 { color:#8a5300; }
+    .medliner-passage { font-size:17px; line-height:1.7; }
+    .medliner-source { opacity:.6; font-size:12px; margin-top:12px; }
+  </Style>
+
+  <Header value="Highlight only the conditions this $task text is about — not every condition it mentions." size="3" />
+
+  <View className="medliner-steps">
+    <Header value="1.  Drag across the whole phrase — “active liver disease”, not “liver disease”." size="6" />
+    <Header value="2.  Press 1 to label it. Repeat for each one; a statement can have several." size="6" />
+    <Header value="3.  Click Submit. Nothing to highlight? Submit with nothing highlighted." size="6" />
+    <View className="medliner-avoid">
+      <Header value="Skip drug names, doses, lead-ins like “recent”/“history of”, and conditions the text only mentions in passing." size="6" />
+      <Header value="Some phrases come pre-highlighted by a model — delete any that don’t belong." size="6" />
+    </View>
+  </View>
+
+  <View className="medliner-note">
+    <Header value="$shortened_note" size="6" />
+  </View>
+
+  <View className="medliner-passage">
+    <Text name="text" value="$text" granularity="word" />
+  </View>
+
   <Labels name="label" toName="text" choice="single" showInline="true">
     <Label value="DiseaseOrPhenotypicFeature" background="#e74c3c" hotkey="1" />
   </Labels>
+
+  <View className="medliner-source">
+    <!-- clickableLinks defaults to false: without it the SPL link renders but does nothing. -->
+    <HyperText name="source" value="$source_ref" inline="true" clickableLinks="true"
+               selectionEnabled="false" />
+  </View>
 </View>

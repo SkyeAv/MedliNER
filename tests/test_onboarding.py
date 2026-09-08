@@ -89,6 +89,13 @@ def test_bank_and_tasks_are_versioned_and_answer_free(tmp_path):
     assert versioned_bank_path(tmp_path, manifest).name.endswith(f"{manifest.test_bank_hash}.json")
 
 
+def test_quiz_tasks_carry_the_shared_labeling_config_display_fields(tmp_path):
+    """The quiz uses configs/label_studio_ner.xml too; a missing key renders as "$name"."""
+    _gold, _config, manifest, _attempt = _context(tmp_path)
+    tasks = build_onboarding_tasks(manifest)
+    assert all(task["data"]["shortened_note"] == "" and task["data"]["source_ref"] == "" for task in tasks)
+
+
 def test_selection_is_deterministic_and_retry_changes_selection(tmp_path):
     _gold, config, manifest, first = _context(tmp_path)
     second = start_attempt(tmp_path, manifest, config, "alice")

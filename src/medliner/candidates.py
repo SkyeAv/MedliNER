@@ -12,6 +12,7 @@ and free of ML dependencies.
 
 from __future__ import annotations
 
+import html
 import json
 import re
 from collections import Counter, defaultdict
@@ -24,8 +25,47 @@ from pydantic import BaseModel, ValidationError, field_validator
 
 from .schema import ALLOWED_TASKS
 
-GENERATOR_VERSION = "medliner.candidates.v1"
+GENERATOR_VERSION = "medliner.candidates.v2"
 WARMUP_SOURCE_FAMILY = "gold-warmup"
+
+#: Shown to annotators on tasks whose text an LLM rewrote during ``make prepare``. Every task
+#: carries a ``shortened_note`` key because Label Studio renders a missing ``$var`` as the
+#: literal string ``$shortened_note``; the empty default is what makes the line disappear.
+SHORTENED_NOTE = "An AI shortened this text so it fits on one screen. Highlight only what you see here."
+
+#: A DailyMed document id is only linkable when it is an SPL setid. Placeholder ids such as
+#: ``spl-document-001`` must stay plain text rather than become a dead link.
+_SETID_PATTERN = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+_DAILYMED_SPL_URL = "https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid={setid}"
+
+
+def source_reference(
+    *, family: str, document_id: str | None = None, record_id: str | None = None, source_uri: str | None = None
+) -> str:
+    """Concise provenance line for the annotation screen, as an HTML fragment.
+
+    Annotators who think a passage looks wrong need to reach the exact source document, so
+    this resolves to a link whenever one can be trusted: an explicit ``source_uri`` first,
+    then a DailyMed SPL setid. Anything else stays plain text — a fabricated URL is worse
+    than none. Rendered by ``<HyperText>`` in ``configs/label_studio_ner.xml``, so every
+    interpolated value is escaped.
+    """
+    identifier = document_id or record_id
+    if not identifier:
+        return ""
+    if family == "dailymed":
+        label = f"DailyMed SPL {identifier}"
+    elif family == "faers":
+        label = f"FAERS case {identifier}"
+    else:
+        label = f"{family} {identifier}"
+    href = source_uri
+    if not href and family == "dailymed" and document_id and _SETID_PATTERN.match(document_id):
+        href = _DAILYMED_SPL_URL.format(setid=document_id)
+    escaped = html.escape(label)
+    if not href:
+        return escaped
+    return f'<a href="{html.escape(href, quote=True)}" target="_blank" rel="noopener">{escaped}</a>'
 
 
 class CandidateInputError(ValueError):
@@ -113,6 +153,15 @@ def build_import_tasks(
             "text": candidate.text,
             "task": candidate.task,
             "source_family": candidate.source_family,
+            # Display fields for the annotation screen. Both are always present: Label Studio
+            # renders an absent "$var" as its literal name.
+            "shortened_note": "",
+            "source_ref": source_reference(
+                family=candidate.source_family,
+                document_id=candidate.source_document_id,
+                record_id=candidate.source_record_id,
+                source_uri=candidate.source_uri,
+            ),
             "generator_version": GENERATOR_VERSION,
             "generated_at": stamp,
         }
@@ -434,6 +483,8 @@ def build_warmup_tasks(gold_path: str | Path, *, limit: int = 10) -> list[dict[s
                     "task": "contraindication" if source == "dailymed" else "indication",
                     "source_family": WARMUP_SOURCE_FAMILY,
                     "source_document_id": case_id,
+                    "shortened_note": "",
+                    "source_ref": source_reference(family=WARMUP_SOURCE_FAMILY, document_id=case_id),
                     "generator_version": GENERATOR_VERSION,
                     "generated_at": stamp,
                     "warmup": True,
@@ -446,6 +497,7 @@ def build_warmup_tasks(gold_path: str | Path, *, limit: int = 10) -> list[dict[s
 
 __all__ = [
     "GENERATOR_VERSION",
+    "SHORTENED_NOTE",
     "WARMUP_SOURCE_FAMILY",
     "CandidateInputError",
     "CandidateText",
@@ -457,6 +509,7 @@ __all__ = [
     "import_manifest",
     "read_candidates",
     "sample_tasks",
+    "source_reference",
     "stagger_tasks",
     "write_import_file",
 ]

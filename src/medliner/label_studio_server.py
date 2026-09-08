@@ -199,9 +199,18 @@ class LabelStudioClient:
         return json.loads(body) if body.strip() else {}
 
     def ensure_project(self, title: str, label_config: str) -> int:
-        """Return the project id, creating the project with the labeling config when absent."""
+        """Return the project id, creating or updating it to carry ``label_config``.
+
+        The config is not create-only: annotator instructions live in it, and a project created
+        by an earlier run would otherwise keep showing the old screen forever. Editing it only
+        adds views and styles — no label is removed — so Label Studio's check that a config
+        change cannot orphan existing annotations does not fire.
+        """
         existing = self.find_project(title)
         if existing is not None:
+            current = self.api("GET", f"/api/projects/{existing}")
+            if current.get("label_config") != label_config:
+                self.api("PATCH", f"/api/projects/{existing}", {"label_config": label_config})
             return existing
         created = self.api("POST", "/api/projects", {"title": title, "label_config": label_config})
         return int(created["id"])

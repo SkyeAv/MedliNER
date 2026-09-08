@@ -247,6 +247,11 @@ def build_onboarding_tasks(manifest: TestBankManifest, task_ids: list[str] | Non
             "task": case.task,
             "source_family": "onboarding",
             "source_document_id": case.id,
+            # The quiz shares configs/label_studio_ner.xml, which interpolates both of these;
+            # a missing key would render as the literal "$shortened_note". Quiz text is never
+            # LLM-shortened and its source is deliberately opaque, so both stay empty.
+            "shortened_note": "",
+            "source_ref": "",
             "generator_version": GENERATOR_VERSION,
             "onboarding": True,
             "test_bank_hash": manifest.test_bank_hash,
