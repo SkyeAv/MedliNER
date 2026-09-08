@@ -66,17 +66,26 @@ on the shared instance sees every project. The managed flow supports a group ses
 
 Notes on `make tunnel`:
 
-- **The URL is public on the internet** and Label Studio accounts are the only gate, so set real
-  credentials first (`MEDLINER_LABEL_STUDIO_ANNOTATORS`, and a non-default
-  `MEDLINER_LABEL_STUDIO_PASSWORD`) and stop the tunnel as soon as the session ends.
-- **The slug changes on every start**: rerunning `make tunnel` after `make tunnel-stop` needs the
-  new URL re-shared. While the tunnel is up, `make tunnel` is idempotent and just reprints the
-  current URL instead of opening a second tunnel.
-- **Loopback is enough**: `MEDLINER_LABEL_STUDIO_HOST` can stay `127.0.0.1`; a `0.0.0.0` or `::`
-  bind is normalized to loopback for the tunnel origin.
-- **Give it a few seconds** after the URL prints: the new hostname has to propagate, and a machine
-  that resolves it to IPv6 first may need a retry. cloudflared's output lives in
-  `data/tunnel/cloudflared.log`.
+- **The URL is public on the internet and signup stays open**: the managed container sets only
+  `LABEL_STUDIO_USERNAME`/`LABEL_STUDIO_PASSWORD`, so anyone who finds the URL can register an
+  account and then see every project. Pre-create the accounts you want
+  (`MEDLINER_LABEL_STUDIO_ANNOTATORS`), replace the default `MEDLINER_LABEL_STUDIO_PASSWORD`,
+  share the URL only with the room, and stop the tunnel as soon as the session ends.
+- **`make stop` does not stop the tunnel**: the server goes away but the public URL keeps
+  resolving (502 until you start the server again, and then it serves it once more on the URL
+  people already have). Run `make tunnel-stop` as well.
+- **Needs `cloudflared` and `tmux`** on `PATH`; the target fails with an install hint otherwise.
+- **The slug changes on every start**, so re-share the URL after each `make tunnel-stop`. While a
+  tunnel is up, `make tunnel` is idempotent: it reprints the current URL instead of opening a
+  second tunnel, and it refuses to guess if the session is serving a different origin.
+- **Order does not matter**: `make tunnel` before `make annotate` is fine — the URL answers 502
+  until the server is healthy. `MEDLINER_LABEL_STUDIO_HOST` can stay `127.0.0.1`; a wildcard bind
+  (`0.0.0.0`, `::`) is normalized to loopback for the tunnel origin.
+- **Give it a few seconds** after the URL prints, and do not trust a failure to load *from this
+  machine*: a fresh `*.trycloudflare.com` hostname has to propagate, and some resolvers (a
+  corporate DNS, an IPv6-only answer) never return it. Verify from another device or network; if
+  it fails there too, `data/tunnel/cloudflared.log` shows whether the connector registered
+  (`Registered tunnel connection`).
 - **No uptime guarantee**: quick tunnels are a Cloudflare experimentation feature, so they suit a
   session-length demo rather than a standing deployment.
 
