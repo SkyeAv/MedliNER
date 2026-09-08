@@ -95,6 +95,27 @@ on the shared instance sees every project. The managed flow supports a group ses
    qualification gate.
 5. **Speed up labeling** with the hotkey baked into `configs/label_studio_ner.xml`:
    `1` = DiseaseOrPhenotypicFeature after selecting a span.
+6. **Reach annotators off the LAN** with `make tunnel`, which runs `cloudflared` as an
+   account-less *quick tunnel* (no Cloudflare account, token, or DNS record) in the detached tmux
+   session `medliner-tunnel`, forwards it to the Label Studio port on loopback, and prints the
+   random `https://<slug>.trycloudflare.com` URL to share. `make tunnel-stop` ends the tunnel and
+   the URL stops working.
+
+Notes on `make tunnel`:
+
+- **The URL is public on the internet** and Label Studio accounts are the only gate, so set real
+  credentials first (`MEDLINER_LABEL_STUDIO_ANNOTATORS`, and a non-default
+  `MEDLINER_LABEL_STUDIO_PASSWORD`) and stop the tunnel as soon as the session ends.
+- **The slug changes on every start**: rerunning `make tunnel` after `make tunnel-stop` needs the
+  new URL re-shared. While the tunnel is up, `make tunnel` is idempotent and just reprints the
+  current URL instead of opening a second tunnel.
+- **Loopback is enough**: `MEDLINER_LABEL_STUDIO_HOST` can stay `127.0.0.1`; a `0.0.0.0` or `::`
+  bind is normalized to loopback for the tunnel origin.
+- **Give it a few seconds** after the URL prints: the new hostname has to propagate, and a machine
+  that resolves it to IPv6 first may need a retry. cloudflared's output lives in
+  `data/tunnel/cloudflared.log`.
+- **No uptime guarantee**: quick tunnels are a Cloudflare experimentation feature, so they suit a
+  session-length demo rather than a standing deployment.
 
 ## Export
 
@@ -136,6 +157,13 @@ task exposes at least:
 ```
 
 The task and source fields are displayed for context and are preserved when exported. They are not labels to be highlighted.
+
+Dailymed-sourced tasks additionally carry `section` (the LOINC section code) and
+`source_uri` (a DailyMed URL whose `#<LOINC>` fragment jumps straight to the source
+section). The labeling config (`configs/label_studio_ner.xml`) renders these as a
+`dailymed: $source_document_id` header and a clickable **Open source document** link so
+labelers can open the exact DailyMed section for the task at hand. FAERS tasks carry a
+`source_record_id` plus a `source_uri` pointing at the FAERS data download.
 
 ## Alternative: run Label Studio yourself
 

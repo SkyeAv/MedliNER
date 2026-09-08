@@ -199,9 +199,17 @@ class LabelStudioClient:
         return json.loads(body) if body.strip() else {}
 
     def ensure_project(self, title: str, label_config: str) -> int:
-        """Return the project id, creating the project with the labeling config when absent."""
+        """Return the project id, creating the project with the labeling config when absent.
+
+        An existing project keeps its tasks and annotations; its labeling config is
+        updated in place when it differs from ``label_config``, so config edits reach a
+        live project without a re-import.
+        """
         existing = self.find_project(title)
         if existing is not None:
+            current = self.api("GET", f"/api/projects/{existing}").get("label_config")
+            if current != label_config:
+                self.api("PATCH", f"/api/projects/{existing}", {"label_config": label_config})
             return existing
         created = self.api("POST", "/api/projects", {"title": title, "label_config": label_config})
         return int(created["id"])

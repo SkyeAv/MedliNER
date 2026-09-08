@@ -8,6 +8,10 @@ Allowed labels:
 
 - `DiseaseOrPhenotypicFeature`: every condition mention, whether a named disease, disorder, or syndrome (`asthma`, `active liver disease`) or a symptom/finding/condition-state such as hypersensitivity, pregnancy, bleeding, seizures, pain, nausea, vomiting, fatigue, or laboratory elevations. There is deliberately no separate `disease` vs `phenotype` boundary to draw: the merged single label matches the sibling DAKP workflow, which merges both types downstream.
 
+## Source reference
+
+Each task header shows a `dailymed: <set-id>#<LOINC>` identifier and an **Open source document (DailyMed)** link. The link jumps to the exact section of the DailyMed drug label the task text came from (the `#<LOINC>` fragment selects the section, e.g. `34070-3` for contraindications, `34067-9` for indications & usage). Use it whenever the snippet alone is ambiguous. FAERS-sourced tasks link to the FAERS data download instead. Warm-up and onboarding tasks have no source link.
+
 ## Span policy
 
 1. **Use maximal concept spans.** Include words that change the clinical concept: anatomical or etiological qualifiers (`pulmonary hypertension`), severity (`severe heart failure`), and activity/course (`active liver disease`).

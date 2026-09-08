@@ -99,7 +99,9 @@ class FakeLabelStudio:
         project_id = int(path.split("/")[3])
         project = self.projects[project_id]
         if method == "GET":
-            return FakeResponse({"id": project_id, "task_number": len(project["tasks"])})
+            return FakeResponse(
+                {"id": project_id, "task_number": len(project["tasks"]), "label_config": project.get("label_config")}
+            )
         if method == "POST" and path.endswith("/import"):
             project["tasks"] = json.loads(request.data.decode())
             return FakeResponse({"task_count": len(project["tasks"])})
@@ -306,6 +308,58 @@ def test_provision_reuses_project_and_skips_existing_tasks(monkeypatch, podman, 
     assert fake.projects[7]["tasks"][0]["id"] == "t1"
 
 
+def test_provision_updates_a_stale_label_config_in_place(monkeypatch, podman, tmp_path):
+    """Config edits must reach a live project: PATCH the label_config, keep tasks/annotations."""
+    existing = {
+        "id": 7,
+        "title": server.DEFAULT_PROJECT_TITLE,
+        "label_config": "<View>old</View>",
+        "tasks": [{"id": "t0", "data": {}, "annotations": [{"result": []}]}],
+    }
+    fake = _install_api(monkeypatch, FakeLabelStudio(projects=[existing]))
+    import_file = tmp_path / "import.json"
+    import_file.write_text(json.dumps([{"id": "t1", "data": {"text": "x", "task": "indication"}}]), encoding="utf-8")
+    config = tmp_path / "config.xml"
+    config.write_text("<View/>", encoding="utf-8")
+
+    result = server.provision(
+        import_file=import_file,
+        label_config_path=config,
+        data_dir=tmp_path / "data",
+        username="u",
+        password="p",
+        token="test-token",
+    )
+    assert result["project_id"] == 7
+    assert fake.projects[7]["label_config"] == "<View/>"
+    assert fake.projects[7]["tasks"][0]["id"] == "t0"  # annotations survive the config update
+    assert ("PATCH", "/api/projects/7") in fake.requests
+
+
+def test_provision_leaves_a_matching_label_config_alone(monkeypatch, podman, tmp_path):
+    existing = {
+        "id": 7,
+        "title": server.DEFAULT_PROJECT_TITLE,
+        "label_config": "<View/>",
+        "tasks": [{"id": "t0", "data": {}}],
+    }
+    fake = _install_api(monkeypatch, FakeLabelStudio(projects=[existing]))
+    import_file = tmp_path / "import.json"
+    import_file.write_text(json.dumps([{"id": "t1", "data": {"text": "x"}}]), encoding="utf-8")
+    config = tmp_path / "config.xml"
+    config.write_text("<View/>", encoding="utf-8")
+
+    server.provision(
+        import_file=import_file,
+        label_config_path=config,
+        data_dir=tmp_path / "data",
+        username="u",
+        password="p",
+        token="test-token",
+    )
+    assert not any(method == "PATCH" for method, _ in fake.requests)
+
+
 def test_provision_surfaces_api_errors(monkeypatch, podman, tmp_path):
     fake = _install_api(monkeypatch, FakeLabelStudio())
 
@@ -342,6 +396,13 @@ def test_label_config_labels_carry_hotkeys():
     config = Path(__file__).resolve().parents[1] / "configs" / "label_studio_ner.xml"
     labels = {node.get("value"): node.get("hotkey") for node in ET.parse(config).iter("Label")}
     assert labels == {"DiseaseOrPhenotypicFeature": "1"}
+
+
+def test_label_config_links_to_the_source_document():
+    """Labelers get the dailymed: identifier and a clickable link to the source section."""
+    config = (Path(__file__).resolve().parents[1] / "configs" / "label_studio_ner.xml").read_text(encoding="utf-8")
+    assert "$source_document_id" in config
+    assert "$source_uri" in config
 
 
 def test_ensure_container_publish_host_binds_wider(podman, tmp_path):

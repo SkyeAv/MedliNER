@@ -2,6 +2,8 @@
   <Header value="MedliNER" />
   <Header value="Task: $task" />
   <Header value="Source: $source_family" />
+  <Header value="dailymed: $source_document_id" />
+  <HyperText name="dailymed_link" value="$source_uri" valueType="url" text="Open source document (DailyMed)" clickableLinks="true" />
   <Text name="text" value="$text" granularity="word" />
   <Labels name="label" toName="text" choice="single" showInline="true">
     <Label value="DiseaseOrPhenotypicFeature" background="#e74c3c" hotkey="1" />
