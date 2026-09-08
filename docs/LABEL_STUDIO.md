@@ -154,10 +154,11 @@ import file whose manifest records an older `generator_version` instead of reusi
 
 Dailymed-sourced tasks additionally carry `section` (the LOINC section code) and
 `source_uri` (a DailyMed URL whose `#<LOINC>` fragment jumps straight to the source
-section). The labeling config (`configs/label_studio_ner.xml`) renders these as a
-`dailymed: $source_document_id` header and a clickable **Open source document** link so
-labelers can open the exact DailyMed section for the task at hand. FAERS tasks carry a
-`source_record_id` plus a `source_uri` pointing at the FAERS data download.
+section); FAERS tasks carry a `source_record_id` plus a `source_uri` pointing at the FAERS
+data download. These fields are preserved into the dataset and feed `source_ref`, which the
+labeling config (`configs/label_studio_ner.xml`) renders as the one-line provenance footer
+on the annotation screen, so labelers can open the exact DailyMed document — or section,
+via the `#<LOINC>` fragment — for the task at hand.
 
 ## Alternative: run Label Studio yourself
 

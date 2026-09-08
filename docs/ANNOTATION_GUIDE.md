@@ -12,7 +12,13 @@ Allowed labels:
 
 ## Source reference
 
-Each task header shows a `dailymed: <set-id>#<LOINC>` identifier and an **Open source document (DailyMed)** link. The link jumps to the exact section of the DailyMed drug label the task text came from (the `#<LOINC>` fragment selects the section, e.g. `34070-3` for contraindications, `34067-9` for indications & usage). Use it whenever the snippet alone is ambiguous. FAERS-sourced tasks link to the FAERS data download instead. Warm-up and onboarding tasks have no source link.
+The bottom of every task shows a one-line provenance footer. DailyMed tasks link to the source
+SPL document (**DailyMed SPL <set-id>**); when the row carried a `source_uri`, its `#<LOINC>`
+fragment jumps straight to the section the task text came from (`34070-3` contraindications,
+`34067-9` indications & usage), and otherwise the link opens the SPL document by setid. FAERS
+tasks read **FAERS case <id>** and link out when the case carried a URL. Use the link whenever
+the snippet alone is ambiguous. Warm-up tasks show a plain `gold-warmup <case>` line with no
+link.
 
 ## Span policy
 
