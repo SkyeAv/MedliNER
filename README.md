@@ -91,6 +91,14 @@ For a group session, `MEDLINER_LABEL_STUDIO_HOST=0.0.0.0` exposes the server on 
 [`docs/LABEL_STUDIO.md`](docs/LABEL_STUDIO.md) for onboarding details and the Community Edition
 limitation: project separation is an operational gate, not per-user API access control.
 
+Annotators outside the LAN reach the same server with `make tunnel` (needs `cloudflared` and
+`tmux`): it runs an account-less Cloudflare quick tunnel in a detached tmux session and prints a
+random `https://<slug>.trycloudflare.com` URL; `make tunnel-stop` ends it. That URL is public and
+Label Studio signup stays open, so anyone who finds it can create an account — pre-create the
+annotator accounts, stop the tunnel when the session is over, and remember `make stop` removes the
+server but leaves the tunnel running. See
+[`docs/LABEL_STUDIO.md`](docs/LABEL_STUDIO.md).
+
 `make check` runs the tests, lint, and format checks.
 
 Override any environment path without editing files, for example:
