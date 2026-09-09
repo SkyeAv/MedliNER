@@ -411,7 +411,8 @@ def test_label_config_speaks_to_annotators_not_machines():
     assert "Submit" in joined
     assert "Regions" in joined  # deleting a wrong AI suggestion goes through the Regions panel
     assert "trash" in joined
-    assert "Children's Hospital of Philadelphia (CHOP)" in joined  # presentation footer
+    # Provenance comes from the per-task $source_ref HyperText, not a hardcoded line.
+    assert "Presented at" not in joined
 
 
 def test_label_config_interpolates_every_field_the_import_file_supplies():

@@ -65,8 +65,9 @@ on the shared instance sees every project. The managed flow supports a group ses
    span scope, the mechanical steps, what not to highlight, and how to delete a wrong AI
    suggestion (click it under **Regions** on the right, then the trash icon) — so a
    subject-matter expert who has never opened Label Studio can start from the first task.
-   Instruction lines render at 14px so they stay subordinate to the 17px passage, and a CHOP
-   presentation footer sits at the bottom of every task.
+   Instruction lines render at 14px so they stay subordinate to the 17px passage, and a
+   one-line provenance footer (`source_ref` — the DailyMed SPL link or FAERS case id) sits at
+   the bottom of every task.
 6. **Reach annotators off the LAN** with `make tunnel`, which runs `cloudflared` as an
    account-less *quick tunnel* (no Cloudflare account, token, or DNS record) in the detached tmux
    session `medliner-tunnel`, forwards it to the Label Studio port on loopback, and prints the

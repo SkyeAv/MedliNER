@@ -45,5 +45,4 @@
     <HyperText name="source" value="$source_ref" inline="true" clickableLinks="true"
                selectionEnabled="false" />
   </View>
-  <Header value="Presented at The Children's Hospital of Philadelphia (CHOP), October 8, 2026." size="4" />
 </View>
