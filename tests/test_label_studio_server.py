@@ -30,9 +30,14 @@ class FakePodman:
         if action[:1] == ["inspect"]:
             if name not in self.containers:
                 return subprocess.CompletedProcess(args, 1, "", "no such container")
+            if "Config.Env" in " ".join(args):
+                env = self.containers[name].get("env", [])
+                return subprocess.CompletedProcess(args, 0, "\n".join(env) + "\n", "")
             return subprocess.CompletedProcess(args, 0, self.containers[name]["state"] + "\n", "")
         if action[:1] == ["run"]:
-            self.containers[args[args.index("--name") + 1]] = {"state": "running"}
+            container_name = args[args.index("--name") + 1]
+            env = [args[index + 1] for index, value in enumerate(args[:-1]) if value == "-e"]
+            self.containers[container_name] = {"state": "running", "env": env}
             return subprocess.CompletedProcess(args, 0, "container-id\n", "")
         if action[:1] == ["rm"]:
             self.containers.pop(name, None)
@@ -166,6 +171,39 @@ def test_ensure_container_reuses_a_running_container(podman, tmp_path):
     assert not [call for call in podman.calls if call[1] == "run"]
 
 
+def test_ensure_container_passes_csrf_trusted_origins(podman, tmp_path):
+    server.ensure_container(
+        name="medliner-label-studio",
+        image="img",
+        port=8080,
+        data_dir=tmp_path,
+        username="u",
+        password="p",
+        csrf_trusted_origins=["https://*.trycloudflare.com", "https://review.example"],
+    )
+    (run_call,) = [call for call in podman.calls if call[1] == "run"]
+    assert "CSRF_TRUSTED_ORIGINS=https://*.trycloudflare.com,https://review.example" in run_call
+    assert (
+        run_call[run_call.index("CSRF_TRUSTED_ORIGINS=https://*.trycloudflare.com,https://review.example") - 1] == "-e"
+    )
+
+
+def test_ensure_container_replaces_running_container_with_stale_csrf_origins(podman, tmp_path):
+    podman.containers["medliner-label-studio"] = {"state": "running", "env": []}
+    server.ensure_container(
+        name="medliner-label-studio",
+        image="img",
+        port=8080,
+        data_dir=tmp_path,
+        username="u",
+        password="p",
+        csrf_trusted_origins=["https://*.trycloudflare.com"],
+    )
+    assert [call for call in podman.calls if call[1] == "rm"]
+    (run_call,) = [call for call in podman.calls if call[1] == "run"]
+    assert "CSRF_TRUSTED_ORIGINS=https://*.trycloudflare.com" in run_call
+
+
 def test_ensure_container_replaces_a_stopped_container(podman, tmp_path):
     podman.containers["medliner-label-studio"] = {"state": "exited"}
     server.ensure_container(
@@ -266,8 +304,12 @@ def test_provision_creates_project_and_imports_tasks(monkeypatch, podman, tmp_pa
         username="u",
         password="p",
         token="test-token",
+        csrf_trusted_origins=["https://*.trycloudflare.com"],
     )
     assert result["url"] == f"http://127.0.0.1:{server.DEFAULT_PORT}"
+    assert result["csrf_trusted_origins"] == ["https://*.trycloudflare.com"]
+    run_call = next(call for call in podman.calls if call[1] == "run")
+    assert "CSRF_TRUSTED_ORIGINS=https://*.trycloudflare.com" in run_call
     assert result["tasks_in_project"] == 1
     assert result["reimported"] is False
     project = fake.projects[result["project_id"]]

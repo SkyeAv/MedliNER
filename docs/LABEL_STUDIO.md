@@ -88,6 +88,14 @@ Notes on `make tunnel`:
 - **The slug changes on every start**, so re-share the URL after each `make tunnel-stop`. While a
   tunnel is up, `make tunnel` is idempotent: it reprints the current URL instead of opening a
   second tunnel, and it refuses to guess if the session is serving a different origin.
+- **CSRF is trusted for the quick-tunnel wildcard**: the container receives
+  `CSRF_TRUSTED_ORIGINS=https://*.trycloudflare.com`, so Django accepts the random HTTPS slug
+  shown by `make tunnel`. Set `MEDLINER_LABEL_STUDIO_CSRF_ORIGINS` to a comma-separated list of
+  exact HTTPS origins when using a different public hostname; do not include a trailing slash.
+  The setting is fixed when Podman creates the container, so an existing container created before
+  this setting was added is automatically recreated by the next `make annotate` while its mounted
+  annotations remain intact. Because this trusts any quick-tunnel slug, keep the tunnel private by
+  URL and stop it after the session.
 - **Order does not matter**: `make tunnel` before `make annotate` is fine — the URL answers 502
   until the server is healthy. `MEDLINER_LABEL_STUDIO_HOST` can stay `127.0.0.1`; a wildcard bind
   (`0.0.0.0`, `::`) is normalized to loopback for the tunnel origin.

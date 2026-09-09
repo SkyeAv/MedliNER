@@ -24,6 +24,7 @@ from typing import Any
 DEFAULT_CONTAINER = "medliner-label-studio"
 DEFAULT_IMAGE = "docker.io/heartexlabs/label-studio:latest"
 DEFAULT_PORT = 9030
+DEFAULT_CSRF_TRUSTED_ORIGINS: tuple[str, ...] = ("https://*.trycloudflare.com",)
 DEFAULT_PROJECT_TITLE = "MedliNER"
 WARMUP_PROJECT_TITLE = "MedliNER — Warm-up"
 HEALTH_TIMEOUT_S = 300.0
@@ -63,18 +64,37 @@ def ensure_container(
     username: str,
     password: str,
     publish_host: str = "127.0.0.1",
+    csrf_trusted_origins: list[str] | None = None,
 ) -> str:
     """Start the Label Studio container idempotently; returns the container id.
 
     An existing non-running container is replaced rather than started: port, volume, and
     credential env cannot change on ``podman start``, and the mounted data directory keeps
-    the Label Studio database across the replacement. ``publish_host`` is the address the
-    port mapping binds (``127.0.0.1`` keeps the server private; ``0.0.0.0`` exposes it on
-    every interface so annotators on the same network can reach it).
+    the Label Studio database across the replacement. A running container is also replaced
+    when its CSRF origin env differs, because container env is fixed at ``podman run``.
+    ``publish_host`` is the address the port mapping binds (``127.0.0.1`` keeps the server
+    private; ``0.0.0.0`` exposes it on every interface so annotators on the same network can
+    reach it).
     """
     state = container_state(name)
     if state == "running":
-        return name
+        if not csrf_trusted_origins:
+            return name
+        inspected = _run(["podman", "inspect", "--format", "{{range .Config.Env}}{{println .}}{{end}}", name])
+        if inspected.returncode != 0:
+            raise LabelStudioServerError(f"podman inspect failed for {name}: {inspected.stderr.strip()}")
+        expected = ",".join(csrf_trusted_origins)
+        current = next(
+            (
+                line.partition("=")[2]
+                for line in (inspected.stdout or "").splitlines()
+                if line.startswith("CSRF_TRUSTED_ORIGINS=")
+            ),
+            None,
+        )
+        if current == expected:
+            return name
+        state = "stale"
     if state is not None:
         removed = _run(["podman", "rm", "-f", name])
         if removed.returncode != 0:
@@ -87,6 +107,7 @@ def ensure_container(
     chown = _run(["podman", "unshare", "chown", "-R", "1001:0", str(data_dir)])
     if chown.returncode != 0:
         raise LabelStudioServerError(f"could not chown {data_dir} for the container user: {chown.stderr.strip()}")
+    env_args = ["-e", f"CSRF_TRUSTED_ORIGINS={','.join(csrf_trusted_origins)}"] if csrf_trusted_origins else []
     result = _run(
         [
             "podman",
@@ -102,6 +123,7 @@ def ensure_container(
             f"LABEL_STUDIO_USERNAME={username}",
             "-e",
             f"LABEL_STUDIO_PASSWORD={password}",
+            *env_args,
             image,
         ]
     )
@@ -283,6 +305,7 @@ def provision(
     project_title: str = DEFAULT_PROJECT_TITLE,
     reimport: bool = False,
     publish_host: str = "127.0.0.1",
+    csrf_trusted_origins: list[str] | None = None,
     annotators: list[tuple[str, str]] | None = None,
     prelabel_model_version: str | None = None,
 ) -> dict[str, Any]:
@@ -302,6 +325,7 @@ def provision(
         username=username,
         password=password,
         publish_host=publish_host,
+        csrf_trusted_origins=csrf_trusted_origins,
     )
     base_url = _base_url(port)
     wait_healthy(base_url)
@@ -331,6 +355,7 @@ def provision(
         "existing_tasks": existing,
         "reimported": bool(existing and reimport),
         "publish_host": publish_host,
+        "csrf_trusted_origins": csrf_trusted_origins or [],
         "annotators_created": annotators_created,
         "prelabeled": bool(prelabel_model_version),
         "usernames": usernames,
@@ -376,6 +401,7 @@ def export_project(
 
 __all__ = [
     "DEFAULT_CONTAINER",
+    "DEFAULT_CSRF_TRUSTED_ORIGINS",
     "DEFAULT_IMAGE",
     "DEFAULT_PORT",
     "DEFAULT_PROJECT_TITLE",

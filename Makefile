@@ -15,6 +15,8 @@ export MEDLINER_LABEL_STUDIO_IMAGE ?= docker.io/heartexlabs/label-studio:latest
 export MEDLINER_LABEL_STUDIO_HOST ?= 127.0.0.1
 # Comma-separated user:password accounts ensured at start.
 export MEDLINER_LABEL_STUDIO_ANNOTATORS ?=
+# Django must trust the HTTPS origin used by Cloudflare's random quick-tunnel slug.
+export MEDLINER_LABEL_STUDIO_CSRF_ORIGINS ?= https://*.trycloudflare.com
 export MEDLINER_LLM_URL ?= http://127.0.0.1:8080
 # Model checkout with the `medliner` llama-server target; falls back to ~/Desktop/MODELS.
 MODELS_DIR ?= $(if $(wildcard $(CURDIR)/models/Makefile),$(CURDIR)/models,$(HOME)/Desktop/MODELS)

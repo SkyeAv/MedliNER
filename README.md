@@ -56,6 +56,7 @@ The checked-in `.envrc` exports:
 | `MEDLINER_PRELABEL_MODEL` / `_THRESHOLD` / `_DEVICE` | GLiNER checkpoint, score floor, and device used by the pre-labeling step of `make prepare` |
 | `MEDLINER_LABEL_STUDIO_PORT` / `_IMAGE` | podman Label Studio container port and image |
 | `MEDLINER_LABEL_STUDIO_USERNAME` / `_PASSWORD` / `_TOKEN` | Label Studio login created on first container boot, or an explicit API token |
+| `MEDLINER_LABEL_STUDIO_CSRF_ORIGINS` | comma-separated Django trusted origins (default `https://*.trycloudflare.com` for quick tunnels) |
 | `MEDLINER_LLM_URL` | local LLM server for `make prepare` and `make shorten` (default `http://127.0.0.1:8080`, started by `make llm`; set `MODELS_DIR` for the model checkout) |
 | `MEDLINER_SHORTEN_MAX_WORDS` | word threshold for shortening, ≈3-4 short sentences (default `48`; applied to the sampled batch during `make prepare`) |
 | `MEDLINER_SHORTEN_WORKERS` | parallel rewrite requests (default `4`, matching the server's four slots) |
@@ -91,11 +92,11 @@ with an account on the shared instance sees every project.
 
 Annotators outside the LAN reach the same server with `make tunnel` (needs `cloudflared` and
 `tmux`): it runs an account-less Cloudflare quick tunnel in a detached tmux session and prints a
-random `https://<slug>.trycloudflare.com` URL; `make tunnel-stop` ends it. That URL is public and
-Label Studio signup stays open, so anyone who finds it can create an account — pre-create the
+random `https://<slug>.trycloudflare.com` URL. The managed container trusts that wildcard HTTPS
+origin so signup and login work through the tunnel; `make tunnel-stop` ends it. That URL is public
+and Label Studio signup stays open, so anyone who finds it can create an account — pre-create the
 annotator accounts, stop the tunnel when the session is over, and remember `make stop` removes the
-server but leaves the tunnel running. See
-[`docs/LABEL_STUDIO.md`](docs/LABEL_STUDIO.md).
+server but leaves the tunnel running. See [`docs/LABEL_STUDIO.md`](docs/LABEL_STUDIO.md).
 
 `make check` runs the tests, lint, and format checks.
 

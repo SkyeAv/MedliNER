@@ -275,6 +275,7 @@ def test_label_studio_provisions_with_the_import_file(tmp_path, monkeypatch, cap
     assert cli.main(["label-studio", "--input", str(raw), "--reimport"]) == 0
     assert Path(calls["import_file"]).name.startswith("import-")
     assert calls["reimport"] is True
+    assert calls["csrf_trusted_origins"] == ["https://*.trycloudflare.com"]
     assert "http://127.0.0.1:9030" in capsys.readouterr().out
 
 
@@ -302,6 +303,7 @@ def test_label_studio_annotator_env_and_validation(tmp_path, monkeypatch, capsys
     monkeypatch.setenv("MEDLINER_RAW_CANDIDATES", str(raw))
     monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
     monkeypatch.setenv("MEDLINER_LABEL_STUDIO_ANNOTATORS", "alice:pw-a,bob:pw-b")
+    monkeypatch.setenv("MEDLINER_LABEL_STUDIO_CSRF_ORIGINS", "https://one.example, https://two.example")
     calls = {}
 
     def fake_provision(**kwargs):
@@ -311,6 +313,7 @@ def test_label_studio_annotator_env_and_validation(tmp_path, monkeypatch, capsys
     monkeypatch.setattr(cli, "provision", fake_provision)
     assert cli.main(["label-studio", "--input", str(raw)]) == 0
     assert calls["annotators"] == [("alice", "pw-a"), ("bob", "pw-b")]
+    assert calls["csrf_trusted_origins"] == ["https://one.example", "https://two.example"]
 
     # A pair without a separator is rejected loudly before anything is provisioned.
     monkeypatch.setenv("MEDLINER_LABEL_STUDIO_ANNOTATORS", "alicepw")
@@ -335,6 +338,7 @@ def test_label_studio_warmup_provisions_the_separate_project(tmp_path, monkeypat
     assert len(calls) == 2
     assert calls[0]["project_title"] == "MedliNER"
     assert calls[1]["project_title"] == "MedliNER — Warm-up"
+    assert calls[0]["csrf_trusted_origins"] == calls[1]["csrf_trusted_origins"] == ["https://*.trycloudflare.com"]
     warmup_tasks = json.loads(Path(calls[1]["import_file"]).read_text(encoding="utf-8"))
     assert len(warmup_tasks) == 10  # the warmup import is capped at ten gold cases
     assert all(task["data"]["source_family"] == "gold-warmup" for task in warmup_tasks)

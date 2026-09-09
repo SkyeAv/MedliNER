@@ -44,6 +44,7 @@ from .candidates import (
 )
 from .export_ingest import ingest_export
 from .label_studio_server import (
+    DEFAULT_CSRF_TRUSTED_ORIGINS,
     DEFAULT_IMAGE,
     DEFAULT_PORT,
     DEFAULT_PROJECT_TITLE,
@@ -687,6 +688,12 @@ def cmd_label_studio(args: argparse.Namespace) -> None:
     port = int(os.environ.get("MEDLINER_LABEL_STUDIO_PORT", str(DEFAULT_PORT)))
     image = os.environ.get("MEDLINER_LABEL_STUDIO_IMAGE", DEFAULT_IMAGE)
     host = os.environ.get("MEDLINER_LABEL_STUDIO_HOST", "127.0.0.1")
+    raw_csrf_origins = os.environ.get("MEDLINER_LABEL_STUDIO_CSRF_ORIGINS")
+    csrf_trusted_origins = (
+        [origin.strip() for origin in raw_csrf_origins.split(",") if origin.strip()]
+        if raw_csrf_origins is not None
+        else list(DEFAULT_CSRF_TRUSTED_ORIGINS)
+    )
     annotator_values = args.annotator
     if not annotator_values:
         env_annotators = os.environ.get("MEDLINER_LABEL_STUDIO_ANNOTATORS")
@@ -707,6 +714,7 @@ def cmd_label_studio(args: argparse.Namespace) -> None:
         data_dir=workdir() / "label-studio" / "server-data",
         project_title=DEFAULT_PROJECT_TITLE,
         publish_host=host,
+        csrf_trusted_origins=csrf_trusted_origins,
         annotators=annotators,
         reimport=args.reimport,
         prelabel_model_version=prelabel_version,
@@ -737,6 +745,8 @@ def cmd_label_studio(args: argparse.Namespace) -> None:
             image=image,
             data_dir=workdir() / "label-studio" / "server-data",
             project_title=WARMUP_PROJECT_TITLE,
+            publish_host=host,
+            csrf_trusted_origins=csrf_trusted_origins,
             reimport=args.reimport,
             **credentials,
         )
