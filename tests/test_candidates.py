@@ -11,6 +11,7 @@ import pytest
 
 from medliner.candidates import (
     GENERATOR_VERSION,
+    GOLD_ANSWERS_NOTE,
     CandidateInputError,
     CandidateText,
     PinnedSpl,
@@ -374,8 +375,12 @@ def test_import_tasks_always_carry_the_screen_display_fields():
             ),
         ]
     )
-    assert all("shortened_note" in task["data"] and "source_ref" in task["data"] for task in tasks)
+    assert all(
+        "shortened_note" in task["data"] and "source_ref" in task["data"] and "gold_answers" in task["data"]
+        for task in tasks
+    )
     assert all(task["data"]["shortened_note"] == "" for task in tasks)  # nothing shortened yet
+    assert all(task["data"]["gold_answers"] == "" for task in tasks)  # presenter line stays blank
 
 
 def test_warmup_tasks_carry_the_screen_display_fields():
@@ -394,6 +399,7 @@ def test_warmup_tasks_carry_the_screen_display_fields():
         gold.write_text(json.dumps(payload), encoding="utf-8")
         (task,) = build_warmup_tasks(gold)
     assert task["data"]["shortened_note"] == ""
+    assert task["data"]["gold_answers"] == GOLD_ANSWERS_NOTE  # generic example, not this case's gold
     assert "source_ref" in task["data"]
 
 

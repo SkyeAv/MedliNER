@@ -25,13 +25,20 @@ from pydantic import BaseModel, ValidationError, field_validator
 
 from .schema import ALLOWED_TASKS
 
-GENERATOR_VERSION = "medliner.candidates.v2"
+GENERATOR_VERSION = "medliner.candidates.v3"
 WARMUP_SOURCE_FAMILY = "gold-warmup"
 
 #: Shown to annotators on tasks whose text an LLM rewrote during ``make prepare``. Every task
 #: carries a ``shortened_note`` key because Label Studio renders a missing ``$var`` as the
 #: literal string ``$shortened_note``; the empty default is what makes the line disappear.
 SHORTENED_NOTE = "An AI shortened this text so it fits on one screen. Highlight only what you see here."
+
+#: Presenter-only line rendered above the passage in the warm-up demo. Every task carries a
+#: ``gold_answers`` key for the same reason as ``shortened_note``; real tasks keep it empty so
+#: annotators never see answer text. Warm-up tasks show the annotation guide's generic teaching
+#: example, never a gold case's own surfaces — those stay in ``gold_mentions``, which the
+#: labeling config renders nowhere.
+GOLD_ANSWERS_NOTE = "Example answers: “active liver disease” and “transaminase elevations”."
 
 #: A DailyMed document id is only linkable when it is an SPL setid. Placeholder ids such as
 #: ``spl-document-001`` must stay plain text rather than become a dead link.
@@ -248,9 +255,10 @@ def build_import_tasks(
             "text": candidate.text,
             "task": candidate.task,
             "source_family": candidate.source_family,
-            # Display fields for the annotation screen. Both are always present: Label Studio
+            # Display fields for the annotation screen. All are always present: Label Studio
             # renders an absent "$var" as its literal name.
             "shortened_note": "",
+            "gold_answers": "",
             # Invisible flag (rendered nowhere): whether this task's SPL is pinned to the
             # front of the queue. Always present so the column is uniform in the Data Manager.
             "pinned": False,
@@ -582,6 +590,7 @@ def build_warmup_tasks(gold_path: str | Path, *, limit: int = 10) -> list[dict[s
                     "source_family": WARMUP_SOURCE_FAMILY,
                     "source_document_id": case_id,
                     "shortened_note": "",
+                    "gold_answers": GOLD_ANSWERS_NOTE,
                     "pinned": False,
                     "source_ref": source_reference(family=WARMUP_SOURCE_FAMILY, document_id=case_id),
                     "generator_version": GENERATOR_VERSION,
@@ -596,6 +605,7 @@ def build_warmup_tasks(gold_path: str | Path, *, limit: int = 10) -> list[dict[s
 
 __all__ = [
     "GENERATOR_VERSION",
+    "GOLD_ANSWERS_NOTE",
     "SHORTENED_NOTE",
     "WARMUP_SOURCE_FAMILY",
     "CandidateInputError",

@@ -401,13 +401,17 @@ def test_label_config_speaks_to_annotators_not_machines():
     headers = [node.get("value", "") for node in ET.parse(config).iter("Header")]
     assert not [value for value in headers if value.startswith(("Task:", "Source:"))]
     joined = " ".join(headers)
+    style = " ".join(node.text or "" for node in ET.parse(config).iter("Style"))
+    assert "font-size:14px" in style  # instruction lines stay subordinate to the 17px passage
     # Scope: only the conditions the statement targets, and there can be several.
     assert "only the conditions this $task text is about" in joined
-    assert "Repeat for each one" in joined
-    # Mechanics: the three steps a newcomer cannot guess.
-    assert "Drag across the whole phrase" in joined
-    assert "Press 1 to label it." in joined
+    assert "Repeat for each condition" in joined
+    # Mechanics: press the label hotkey before dragging, and how to delete a pre-label.
+    assert "Press 1, then drag across the whole phrase" in joined
     assert "Submit" in joined
+    assert "Regions" in joined  # deleting a wrong AI suggestion goes through the Regions panel
+    assert "trash" in joined
+    assert "Children's Hospital of Philadelphia (CHOP)" in joined  # presentation footer
 
 
 def test_label_config_interpolates_every_field_the_import_file_supplies():
@@ -418,7 +422,7 @@ def test_label_config_interpolates_every_field_the_import_file_supplies():
     config = Path(__file__).resolve().parents[1] / "configs" / "label_studio_ner.xml"
     values = [node.get("value", "") for node in ET.parse(config).iter() if node.get("value")]
     referenced = {match for value in values for match in re.findall(r"\$([a-z_]+)", value)}
-    assert referenced == {"task", "text", "shortened_note", "source_ref"}
+    assert referenced == {"task", "text", "shortened_note", "gold_answers", "source_ref"}
 
 
 def test_label_config_source_line_is_actually_clickable():

@@ -37,7 +37,7 @@ link.
 ## Review rules
 
 - Model pre-annotations are suggestions only. Accept, correct, delete, or add spans; never treat an untouched prediction as gold without human review.
-- The pre-labeler is blind to rule 1. GLiNER is prompted with the bare condition label, so it proposes *every* condition mention it finds, including ones the statement does not target. Deleting suggestions is normal review work, not a sign that something went wrong.
+- The pre-labeler is blind to rule 1. GLiNER is prompted with the bare condition label, so it proposes *every* condition mention it finds, including ones the statement does not target. Deleting suggestions is normal review work, not a sign that something went wrong. To delete one, click it under **Regions** on the right side of the screen, then click the trash icon.
 - A reviewed task must have `reviewed` or `adjudicated` status in the downstream manifest.
 - If annotators disagree, an adjudicator resolves the final span. Preserve the original annotations and annotator IDs in the export/provenance record.
 - There is only one label; if a span's status as a condition mention is uncertain, record the case for adjudication rather than inventing a new label or dropping the span.

@@ -61,9 +61,12 @@ on the shared instance sees every project. The managed flow supports a group ses
 4. **Warm up the room** with `uv run medliner label-studio --warmup` — an informal demo whose
    gold spans are intentionally visible to the presenter.
 5. **Speed up labeling** with the hotkey baked into `configs/label_studio_ner.xml`:
-   `1` = DiseaseOrPhenotypicFeature after selecting a span. The same config states the whole
-   task on screen — the span scope, the three mechanical steps, and what not to highlight — so
-   a subject-matter expert who has never opened Label Studio can start from the first task.
+   press `1`, then drag across the span. The same config states the whole task on screen — the
+   span scope, the mechanical steps, what not to highlight, and how to delete a wrong AI
+   suggestion (click it under **Regions** on the right, then the trash icon) — so a
+   subject-matter expert who has never opened Label Studio can start from the first task.
+   Instruction lines render at 14px so they stay subordinate to the 17px passage, and a CHOP
+   presentation footer sits at the bottom of every task.
 6. **Reach annotators off the LAN** with `make tunnel`, which runs `cloudflared` as an
    account-less *quick tunnel* (no Cloudflare account, token, or DNS record) in the detached tmux
    session `medliner-tunnel`, forwards it to the Label Studio port on loopback, and prints the
@@ -138,19 +141,27 @@ task exposes at least:
 
 The task and source fields are context, preserved when exported. They are not labels to be highlighted.
 
-Three keys exist only to be rendered on the annotation screen:
+Four keys exist only to be rendered on the annotation screen:
 
 | Key | Purpose |
 | --- | --- |
 | `task` | interpolated into the instruction heading ("…this **contraindication** text is about…") |
 | `shortened_note` | the AI-shortened warning, or `""`. Set by the shortening step of `make prepare` on exactly the tasks it rewrote |
+| `gold_answers` | presenter-only demo line: `""` on real tasks, a generic teaching example on warm-up tasks |
 | `source_ref` | concise provenance for the annotator — an `<a>` to the exact DailyMed SPL when the id is a setid or a `source_uri` is present, otherwise plain text |
 
-`shortened_note` and `source_ref` are present on **every** task, including the empty case:
+`shortened_note`, `gold_answers`, and `source_ref` are present on **every** task, including the
+empty case:
 Label Studio renders a `$var` it cannot resolve as the literal string `$shortened_note`. A
 `data.ai_shortened` boolean accompanies the note as a filterable Data Manager column. Because
 an import file predating these keys would display them literally, `medliner` rebuilds any
 import file whose manifest records an older `generator_version` instead of reusing it.
+
+The `gold_answers` line is how the warm-up presenter shows answers without leaking them: real
+tasks carry `""`, and warm-up tasks carry the annotation guide's generic teaching example
+(`Example answers: “active liver disease” and “transaminase elevations”.`), never a gold case's
+own surfaces — those stay in `data.gold_mentions`, which the labeling config renders nowhere.
+The line shows green and bold via the `.medliner-gold` style.
 
 Dailymed-sourced tasks additionally carry `section` (the LOINC section code) and
 `source_uri` (a DailyMed URL whose `#<LOINC>` fragment jumps straight to the source
