@@ -67,7 +67,6 @@ help:
 		'' \
 		'Local LLM (used by make shorten and make synthesize):' \
 		'  make llm                Start the LLM used by make prepare / make shorten / make synthesize (detached tmux)' \
-
 		'  make llm-stop           Kill the LLM tmux session' \
 		'  make shorten            Rewrite texts over MAX_WORDS words via the LLM; resumes interrupted runs' \
 		'' \
