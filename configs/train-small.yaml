@@ -12,8 +12,14 @@ per_device_eval_batch_size: 1
 gradient_accumulation_steps: 8
 dataloader_num_workers: 0
 
-learning_rate: 0.00005
+# GLiNER uses separate rates: learning_rate is for the pretrained DeBERTa encoder
+# (token_rep_layer.*), others_lr for the span/prompt stack. Omitting others_lr trains the
+# encoder at the head rate, which on a small dataset risks catastrophic forgetting. These track
+# the v2.1 checkpoint's own recipe (lr_encoder=1e-5, lr_others=5e-5) halved for small data.
+learning_rate: 0.00001
 weight_decay: 0.01
+others_lr: 0.00005
+others_weight_decay: 0.01
 max_grad_norm: 1.0
 lr_scheduler_type: linear
 num_train_epochs: 5

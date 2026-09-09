@@ -40,7 +40,7 @@ class FixedLabelCollator:
     present, plus sampled negatives. A batch containing only no-entity examples then has zero
     entity types and the loss fails on ``scores.view(BS, -1, CL)`` with ``CL == 0`` -- which at
     ``per_device_train_batch_size: 1`` means the first reviewed empty example kills the run.
-    Empty examples are deliberate training signal here, and evaluation always queries all three
+    Empty examples are deliberate training signal here, and evaluation always queries both
     labels, so fixing the vocabulary matches inference as well as keeping the loss well-defined.
     """
 
@@ -220,10 +220,16 @@ def _training_arguments(model: Any, config: dict[str, Any], output_dir: Path, de
         "output_dir": str(output_dir),
         "learning_rate": float(config.get("learning_rate", 5e-5)),
         "weight_decay": float(config.get("weight_decay", 0.01)),
+        # GLiNER trains the pretrained DeBERTa encoder (`token_rep_layer.*`) and the span/prompt
+        # stack at different rates (the v2.1 checkpoint itself used lr_encoder=1e-5,
+        # lr_others=5e-5). Omitting `others_lr` collapses both to `learning_rate`, so the 141M
+        # encoder is trained at the head's rate -- a catastrophic-forgetting risk on small data.
+        "others_lr": float(config.get("others_lr", 5e-5)),
+        "others_weight_decay": float(config.get("others_weight_decay", 0.01)),
         "per_device_train_batch_size": int(config.get("per_device_train_batch_size", 1)),
         "per_device_eval_batch_size": int(config.get("per_device_eval_batch_size", 1)),
         "gradient_accumulation_steps": int(config.get("gradient_accumulation_steps", 8)),
-        "num_train_epochs": float(config.get("num_train_epochs", 3)),
+        "num_train_epochs": float(config.get("num_train_epochs", 5)),
         "max_steps": int(config.get("max_steps", -1)),
         "max_grad_norm": float(config.get("max_grad_norm", 1.0)),
         "lr_scheduler_type": str(config.get("lr_scheduler_type", "linear")),
@@ -298,12 +304,27 @@ class ValidationF1Callback(TrainerCallback):
     """Stop on reviewed validation strict F1 and expose it to Trainer model selection."""
 
     def __init__(
-        self, examples: list[Example], *, labels: list[str], threshold: float = 0.3, patience: int = 2
+        self,
+        examples: list[Example],
+        *,
+        labels: list[str],
+        threshold: float = 0.3,
+        patience: int = 2,
+        max_words: int | None = None,
     ) -> None:
+        if not any(example.annotations for example in examples):
+            # Strict F1 over a slice with no gold spans is 0.0 no matter how good the model is
+            # (tp and fn are both structurally 0), so it can neither rank checkpoints nor make
+            # early stopping meaningful. Silently "selecting" on it is worse than refusing.
+            raise ValueError(
+                "the validation split contains no annotated examples; strict F1 would be 0.0 for "
+                "every checkpoint, making model selection and early stopping meaningless"
+            )
         self.examples = examples
         self.labels = labels
         self.threshold = threshold
         self.patience = patience
+        self.max_words = max_words
         self.best_f1 = -1.0
         self.bad_evaluations = 0
 
@@ -319,10 +340,20 @@ class ValidationF1Callback(TrainerCallback):
             return model.predict_entities(text, self.labels, threshold=self.threshold)
 
         try:
-            report = score_examples(predict, self.examples)
+            report = score_examples(predict, self.examples, max_words=self.max_words)
         finally:
             if was_training:
                 model.train()
+        truncation = report["truncation"]
+        if truncation.get("checked") and truncation.get("over_budget_examples"):
+            # Over-budget validation text is silently truncated by GLiNER, depressing the very
+            # metric this callback selects on. Surface it rather than letting it look like a
+            # worse checkpoint.
+            print(
+                f"medliner: warning: {truncation['over_budget_examples']} validation example(s) exceed "
+                f"the model's {truncation['max_words']}-word budget and are truncated; "
+                f"eval_strict_f1 understates quality (ids: {', '.join(truncation['example_ids'][:5])})"
+            )
         f1 = float(report["overall"]["strict"]["f1"])
         metrics["eval_strict_f1"] = f1
         if f1 > self.best_f1:
@@ -345,12 +376,14 @@ def _make_trainer(
     *,
     weighted: bool = False,
 ) -> Any:
-    labels = list(config.get("labels") or ALLOWED_LABELS)
+    labels: list[str] = list(config.get("labels") or ALLOWED_LABELS)
+    max_len = getattr(getattr(model, "config", None), "max_len", None)
     callback = ValidationF1Callback(
         eval_examples,
         labels=labels,
         threshold=float(config.get("evaluation_threshold", 0.3)),
         patience=int(config.get("early_stopping_patience", 2)),
+        max_words=max_len if isinstance(max_len, int) else None,
     )
     # Weight 1.0 everywhere must stay bit-equivalent to the historical gold-only path, so the
     # plain FixedLabelCollator + GLiNER Trainer pair is kept verbatim whenever no synthetic
@@ -417,7 +450,12 @@ def _assert_no_synthetic_in_held_out(synthetic: list[Example], held_out: list[Ex
     """Held-out splits must measure gold performance only; synthetic ids never enter them."""
     synthetic_ids = {example.id for example in synthetic}
     overlap = sorted(synthetic_ids & {example.id for example in held_out})
-    assert not overlap, f"synthetic examples leaked into validation/test: {overlap[:5]} (of {len(overlap)})"
+    if overlap:
+        # A bare `assert` would vanish under `python -O`/`PYTHONOPTIMIZE`, silently contaminating
+        # every reported metric, so this is a real exception like the rest of the integrity guards.
+        raise ValueError(
+            f"synthetic examples leaked into validation/test: {overlap[:5]} (of {len(overlap)})"
+        )
 
 
 def train_from_split_directory(

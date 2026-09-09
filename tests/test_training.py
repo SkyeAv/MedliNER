@@ -111,6 +111,8 @@ def test_load_config_reads_the_committed_laptop_config():
     assert config["save_steps"] % config["eval_steps"] == 0
     # The committed mix down-weights synthetic examples 10x relative to gold (1.0).
     assert config["synthetic_weight"] == 0.1
+    # The encoder LR is deliberately below the head LR (GLiNER's separate-rate recipe).
+    assert config["others_lr"] > config["learning_rate"]
 
 
 def test_device_falls_back_to_cpu_without_matching_kernels(monkeypatch):
@@ -216,10 +218,30 @@ def test_validation_callback_publishes_strict_f1_and_stops_on_patience():
 
 
 def test_validation_callback_is_inert_without_a_model_or_metrics():
-    callback = ValidationF1Callback([], labels=["disease"])
+    example = Example(
+        id="a",
+        text="asthma",
+        task="indication",
+        source={"family": "faers"},
+        annotations=[Annotation(start=0, end=6, label="disease", text="asthma")],
+    )
+    callback = ValidationF1Callback([example], labels=["disease"])
     control = SimpleNamespace(should_training_stop=False)
     assert callback.on_evaluate(None, None, control, model=None, metrics={}) is control
     assert callback.best_f1 == -1.0
+
+
+def test_validation_callback_refuses_a_validation_split_with_no_gold_spans():
+    """Strict F1 is structurally 0.0 without gold spans, so selection would be meaningless."""
+    negative = Example(
+        id="n",
+        text="No condition is targeted.",
+        task="indication",
+        source={"family": "faers"},
+        annotations=[],
+    )
+    with pytest.raises(ValueError, match="no annotated examples"):
+        ValidationF1Callback([negative], labels=["disease"])
 
 
 def test_training_arguments_carry_the_laptop_safe_settings(tmp_path):
@@ -249,6 +271,27 @@ def test_training_arguments_carry_the_laptop_safe_settings(tmp_path):
     assert captured["metric_for_best_model"] == "eval_strict_f1"
     assert captured[_eval_strategy_field()] == "steps"
     assert captured["save_strategy"] == "steps"
+
+
+def test_training_arguments_keep_encoder_and_head_learning_rates_separate(tmp_path):
+    """GLiNER's encoder must not be trained at the head's rate (catastrophic forgetting)."""
+    captured = {}
+
+    class Model:
+        @staticmethod
+        def create_training_args(**kwargs):
+            captured.update(kwargs)
+            return kwargs
+
+    _training_arguments(Model(), {}, tmp_path, "cpu")
+    assert captured["others_lr"] == 5e-5
+    assert captured["others_weight_decay"] == 0.01
+    assert captured["learning_rate"] == 5e-5
+    # An explicit small encoder LR survives; an explicit others_lr overrides the default.
+    captured.clear()
+    _training_arguments(Model(), {"learning_rate": 1e-5, "others_lr": 4e-5}, tmp_path, "cpu")
+    assert captured["learning_rate"] == 1e-5
+    assert captured["others_lr"] == 4e-5
 
 
 def test_training_arguments_force_cpu_when_no_usable_gpu(tmp_path):
@@ -601,5 +644,35 @@ def test_synthetic_ids_in_held_out_splits_are_rejected(tmp_path, monkeypatch):
     _patch_training_internals(monkeypatch, captured)
     from medliner.training import train_from_split_directory
 
-    with pytest.raises(AssertionError, match="leaked into validation/test.*val-1"):
+    with pytest.raises(ValueError, match="leaked into validation/test.*val-1"):
         train_from_split_directory(split_dir, tmp_path / "out", config_path=config_path)
+
+def test_validation_callback_threads_the_word_budget_and_warns_on_truncation(capsys):
+    """The truncation guard must actually fire during training, not only in standalone scoring."""
+    long_text = " ".join(f"w{index}" for index in range(50))
+    example = Example(
+        id="long",
+        text=long_text + " asthma",
+        task="indication",
+        source={"family": "faers"},
+        annotations=[Annotation(start=len(long_text) + 1, end=len(long_text) + 7, label="disease", text="asthma")],
+    )
+    callback = ValidationF1Callback([example], labels=["disease"], max_words=10)
+
+    class Model:
+        training = True
+
+        def eval(self):
+            self.training = False
+
+        def train(self):
+            self.training = True
+
+        def predict_entities(self, text, labels, threshold):
+            return []
+
+    control = SimpleNamespace(should_training_stop=False)
+    callback.on_evaluate(None, None, control, model=Model(), metrics={})
+    captured = capsys.readouterr()
+    assert "exceed the model's 10-word budget" in captured.out
+    assert "truncated" in captured.out
