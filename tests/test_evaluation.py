@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from medliner.evaluation import load_gold_benchmark, score_examples
+from medliner.evaluation import Counts, load_gold_benchmark, score_examples
 from medliner.schema import Annotation, Example
 
 
@@ -280,3 +280,39 @@ def test_gliner_predictor_wrapper_normalizes_model_output():
     predictor = GLiNERPredictor(Model(), threshold=0.3)
     assert predictor.max_words == 384
     assert predictor("asthma") == [{"start": 0, "end": 6, "label": "disease", "text": "asthma", "score": 0.9}]
+
+def test_zero_counts_are_unmeasurable_rather_than_a_confident_zero():
+    """Counts(0,0,0) must not look like a model that simply scored 0.0."""
+    empty = Counts(0, 0, 0)
+    assert empty.f1 == 0.0
+    assert empty.measurable is False
+    assert empty.as_dict()["measurable"] is False
+    real = Counts(0, 1, 1)  # predictions and gold both present, just wrong
+    assert real.measurable is True
+    assert real.as_dict()["measurable"] is True
+
+def test_score_examples_marks_a_gold_empty_slice_as_unmeasurable():
+    report = score_examples(lambda _text: [], [])
+    assert report["overall"]["strict"]["f1"] == 0.0
+    assert report["overall"]["strict"]["measurable"] is False
+
+def test_false_positive_rate_is_none_not_zero_without_negative_cases():
+    """0.0 would read as 'perfect on negatives' when no negatives were ever measured."""
+    examples = [
+        Example(
+            id="a",
+            text="asthma",
+            task="indication",
+            source={"family": "faers"},
+            annotations=[Annotation(start=0, end=6, label="disease", text="asthma")],
+        )
+    ]
+    report = score_examples(lambda _text: [], examples)
+    assert report["no_entity"]["examples"] == 0
+    assert report["no_entity"]["false_positive_rate"] is None
+
+def test_false_positive_rate_is_a_number_when_negatives_exist():
+    examples = [Example(id="n", text="patients only", task="indication", source={"family": "faers"})]
+    report = score_examples(lambda _text: [], examples)
+    assert report["no_entity"]["examples"] == 1
+    assert report["no_entity"]["false_positive_rate"] == 0.0

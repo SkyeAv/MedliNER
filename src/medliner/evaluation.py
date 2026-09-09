@@ -52,7 +52,17 @@ class Counts:
         p, r = self.precision, self.recall
         return 2 * p * r / (p + r) if p + r else 0.0
 
-    def as_dict(self) -> dict[str, float | int]:
+    @property
+    def measurable(self) -> bool:
+        """False when there is no gold to recall and nothing was predicted.
+
+        ``Counts(0, 0, 0)`` scores F1 0.0, which is indistinguishable from a model that got
+        everything wrong. Reporting it as a number would let an unmeasurable slice drive model
+        selection and early stopping, so the distinction is carried explicitly.
+        """
+        return bool(self.tp or self.fp or self.fn)
+
+    def as_dict(self) -> dict[str, float | int | bool]:
         return {
             "tp": self.tp,
             "fp": self.fp,
@@ -60,6 +70,7 @@ class Counts:
             "precision": self.precision,
             "recall": self.recall,
             "f1": self.f1,
+            "measurable": self.measurable,
         }
 
 
@@ -144,7 +155,9 @@ def score_examples(
         "no_entity": {
             "examples": len(negatives),
             "false_positive_examples": len(false_positives),
-            "false_positive_rate": len(false_positives) / len(negatives) if negatives else 0.0,
+            # `None`, not 0.0: with no negative examples the rate is unmeasured, and 0.0 would
+            # read as a perfect score on negatives the report never actually saw.
+            "false_positive_rate": len(false_positives) / len(negatives) if negatives else None,
         },
         "truncation": _truncation_report(values, max_words),
         "examples": len(values),

@@ -480,7 +480,9 @@ def score_prelabeler(*, model_id: str, threshold: float, device: str | None, wor
         f"prelabel score ({resolved}): strict P {strict['precision']:.3f} R {strict['recall']:.3f} F1 {strict['f1']:.3f}"
     )
     print(f"prelabel score: boundary-only F1 {boundary['f1']:.3f} over {report['examples']} gold cases")
-    print(f"prelabel score: no-entity false-positive rate {report['no_entity']['false_positive_rate']:.3f}")
+    false_positive_rate = report["no_entity"]["false_positive_rate"]
+    rate_text = f"{false_positive_rate:.3f}" if false_positive_rate is not None else "n/a (no negative cases)"
+    print(f"prelabel score: no-entity false-positive rate {rate_text}")
 
 
 def run_dataset(path: Path) -> Path:
@@ -1499,8 +1501,15 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         args.func(args)
-    except (FileNotFoundError, RuntimeError, ValueError) as exc:
-        print(f"medliner: error: {exc}", file=sys.stderr)
+    except KeyboardInterrupt:
+        raise
+    except Exception as exc:
+        # One clean line, non-zero exit. Only interrupts and SystemExit pass through; everything
+        # else (including OSError / KeyError / ImportError from the ML path) becomes a message
+        # instead of a traceback. MEDLINER_DEBUG keeps the full traceback for programmer bugs.
+        print(f"medliner: error: {type(exc).__name__}: {exc}", file=sys.stderr)
+        if os.environ.get("MEDLINER_DEBUG"):
+            raise
         return 1
     return 0
 
