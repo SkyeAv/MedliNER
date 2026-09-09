@@ -19,10 +19,10 @@ export MEDLINER_LABEL_STUDIO_ANNOTATORS ?=
 export MEDLINER_ONBOARDING_CONFIG ?= $(CURDIR)/configs/onboarding.json
 export MEDLINER_ONBOARDING_EXPORT ?= $(CURDIR)/data/materialized/onboarding/export.json
 export MEDLINER_LLM_URL ?= http://127.0.0.1:8080
-# Semi-supervised synthesis (make synthesize; needs the LLM from `make llm` first). Same
-# defaults as the CLI stage and .envrc, so a checkout works without direnv.
-export MEDLINER_SYNTH_RATIO ?= 10
-export MEDLINER_SYNTH_MIN_RATIO ?= 5
+# Semi-supervised synthesis: llama.cpp supplies odd slots and 9router supplies even slots.
+# Both endpoints are mandatory when 9router is configured; the CLI hard-fails if either is down.
+export MEDLINER_SYNTH_RATIO ?= 20
+export MEDLINER_SYNTH_MIN_RATIO ?= 20
 export MEDLINER_SYNTH_MAX_ATTEMPTS ?= 3
 export MEDLINER_SYNTH_MAX_WORDS ?= 250
 export MEDLINER_SYNTH_MIN_SIMILARITY ?= 0.3
@@ -60,7 +60,7 @@ help:
 		'  make onboarding-promote Export the quiz, score every attempt, promote everyone passing' \
 		'' \
 		'Training (everything after Label Studio, one command):' \
-		'  make train              dataset → splits → train → evaluate → bundle' \
+		'  make train              train the fine-tuned model (use make pipeline for the full chain)' \
 		'' \
 		'Semi-supervised (optional; requires the local LLM, so run `make llm` first):' \
 		'  make synthesize         Fill the gated synthetic pool: make llm -> make synthesize -> make train' \

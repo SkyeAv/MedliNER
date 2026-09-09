@@ -647,6 +647,7 @@ def test_synthetic_ids_in_held_out_splits_are_rejected(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="leaked into validation/test.*val-1"):
         train_from_split_directory(split_dir, tmp_path / "out", config_path=config_path)
 
+
 def test_validation_callback_threads_the_word_budget_and_warns_on_truncation(capsys):
     """The truncation guard must actually fire during training, not only in standalone scoring."""
     long_text = " ".join(f"w{index}" for index in range(50))

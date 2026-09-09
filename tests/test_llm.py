@@ -12,11 +12,12 @@ from medliner import llm
 
 
 class StubHandler(BaseHTTPRequestHandler):
-    """Minimal /health + /v1/chat/completions stub; records the last request body."""
+    """Minimal /health + /v1/chat/completions stub; records request headers/body."""
 
     reply_content = "shortened text"
     reply_reasoning: str | None = None
     last_body: dict = {}
+    last_headers: dict[str, str] = {}
     request_count = 0
 
     def log_message(self, *_args):  # keep the test output quiet
@@ -29,6 +30,7 @@ class StubHandler(BaseHTTPRequestHandler):
             self._respond({"error": "not found"}, status=404)
 
     def do_POST(self):
+        type(self).last_headers = dict(self.headers)
         length = int(self.headers.get("Content-Length", 0))
         type(self).last_body = json.loads(self.rfile.read(length).decode())
         type(self).request_count += 1
@@ -51,6 +53,7 @@ def server():
     StubHandler.reply_content = "shortened text"
     StubHandler.reply_reasoning = None
     StubHandler.last_body = {}
+    StubHandler.last_headers = {}
     StubHandler.request_count = 0
     httpd = HTTPServer(("127.0.0.1", 0), StubHandler)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
@@ -68,6 +71,29 @@ def test_health_reports_ok(server):
 def test_chat_disables_reasoning_in_the_request(server):
     assert llm.chat([{"role": "user", "content": "hi"}], url=server) == "shortened text"
     assert StubHandler.last_body["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+def test_router_chat_sends_auth_and_model_without_llama_fields(server):
+    endpoint = llm.Endpoint(name="9router", url=server, api_key="secret", model="9router")
+    assert llm.chat([{"role": "user", "content": "hi"}], endpoint=endpoint) == "shortened text"
+    assert StubHandler.last_headers["Authorization"] == "Bearer secret"
+    assert StubHandler.last_body["model"] == "9router"
+    assert "chat_template_kwargs" not in StubHandler.last_body
+
+
+def test_health_falls_back_to_models_for_router(server, monkeypatch):
+    endpoint = llm.Endpoint(name="9router", url=server, api_key="secret", model="9router")
+    original = StubHandler.do_GET
+
+    def models_only(self):
+        if self.path == "/v1/models":
+            self._respond({"object": "list", "data": [{"id": "9router"}]})
+        else:
+            self._respond({"error": "not found"}, status=404)
+
+    monkeypatch.setattr(StubHandler, "do_GET", models_only)
+    assert llm.health(endpoint=endpoint)
+    monkeypatch.setattr(StubHandler, "do_GET", original)
 
 
 def test_chat_falls_back_to_reasoning_content(server):

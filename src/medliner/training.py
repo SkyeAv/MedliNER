@@ -124,16 +124,27 @@ def load_config(path: str | Path) -> dict[str, Any]:
     value = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
     if not isinstance(value, dict):
         raise ValueError(f"training config {path} must be a mapping")
+
+    def validate_weight(name: str, raw: Any) -> None:
+        try:
+            weight = float(raw)
+        except (TypeError, ValueError):
+            weight = float("nan")
+        if not 0 < weight <= 1:
+            raise ValueError(f"training config {path}: {name} must be a number in (0, 1], got {raw!r}")
+
     if "synthetic_weight" in value:
         # The gold weight is fixed at 1.0, so a synthetic weight above 1.0 would up-weight the
         # noisier population and 0/negative would silently drop it from the loss entirely.
-        raw = value["synthetic_weight"]
-        try:
-            synthetic_weight = float(raw)
-        except (TypeError, ValueError):
-            synthetic_weight = float("nan")
-        if not 0 < synthetic_weight <= 1:
-            raise ValueError(f"training config {path}: synthetic_weight must be a number in (0, 1], got {raw!r}")
+        validate_weight("synthetic_weight", value["synthetic_weight"])
+    for name in ("synthetic_weight_overrides",):
+        overrides = value.get(name, {})
+        if not isinstance(overrides, dict):
+            raise ValueError(f"training config {path}: {name} must be a mapping")
+        for generator, raw in overrides.items():
+            validate_weight(f"{name}[{generator!r}]", raw)
+    if "autolabel_weight" in value:
+        validate_weight("autolabel_weight", value["autolabel_weight"])
     return value
 
 
@@ -417,6 +428,26 @@ def _synthetic_pool_path() -> Path:
     return Path(os.environ.get("MEDLINER_WORKDIR", "data/materialized")) / "synthetic" / "examples.jsonl"
 
 
+def _autolabel_pool_path() -> Path:
+    return Path(os.environ.get("MEDLINER_WORKDIR", "data/materialized")) / "autolabel" / "examples.jsonl"
+
+
+def _load_autolabel_examples(config: dict[str, Any]) -> tuple[list[Example], str | None]:
+    path = _autolabel_pool_path()
+    if not path.exists():
+        if "autolabel_weight" in config:
+            raise ValueError(
+                f"config sets autolabel_weight={config['autolabel_weight']!r} but the autolabel pool "
+                f"is missing at {path}; generate it ('medliner autolabel') or remove the setting"
+            )
+        return [], None
+    if "autolabel_weight" not in config:
+        raise ValueError(
+            f"autolabel pool found at {path} but training config sets no autolabel_weight; add one or remove the pool"
+        )
+    return read_examples(path), hash_file(path)
+
+
 def _load_synthetic_examples(config: dict[str, Any], *, no_synthetic: bool) -> tuple[list[Example], str | None]:
     """Load the synthetic pool for down-weighted mixing into the train split.
 
@@ -447,15 +478,13 @@ def _load_synthetic_examples(config: dict[str, Any], *, no_synthetic: bool) -> t
 
 
 def _assert_no_synthetic_in_held_out(synthetic: list[Example], held_out: list[Example]) -> None:
-    """Held-out splits must measure gold performance only; synthetic ids never enter them."""
+    """Held-out splits must measure gold performance only; machine ids never enter them."""
     synthetic_ids = {example.id for example in synthetic}
     overlap = sorted(synthetic_ids & {example.id for example in held_out})
     if overlap:
         # A bare `assert` would vanish under `python -O`/`PYTHONOPTIMIZE`, silently contaminating
         # every reported metric, so this is a real exception like the rest of the integrity guards.
-        raise ValueError(
-            f"synthetic examples leaked into validation/test: {overlap[:5]} (of {len(overlap)})"
-        )
+        raise ValueError(f"synthetic examples leaked into validation/test: {overlap[:5]} (of {len(overlap)})")
 
 
 def train_from_split_directory(
@@ -493,22 +522,34 @@ def train_from_split_directory(
     test_path = split_dir / "test.jsonl"
     held_out_examples = eval_examples + (read_examples(test_path) if test_path.exists() else [])
     synthetic_weight = float(config.get("synthetic_weight", 1.0))
+    overrides = {str(key): float(value) for key, value in (config.get("synthetic_weight_overrides") or {}).items()}
     synthetic_examples, synthetic_dataset_hash = _load_synthetic_examples(config, no_synthetic=no_synthetic)
-    _assert_no_synthetic_in_held_out(synthetic_examples, held_out_examples)
+    autolabel_examples, autolabel_dataset_hash = _load_autolabel_examples(config)
+    machine_examples = [*synthetic_examples, *autolabel_examples]
+    _assert_no_synthetic_in_held_out(machine_examples, held_out_examples)
     train_records = to_gliner_dataset(train_examples, model=model)
-    synthetic_records = (
-        to_gliner_dataset(synthetic_examples, model=model, weight=synthetic_weight) if synthetic_examples else []
+    synthetic_records = [
+        to_gliner_dataset(
+            [example],
+            model=model,
+            weight=overrides.get(str(example.source.model_extra.get("generator", "")), synthetic_weight),
+        )[0]
+        for example in synthetic_examples
+    ]
+    autolabel_weight = float(config.get("autolabel_weight", 1.0))
+    autolabel_records = (
+        to_gliner_dataset(autolabel_examples, model=model, weight=autolabel_weight) if autolabel_examples else []
     )
     eval_records = to_gliner_dataset(eval_examples, model=model)
     args = _training_arguments(model, config, output_dir, device)
     trainer = _make_trainer(
         model,
-        [*train_records, *synthetic_records],
+        [*train_records, *synthetic_records, *autolabel_records],
         eval_records,
         eval_examples,
         args,
         config,
-        weighted=bool(synthetic_records),
+        weighted=bool(synthetic_records or autolabel_records),
     )
     resume = resume_from_checkpoint or (_latest_checkpoint(output_dir) if bool(config.get("resume", True)) else None)
     trainer.train(resume_from_checkpoint=resume)
@@ -521,11 +562,15 @@ def train_from_split_directory(
         "seed": seed,
         "smoke_test": smoke_test,
         "config": config,
-        "train_examples": len(train_examples) + len(synthetic_examples),
+        "train_examples": len(train_examples) + len(machine_examples),
         "gold_train_examples": len(train_examples),
         "synthetic_examples": len(synthetic_examples),
         "synthetic_weight": synthetic_weight,
+        "synthetic_weight_overrides": overrides,
         "synthetic_dataset_hash": synthetic_dataset_hash,
+        "autolabel_examples": len(autolabel_examples),
+        "autolabel_weight": autolabel_weight,
+        "autolabel_dataset_hash": autolabel_dataset_hash,
         "validation_examples": len(eval_examples),
         "resume_from_checkpoint": resume,
         "selected_checkpoint": selected_checkpoint,

@@ -48,6 +48,11 @@ freeze_text_encoder: false
 # Semi-supervised mixing: synthetic examples count 10x less than gold (1.0) in the loss.
 # Requires the pool from 'medliner synthesize'; without it use 'medliner train --no-synthetic'.
 synthetic_weight: 0.1
+# 9router is trusted more than the local llama.cpp NER generator.
+synthetic_weight_overrides:
+  9router: 0.3
+# Unreviewed 9router autolabels use the same conservative pseudo-label weight.
+autolabel_weight: 0.3
 
 # Entity vocabulary pinned for every batch. Defaults to the two MedliNER labels.
 labels:

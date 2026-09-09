@@ -1,16 +1,23 @@
-"""Client for the local llama.cpp chat server (the ``medliner`` target in ``$MODELS_DIR``).
+"""Client for OpenAI-compatible chat servers: the local llama.cpp server and 9router.
 
-The server (Ornith-1.0-9B, ``llama-server -np 4 -cb --kv-unified``) speaks the
-OpenAI-compatible chat-completions API. Two details of this deployment shape the client:
+The primary server is llama.cpp (Ornith-1.0-9B, ``llama-server -np 4 -cb --kv-unified``),
+started by ``make llm``. Two details of that deployment shape the client:
 
 - the model is a reasoner: unless ``enable_thinking`` is turned off it spends the whole
   token budget on ``reasoning_content`` and returns an empty ``content``;
 - it serves four parallel slots with continuous batching, so callers may run several requests
   concurrently without queuing.
 
+A second endpoint — the 9router combo proxy — can be configured through
+``MEDLINER_9ROUTER_URL`` / ``MEDLINER_9ROUTER_API_KEY`` / ``MEDLINER_9ROUTER_MODEL``
+(:func:`router_endpoint`). It speaks the same chat-completions API but needs a Bearer token
+and a ``model`` field, and must NOT receive llama.cpp's ``chat_template_kwargs`` (upstream
+providers may reject unknown fields). 9router also has no ``/health`` (it is a Next.js app),
+so health checks fall back to an authenticated ``GET /v1/models``.
+
 Nothing here is required by the deterministic pipeline: the LLM only rewrites over-long
-candidate texts on explicit request (``medliner shorten``), and every rewrite is validated
-before it replaces the original.
+candidate texts on explicit request (``medliner shorten``) and paraphrases gold examples
+(``medliner synthesize``), and every reply is validated before it is used.
 """
 
 from __future__ import annotations
@@ -20,6 +27,7 @@ import os
 import sqlite3
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -86,57 +94,130 @@ def cache_store(cache: str | Path, text: str, *, max_words: int, reply: str) -> 
 
 
 class LLMError(RuntimeError):
-    """Raised when the local LLM server is unreachable or returns an unusable reply."""
+    """Raised when the chat server is unreachable or returns an unusable reply."""
+
+
+@dataclass(frozen=True)
+class Endpoint:
+    """One OpenAI-compatible chat endpoint (llama.cpp locally, or the 9router proxy).
+
+    ``send_thinking_kwargs`` selects llama.cpp's ``chat_template_kwargs`` reasoning switch;
+    proxies forward unknown fields to upstream providers that may reject them, so only the
+    local server gets it. ``name`` is stable and machine-readable: it lands in cache keys,
+    manifests, and the synthetic examples' ``source.generator`` audit stamp.
+    """
+
+    name: str
+    url: str
+    api_key: str | None = None
+    model: str | None = None
+    send_thinking_kwargs: bool = False
+
+
+def default_endpoint(url: str | None = None) -> Endpoint:
+    """The local llama.cpp endpoint; ``MEDLINER_LLM_API_KEY``/``MEDLINER_LLM_MODEL`` augment it."""
+    return Endpoint(
+        name="llama.cpp",
+        url=llm_url(url),
+        api_key=os.environ.get("MEDLINER_LLM_API_KEY") or None,
+        model=os.environ.get("MEDLINER_LLM_MODEL") or None,
+        send_thinking_kwargs=True,
+    )
+
+
+def router_endpoint() -> Endpoint | None:
+    """The 9router combo endpoint, or None when ``MEDLINER_9ROUTER_URL`` is not configured.
+
+    The API key is mandatory once the URL is set: without it every request would 401, which
+    would surface as synthesis ``llm_error`` rejections — failing here makes the
+    misconfiguration obvious instead.
+    """
+    url = os.environ.get("MEDLINER_9ROUTER_URL")
+    if not url:
+        return None
+    api_key = os.environ.get("MEDLINER_9ROUTER_API_KEY")
+    if not api_key:
+        raise LLMError("MEDLINER_9ROUTER_URL is set but MEDLINER_9ROUTER_API_KEY is not")
+    return Endpoint(
+        name="9router",
+        url=url.rstrip("/"),
+        api_key=api_key,
+        model=os.environ.get("MEDLINER_9ROUTER_MODEL", "9router"),
+        send_thinking_kwargs=False,
+    )
 
 
 def llm_url(value: str | None = None) -> str:
     return (value or os.environ.get("MEDLINER_LLM_URL", DEFAULT_LLM_URL)).rstrip("/")
 
 
-def health(url: str | None = None, *, timeout: float = 2.0) -> bool:
-    """True when the server answers ``/health`` with an ok status."""
+def _get_json(endpoint: Endpoint, path: str, *, timeout: float) -> Any:
+    headers = {"Accept": "application/json"}
+    if endpoint.api_key:
+        headers["Authorization"] = f"Bearer {endpoint.api_key}"
+    request = urllib.request.Request(f"{endpoint.url}{path}", headers=headers)
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode())
+
+
+def health(url: str | None = None, *, endpoint: Endpoint | None = None, timeout: float = 2.0) -> bool:
+    """True when the endpoint answers ``/health`` (llama.cpp) or ``/v1/models`` (OpenAI-style).
+
+    9router has no ``/health`` route — it is a Next.js app that 404s — so an authenticated
+    model listing doubles as its liveness probe.
+    """
+    endpoint = endpoint or default_endpoint(url)
     try:
-        with urllib.request.urlopen(f"{llm_url(url)}/health", timeout=timeout) as response:
-            payload = json.loads(response.read().decode())
-    except (OSError, ValueError, urllib.error.URLError):
+        payload = _get_json(endpoint, "/health", timeout=timeout)
+        if isinstance(payload, dict) and payload.get("status") == "ok":
+            return True
+    except (OSError, ValueError):
+        pass
+    try:
+        payload = _get_json(endpoint, "/v1/models", timeout=timeout)
+    except (OSError, ValueError):
         return False
-    return isinstance(payload, dict) and payload.get("status") == "ok"
+    return isinstance(payload, dict) and isinstance(payload.get("data"), list)
 
 
 def chat(
     messages: list[dict[str, str]],
     *,
     url: str | None = None,
+    endpoint: Endpoint | None = None,
     max_tokens: int = 512,
     timeout: float = 120.0,
 ) -> str:
-    """One chat completion with reasoning disabled; falls back to ``reasoning_content``.
+    """One chat completion; falls back to ``reasoning_content`` when ``content`` is empty.
 
     Raises :class:`LLMError` when both channels come back empty (usually a sign that the
     token budget was consumed by truncated reasoning).
     """
+    endpoint = endpoint or default_endpoint(url)
+    payload: dict[str, Any] = {"messages": messages, "max_tokens": max_tokens}
+    if endpoint.model:
+        payload["model"] = endpoint.model
+    if endpoint.send_thinking_kwargs:
+        payload["chat_template_kwargs"] = {"enable_thinking": False}
+    headers = {"Content-Type": "application/json"}
+    if endpoint.api_key:
+        headers["Authorization"] = f"Bearer {endpoint.api_key}"
     request = urllib.request.Request(
-        f"{llm_url(url)}/v1/chat/completions",
-        data=json.dumps(
-            {
-                "messages": messages,
-                "max_tokens": max_tokens,
-                "chat_template_kwargs": {"enable_thinking": False},
-            }
-        ).encode(),
-        headers={"Content-Type": "application/json"},
+        f"{endpoint.url}/v1/chat/completions",
+        data=json.dumps(payload).encode(),
+        headers=headers,
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            payload: dict[str, Any] = json.loads(response.read().decode())
+            reply: dict[str, Any] = json.loads(response.read().decode())
     except (OSError, ValueError) as exc:
-        raise LLMError(f"LLM request to {llm_url(url)} failed: {exc}") from exc
-    message = (payload.get("choices") or [{}])[0].get("message") or {}
+        raise LLMError(f"LLM request to {endpoint.name} ({endpoint.url}) failed: {exc}") from exc
+    message = (reply.get("choices") or [{}])[0].get("message") or {}
     content = str(message.get("content") or "").strip()
     if not content:
         content = str(message.get("reasoning_content") or "").strip()
     if not content:
-        raise LLMError("LLM returned an empty completion")
+        raise LLMError(f"{endpoint.name} returned an empty completion")
     return content
 
 

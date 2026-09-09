@@ -99,8 +99,8 @@ DEFAULT_SHORTEN_MAX_WORDS = 48
 DEFAULT_SHORTEN_WORKERS = 4
 #: Synthesis stage defaults (spec): MAX_WORDS is a full-note rewrite budget, deliberately wider
 #: than the shorten stage's; the stage owns its target/floor/retry configuration.
-DEFAULT_SYNTH_RATIO = 10
-DEFAULT_SYNTH_MIN_RATIO = 5.0
+DEFAULT_SYNTH_RATIO = 20
+DEFAULT_SYNTH_MIN_RATIO = 20.0
 DEFAULT_SYNTH_MAX_ATTEMPTS = 3
 DEFAULT_SYNTH_MAX_WORDS = 250
 DEFAULT_SYNTH_MIN_SIMILARITY = 0.3
@@ -805,8 +805,14 @@ def run_synthesize(
     train_path = split_dir / "train.jsonl"
     if not train_path.exists():
         raise FileNotFoundError(f"train split not found: {train_path} (run 'medliner splits' first)")
-    if not llm.health(url):
-        raise RuntimeError(f"LLM server not healthy at {llm.llm_url(url)} (start it with 'make llm')")
+    local_endpoint = llm.default_endpoint(url)
+    if not llm.health(endpoint=local_endpoint):
+        raise RuntimeError(f"LLM server not healthy at {local_endpoint.url} (start it with 'make llm')")
+    router_endpoint = llm.router_endpoint()
+    # Once configured, the router is mandatory: silently producing a local-only pool would
+    # defeat the requested 50/50 provenance mix and its per-generator loss weights.
+    if router_endpoint is not None and not llm.health(endpoint=router_endpoint):
+        raise RuntimeError(f"9router is not healthy at {router_endpoint.url}; refusing local-only synthesis")
     # Id-sorted iteration keeps slot scheduling, manifest slot order, and warm-cache replays
     # byte-identical regardless of the train file's row order.
     gold = sorted(read_examples(train_path), key=lambda item: item.id)
@@ -862,6 +868,7 @@ def run_synthesize(
                         "source_id": source_id,
                         "slot": slot,
                         "variant": variant,
+                        "backend": example.source.model_extra.get("generator", "llama.cpp"),
                         "attempts": record.get("attempts"),
                     }
 
@@ -878,6 +885,10 @@ def run_synthesize(
 
     def fill_slot(source: Example, slot: int) -> tuple[list[Any], Example | None, dict[str, Any] | None]:
         base = synth_variant_name(slot)
+        # Even slots go to 9router and odd slots to llama.cpp. With 20 slots this gives each
+        # endpoint ten slots and all ten prompt styles; without router configuration every slot
+        # remains on the historical local endpoint.
+        endpoint = router_endpoint if router_endpoint is not None and slot % 2 == 0 else local_endpoint
         results = []
         for attempt in range(1, settings.max_attempts + 1):
             # Retries must change the cache key, or a warm cache would replay the rejected reply.
@@ -886,13 +897,19 @@ def run_synthesize(
                 source,
                 variant=variant,
                 max_words=settings.max_words,
-                url=url,
+                endpoint=endpoint,
                 cache=cache,
                 similarity_floor=settings.min_similarity,
             )
             results.append(result)
             if result.accepted and result.example is not None:
-                record = {"source_id": source.id, "slot": slot, "variant": variant, "attempts": attempt}
+                record = {
+                    "source_id": source.id,
+                    "slot": slot,
+                    "variant": variant,
+                    "backend": endpoint.name,
+                    "attempts": attempt,
+                }
                 return results, result.example, record
         return results, None, None
 
@@ -928,7 +945,8 @@ def run_synthesize(
         "schema_version": SYNTH_MANIFEST_SCHEMA,
         "input_path": str(train_path),
         "input_hash": input_hash,
-        "llm_url": llm.llm_url(url),
+        "llm_url": local_endpoint.url,
+        "router_url": router_endpoint.url if router_endpoint is not None else None,
         "ratio": settings.ratio,
         "min_ratio": settings.min_ratio,
         "max_attempts": settings.max_attempts,
@@ -945,6 +963,10 @@ def run_synthesize(
             "attempts": counters.attempts,
             "accepted_this_run": counters.accepted,
             "rejections": dict(sorted(counters.rejections.items())),
+        },
+        "backend_counts": {
+            backend: sum(1 for example in examples if example.source.model_extra.get("generator") == backend)
+            for backend in sorted({example.source.model_extra.get("generator", "llama.cpp") for example in examples})
         },
         "resumed": resumed_count,
         "trial": limit is not None,
@@ -1259,6 +1281,60 @@ def cmd_splits(args: argparse.Namespace) -> None:
     run_splits(Path(args.dataset) if args.dataset else workdir() / "normalized" / "examples.jsonl")
 
 
+def run_autolabel(path: Path, *, limit: int | None = None, force: bool = False) -> Path:
+    """Generate a separate, draft-only 9router pseudo-label pool from raw candidates."""
+    from . import llm
+    from .autolabel import candidate_id, label_candidate, result_manifest
+
+    endpoint = llm.router_endpoint()
+    if endpoint is None:
+        raise RuntimeError("set MEDLINER_9ROUTER_URL and MEDLINER_9ROUTER_API_KEY for autolabel")
+    if not llm.health(endpoint=endpoint):
+        raise RuntimeError(f"9router is not healthy at {endpoint.url}; refusing to autolabel")
+    candidates = sorted(read_candidates(path), key=candidate_id)
+    if limit is not None:
+        candidates = candidates[: max(0, limit)]
+    output_dir = workdir() / "autolabel"
+    output_path = output_dir / "examples.jsonl"
+    manifest_path = output_dir / "manifest.json"
+    input_hash = hash_candidates_file(path)
+    if not force and manifest_path.exists() and output_path.exists():
+        try:
+            previous = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except ValueError:
+            previous = {}
+        if previous.get("input_hash") == input_hash and previous.get("limit") == limit:
+            print(f"autolabel: resumed {previous.get('accepted', 0)} examples -> {output_path}")
+            return output_path
+    results = [label_candidate(candidate, endpoint=endpoint) for candidate in candidates]
+    examples = [result.example for result in results if result.example is not None]
+    write_examples(examples, output_path)
+    manifest = {
+        "schema_version": "medliner.autolabel.manifest.v1",
+        "input_path": str(path),
+        "input_hash": input_hash,
+        "llm_url": endpoint.url,
+        "model": endpoint.model,
+        "limit": limit,
+        "trial": limit is not None,
+        "rows": len(candidates),
+        **result_manifest(results),
+        "examples_hash": hash_file(output_path),
+        "generator": endpoint.name,
+    }
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    print(
+        f"autolabel: {manifest['accepted']}/{len(candidates)} accepted "
+        f"({manifest['positive']} positive, {manifest['negative']} negative; "
+        f"{manifest['rejected']} rejected) -> {output_path}"
+    )
+    return output_path
+
+
+def cmd_autolabel(args: argparse.Namespace) -> None:
+    run_autolabel(raw_candidates_path(args.input), limit=args.limit, force=args.force)
+
+
 def cmd_train(args: argparse.Namespace) -> None:
     run_training(smoke=args.smoke, no_synthetic=args.no_synthetic)
 
@@ -1352,6 +1428,20 @@ def build_parser() -> argparse.ArgumentParser:
     _add_prelabel_arguments(prelabel)
     prelabel.set_defaults(func=cmd_prelabel)
 
+    autolabel = sub.add_parser(
+        "autolabel",
+        help="label raw candidates through the trusted 9router endpoint into a draft pseudo-label pool",
+        description=(
+            "Ask the 9router combo to identify disease/phenotype mentions. The model returns "
+            "mention strings, which are mapped to exact spans and stored with model_suggestion "
+            "provenance; this pool is never treated as human-reviewed gold."
+        ),
+    )
+    autolabel.add_argument("--input", help="raw candidates NDJSON (default: $MEDLINER_RAW_CANDIDATES)")
+    autolabel.add_argument("--limit", type=int, help="process at most this many rows (trial run)")
+    autolabel.add_argument("--force", action="store_true", help="ignore a compatible prior manifest")
+    autolabel.set_defaults(func=cmd_autolabel)
+
     server = sub.add_parser("label-studio", help="start the podman Label Studio server with tasks imported")
     server.add_argument("--input", help="raw candidates NDJSON (default: $MEDLINER_RAW_CANDIDATES)")
     server.add_argument("--reimport", action="store_true", help="replace existing project tasks")
@@ -1411,10 +1501,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     synthesize = sub.add_parser(
         "synthesize",
-        help="generate the synthetic training pool from the train split through the local LLM",
+        help="generate a 20x synthetic pool through llama.cpp and the 9router combo (start llama.cpp with 'make llm')",
         description=(
-            "Generate the semi-supervised synthetic pool: for every gold train example, fill "
-            "MEDLINER_SYNTH_RATIO variant slots through the local LLM (start it with 'make llm'), "
+            "Run make llm first. Generate the semi-supervised synthetic pool: for every gold train example, fill "
+            "MEDLINER_SYNTH_RATIO variant slots, with odd slots through llama.cpp and even slots "
+            "through the configured 9router combo (start llama.cpp with 'make llm'; both endpoints "
+            "must be up), "
             "gated by the synthesis engine's divergence checks. A run below "
             "MEDLINER_SYNTH_MIN_RATIO per gold example exits non-zero after writing its manifest."
         ),
