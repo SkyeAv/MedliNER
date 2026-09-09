@@ -1,18 +1,21 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
 import pytest
 
 from medliner.dataset import hash_file
-from medliner.packaging import BUNDLE_MARKER, build_export_bundle
+from medliner.packaging import BUNDLE_MARKER, _tree_hash, build_export_bundle
 
 
 def _checkpoint(tmp_path):
     checkpoint = tmp_path / "final"
     checkpoint.mkdir()
+    # Mirrors a real `final/`: GLiNER.from_pretrained needs both the weights and gliner_config.json.
     (checkpoint / "pytorch_model.bin").write_bytes(b"weights")
+    (checkpoint / "gliner_config.json").write_text(json.dumps({"max_len": 384}), encoding="utf-8")
     (checkpoint / "medliner-training.json").write_text(json.dumps({"model_id": "m"}), encoding="utf-8")
     return checkpoint
 
@@ -97,6 +100,7 @@ def test_bundle_records_the_configuration_the_run_actually_used(tmp_path):
     checkpoint = tmp_path / "final"
     checkpoint.mkdir()
     (checkpoint / "pytorch_model.bin").write_bytes(b"weights")
+    (checkpoint / "gliner_config.json").write_text(json.dumps({"max_len": 384}), encoding="utf-8")
     (checkpoint / "medliner-training.json").write_text(
         json.dumps({"model_id": "m", "config": {"num_train_epochs": 3, "model_id": "m"}}), encoding="utf-8"
     )
@@ -132,6 +136,7 @@ def _run_checkpoint(tmp_path, metadata: dict) -> Path:
     checkpoint = tmp_path / "final"
     checkpoint.mkdir()
     (checkpoint / "pytorch_model.bin").write_bytes(b"weights")
+    (checkpoint / "gliner_config.json").write_text(json.dumps({"max_len": 384}), encoding="utf-8")
     (checkpoint / "medliner-training.json").write_text(json.dumps(metadata), encoding="utf-8")
     return checkpoint
 
@@ -233,6 +238,7 @@ def test_bundle_falls_back_to_the_config_file_without_run_metadata(tmp_path):
     checkpoint = tmp_path / "final"
     checkpoint.mkdir()
     (checkpoint / "pytorch_model.bin").write_bytes(b"weights")
+    (checkpoint / "gliner_config.json").write_text(json.dumps({"max_len": 384}), encoding="utf-8")
     repository_default = tmp_path / "train-small.yaml"
     repository_default.write_text("num_train_epochs: 5\n", encoding="utf-8")
 
@@ -245,3 +251,129 @@ def test_bundle_falls_back_to_the_config_file_without_run_metadata(tmp_path):
         training_config_path=repository_default,
     )
     assert (output / "training_config.yaml").read_text(encoding="utf-8") == "num_train_epochs: 5\n"
+
+
+def test_a_failed_build_leaves_the_previous_bundle_intact(tmp_path):
+    """A mid-build failure must not destroy the last good bundle nor wedge the next retry."""
+    dataset, metrics, split_dir = _inputs(tmp_path)
+    output_dir = tmp_path / "bundle"
+    checkpoint = _checkpoint(tmp_path)
+    good = build_export_bundle(
+        checkpoint_dir=checkpoint,
+        evaluation_path=metrics,
+        dataset_path=dataset,
+        split_dir=split_dir,
+        output_dir=output_dir,
+    )
+    before = sorted(item.name for item in good.iterdir())
+    provenance_before = (good / "provenance.json").read_text(encoding="utf-8")
+
+    # A run claiming synthetic examples with no pool directory fails partway through the build.
+    broken_root = tmp_path / "broken"
+    broken_root.mkdir()
+    broken = _run_checkpoint(broken_root, {"model_id": "m", "synthetic_examples": 2})
+    with pytest.raises(FileNotFoundError):
+        build_export_bundle(
+            checkpoint_dir=broken,
+            evaluation_path=metrics,
+            dataset_path=dataset,
+            split_dir=split_dir,
+            output_dir=output_dir,
+            synthetic_dir=tmp_path / "missing-pool",
+        )
+
+    assert sorted(item.name for item in output_dir.iterdir()) == before
+    assert (output_dir / "provenance.json").read_text(encoding="utf-8") == provenance_before
+    # ...and the corrected rebuild still succeeds rather than hitting a "not empty" refusal.
+    rebuilt = build_export_bundle(
+        checkpoint_dir=checkpoint,
+        evaluation_path=metrics,
+        dataset_path=dataset,
+        split_dir=split_dir,
+        output_dir=output_dir,
+    )
+    assert (rebuilt / BUNDLE_MARKER).exists()
+
+
+def test_a_checkpoint_inside_the_output_directory_is_never_deleted(tmp_path):
+    """Bundling in place must fail loudly instead of rmtree-ing the trained weights."""
+    dataset, metrics, split_dir = _inputs(tmp_path)
+    output_dir = tmp_path / "bundle"
+    output_dir.mkdir()
+    checkpoint = _checkpoint(output_dir)
+
+    with pytest.raises(ValueError, match="inside output_dir"):
+        build_export_bundle(
+            checkpoint_dir=checkpoint,
+            evaluation_path=metrics,
+            dataset_path=dataset,
+            split_dir=split_dir,
+            output_dir=output_dir,
+        )
+    assert (checkpoint / "pytorch_model.bin").read_bytes() == b"weights"
+
+
+def test_a_weightless_checkpoint_is_refused(tmp_path):
+    """An empty checkpoint directory would bundle successfully but load nowhere."""
+    dataset, metrics, split_dir = _inputs(tmp_path)
+    empty = tmp_path / "empty-final"
+    empty.mkdir()
+
+    with pytest.raises(FileNotFoundError, match="no model weights"):
+        build_export_bundle(
+            checkpoint_dir=empty,
+            evaluation_path=metrics,
+            dataset_path=dataset,
+            split_dir=split_dir,
+            output_dir=tmp_path / "bundle",
+        )
+
+
+def test_missing_evidence_files_are_refused_not_silently_skipped(tmp_path):
+    """Metrics/dataset/split-manifest are the checkpoint's evidence; a bundle without them lies."""
+    dataset, metrics, split_dir = _inputs(tmp_path)
+    metrics.unlink()
+
+    with pytest.raises(FileNotFoundError, match="evaluation report"):
+        build_export_bundle(
+            checkpoint_dir=_checkpoint(tmp_path),
+            evaluation_path=metrics,
+            dataset_path=dataset,
+            split_dir=split_dir,
+            output_dir=tmp_path / "bundle",
+        )
+
+
+def test_tree_hash_distinguishes_trees_that_concatenate_identically(tmp_path):
+    """`{a: b"bc"}` and `{ab: b"c"}` share a byte stream; their digests must still differ."""
+    first = tmp_path / "one"
+    (first / "sub").mkdir(parents=True)
+    (first / "a").write_bytes(b"bc")
+    second = tmp_path / "two"
+    second.mkdir()
+    (second / "ab").write_bytes(b"c")
+
+    assert _tree_hash(first) != _tree_hash(second)
+    # An empty tree must not hash to the digest of the empty string.
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert _tree_hash(empty) != hashlib.sha256(b"").hexdigest()
+
+
+def test_a_refused_rebuild_leaves_no_staging_tree_behind(tmp_path):
+    """Refusing to overwrite a non-bundle directory must not leak a staged checkpoint copy."""
+    dataset, metrics, split_dir = _inputs(tmp_path)
+    output_dir = tmp_path / "bundle"
+    output_dir.mkdir()
+    (output_dir / "unrelated.txt").write_text("not a bundle", encoding="utf-8")
+
+    with pytest.raises(FileExistsError, match="refusing to delete"):
+        build_export_bundle(
+            checkpoint_dir=_checkpoint(tmp_path),
+            evaluation_path=metrics,
+            dataset_path=dataset,
+            split_dir=split_dir,
+            output_dir=output_dir,
+        )
+    assert (output_dir / "unrelated.txt").exists()
+    assert not list(tmp_path.glob(".bundle.staging-*"))
