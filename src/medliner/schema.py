@@ -1,7 +1,7 @@
 """Canonical MedliNER contracts.
 
 Label Studio is an input UI. These Pydantic models are the stable, reviewable contract used
-by normalization, pre-labeling, and benchmark scoring.
+by normalization, splitting, evaluation, and packaging.
 """
 
 from __future__ import annotations
@@ -14,11 +14,7 @@ from typing import Any, Literal, get_args
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 SCHEMA_VERSION = "medliner.example.v1"
-# One merged label for every condition mention (named disorder or clinical finding/state).
-# Splitting `disease` vs `phenotype` forced annotators to draw a boundary DAKP does not use:
-# DAKP merges both into a single condition type downstream, so MedliNER mirrors that with
-# one label and keeps the boundary decision out of the annotation task entirely.
-ALLOWED_LABELS = ("DiseaseOrPhenotypicFeature",)
+ALLOWED_LABELS = ("disease", "phenotype")
 ALLOWED_TASKS = ("indication", "contraindication")
 REVIEWED_STATUSES = ("reviewed", "adjudicated")
 Provenance = Literal["human", "adjudicated", "model_suggestion", "synthetic"]
@@ -33,16 +29,13 @@ SYNTHETIC_SOURCE_FAMILY = "synthetic"
 
 
 def canonical_label(value: str) -> str | None:
-    """Case-insensitive match of ``value`` onto :data:`ALLOWED_LABELS`, or None.
-
-    The single shared normalization point for labels arriving from Label Studio exports,
-    GLiNER output, and gold benchmarks; callers get the canonical casing back so stored
-    data never drifts between case variants of the same label.
-    """
+    """Normalize current merged Label Studio labels into this branch's two-label contract."""
     folded = value.strip().casefold()
     for allowed in ALLOWED_LABELS:
         if folded == allowed.casefold():
             return allowed
+    if folded == "diseaseorphenotypicfeature":
+        return "disease"
     return None
 
 
@@ -54,7 +47,8 @@ SPAN_ORIGINS = get_args(SpanOrigin)
 
 
 class EntityLabel(StrEnum):
-    DISEASE_OR_PHENOTYPIC_FEATURE = "DiseaseOrPhenotypicFeature"
+    DISEASE = "disease"
+    PHENOTYPE = "phenotype"
 
 
 class TaskKind(StrEnum):
@@ -162,10 +156,9 @@ class Example(BaseModel):
                 raise ValueError(f"overlapping annotations are not allowed: {previous.text!r} / {annotation.text!r}")
             seen.add(key)
             previous = annotation
-        if self.annotation_status in {AnnotationStatus.REVIEWED, AnnotationStatus.ADJUDICATED} and any(
-            annotation.provenance == "model_suggestion" for annotation in self.annotations
-        ):
-            raise ValueError("model suggestions must be accepted or replaced by a human before review")
+        if self.annotation_status in {AnnotationStatus.REVIEWED, AnnotationStatus.ADJUDICATED}:
+            if any(annotation.provenance == "model_suggestion" for annotation in self.annotations):
+                raise ValueError("model suggestions must be accepted or replaced by a human before review")
         return self
 
     @model_validator(mode="after")
@@ -190,21 +183,51 @@ class Example(BaseModel):
         return hashlib.sha256(self.canonical_json().encode("utf-8")).hexdigest()
 
 
+class DatasetManifest(BaseModel):
+    schema_version: str = "medliner.dataset.v1"
+    dataset_id: str
+    input_export_hash: str
+    example_count: int = Field(ge=0)
+    label_counts: dict[str, int] = Field(default_factory=dict)
+    task_counts: dict[str, int] = Field(default_factory=dict)
+    # How much of this dataset is an unmodified model suggestion a human merely submitted. The
+    # central risk of pre-labeling, and invisible without counting it here.
+    origin_counts: dict[str, int] = Field(default_factory=dict)
+    # Annotation provenance mix, so a dataset's synthetic share is visible in the artifact itself
+    # instead of only in the pipeline that produced it. Optional for manifests written before it.
+    provenance_counts: dict[str, int] = Field(default_factory=dict)
+    split_hash: str | None = None
+    annotation_policy_version: str = "medliner.policy.v1"
+
+
+class SplitManifest(BaseModel):
+    schema_version: str = "medliner.splits.v1"
+    seed: int
+    ratios: dict[str, float]
+    group_count: int
+    example_count: int
+    example_ids: dict[str, list[str]]
+    held_out_ids: list[str] = Field(default_factory=list)
+    split_hash: str
+
+
 __all__ = [
     "ALLOWED_LABELS",
     "ALLOWED_TASKS",
+    "canonical_label",
+    "Annotation",
+    "AnnotationStatus",
+    "DatasetManifest",
+    "EntityLabel",
+    "Example",
     "HUMAN_PROVENANCE_VALUES",
     "PROVENANCE_VALUES",
+    "Provenance",
     "SCHEMA_VERSION",
     "SPAN_ORIGINS",
     "SYNTHETIC_SOURCE_FAMILY",
-    "Annotation",
-    "AnnotationStatus",
-    "EntityLabel",
-    "Example",
-    "Provenance",
     "SourceMetadata",
     "SpanOrigin",
+    "SplitManifest",
     "TaskKind",
-    "canonical_label",
 ]

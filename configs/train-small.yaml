@@ -1,0 +1,60 @@
+# Laptop-safe starting configuration for one RTX 5070 Ti with 12 GB VRAM.
+model_id: urchade/gliner_small-v2.1
+seed: 2026
+
+# Sequence and span budgets. Longer text or wider gold spans are rejected at conversion time
+# rather than silently truncated/dropped by GLiNER; see docs/TRAINING.md.
+max_length: 384
+
+# Micro-batch plus accumulation keeps peak VRAM low. Reduce max_length before raising the batch.
+per_device_train_batch_size: 1
+per_device_eval_batch_size: 1
+gradient_accumulation_steps: 8
+dataloader_num_workers: 0
+
+# GLiNER uses separate rates: learning_rate is for the pretrained DeBERTa encoder
+# (token_rep_layer.*), others_lr for the span/prompt stack. Omitting others_lr trains the
+# encoder at the head rate, which on a small dataset risks catastrophic forgetting. These track
+# the v2.1 checkpoint's own recipe (lr_encoder=1e-5, lr_others=5e-5) halved for small data.
+learning_rate: 0.00001
+weight_decay: 0.01
+others_lr: 0.00005
+others_weight_decay: 0.01
+max_grad_norm: 1.0
+lr_scheduler_type: linear
+num_train_epochs: 5
+max_steps: -1
+warmup_ratio: 0.1
+
+# save_steps must be a multiple of eval_steps: the best checkpoint is selected from steps that
+# were both evaluated and saved.
+logging_steps: 1
+eval_steps: 25
+save_steps: 25
+save_total_limit: 2
+resume: true
+
+# Validation-driven selection and early stopping on strict typed-span F1.
+evaluation_threshold: 0.3
+early_stopping_patience: 2
+
+# Mixed precision. Exactly one of fp16/bf16; both are ignored on CPU.
+fp16: false
+bf16: true
+
+gradient_checkpointing: true
+freeze_text_encoder: false
+
+# Semi-supervised mixing: synthetic examples count 10x less than gold (1.0) in the loss.
+# Requires the pool from 'medliner synthesize'; without it use 'medliner train --no-synthetic'.
+synthetic_weight: 0.1
+# 9router is trusted more than the local llama.cpp NER generator.
+synthetic_weight_overrides:
+  9router: 0.3
+# Unreviewed 9router autolabels use the same conservative pseudo-label weight.
+autolabel_weight: 0.3
+
+# Entity vocabulary pinned for every batch. Defaults to the two MedliNER labels.
+labels:
+  - disease
+  - phenotype

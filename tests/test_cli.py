@@ -6,8 +6,20 @@ from pathlib import Path
 import pytest
 
 from medliner import cli
+from medliner.dataset import read_examples, write_examples
+from medliner.schema import Annotation, Example
 
 DAKP_EXPORT_FIXTURE = Path(__file__).parent / "fixtures" / "dakp_export"
+
+
+def _example(identifier: str, document: str) -> Example:
+    return Example(
+        id=identifier,
+        text="asthma",
+        task="indication",
+        source={"family": "dailymed", "document_id": document},
+        annotations=[Annotation(start=0, end=6, label="disease", text="asthma")],
+    )
 
 
 def _write_raw_candidates(path: Path) -> None:
@@ -21,6 +33,41 @@ def _write_raw_candidates(path: Path) -> None:
             ]
         )
         + "\n",
+        encoding="utf-8",
+    )
+
+
+def _write_reviewed_export(path: Path, count: int) -> None:
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "id": f"t{index}",
+                    "data": {
+                        "text": "Contraindicated in patients with asthma.",
+                        "task": "contraindication",
+                        "source_family": "dailymed",
+                        "source_document_id": f"doc-{index}",
+                    },
+                    "annotations": [
+                        {
+                            "id": index,
+                            "created_username": "annotator",
+                            "result": [
+                                {
+                                    "id": f"r{index}",
+                                    "type": "labels",
+                                    "from_name": "label",
+                                    "to_name": "text",
+                                    "value": {"start": 33, "end": 39, "text": "asthma", "labels": ["disease"]},
+                                }
+                            ],
+                        }
+                    ],
+                }
+                for index in range(count)
+            ]
+        ),
         encoding="utf-8",
     )
 
@@ -144,65 +191,17 @@ def test_ensure_import_file_respects_the_sampling_config(tmp_path, monkeypatch, 
     assert other != first  # a changed config must not silently reuse the stale import
 
 
-def test_ensure_import_file_rebuilds_a_file_from_an_older_generator(tmp_path, monkeypatch, capsys):
-    """A stale import file lacks the data keys the labeling config interpolates.
-
-    The file name encodes the input hash and sampling config but not the generator, so without
-    this check a returning user would be served an old file and Label Studio would print
-    "$shortened_note" at the annotator.
-    """
-    raw = tmp_path / "candidates.ndjson"
-    _write_raw_candidates(raw)
-    monkeypatch.setenv("MEDLINER_RAW_CANDIDATES", str(raw))
-    monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
-    monkeypatch.setenv("MEDLINER_SAMPLE_TASKS", "indication:1")
-
-    built = cli.ensure_import_file(cli.raw_candidates_path())
-    manifest_path = built.with_suffix(".manifest.json")
-    capsys.readouterr()
-
-    assert cli.ensure_import_file(cli.raw_candidates_path()) == built
-    assert "sampled" not in capsys.readouterr().out  # current generator: reused, not rebuilt
-
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["generator_version"] = "medliner.candidates.v0"
-    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-    built.write_text("[]", encoding="utf-8")
-
-    assert cli.ensure_import_file(cli.raw_candidates_path()) == built
-    assert "sampled 1 tasks" in capsys.readouterr().out  # older generator: rebuilt
-    assert json.loads(built.read_text(encoding="utf-8"))[0]["data"]["shortened_note"] == ""
-
-
-def test_shorten_task_texts_flags_only_the_texts_it_rewrote(monkeypatch):
-    """An annotator reading an LLM rewrite must be told; one reading the source must not be."""
-    tasks = [
-        {"id": "a", "data": {"text": "long " * 10, "task": "indication", "shortened_note": ""}},
-        {"id": "b", "data": {"text": "long " * 10, "task": "indication", "shortened_note": ""}},
-    ]
-    replies = iter([("short text", False, False), ("long " * 10, False, False)])
-    monkeypatch.setattr(cli, "rewrite_texts", lambda texts, **kwargs: [next(replies) for _ in texts])
-
-    stats = cli.shorten_task_texts(tasks, max_words=5, url=None)
-
-    assert stats["shortened"] == 1
-    assert tasks[0]["data"]["ai_shortened"] is True
-    assert tasks[0]["data"]["shortened_note"].startswith("An AI shortened this text")
-    assert "ai_shortened" not in tasks[1]["data"]  # unchanged text makes no claim
-    assert tasks[1]["data"]["shortened_note"] == ""
-
-
 def test_candidates_missing_input_is_an_explicit_error(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("MEDLINER_RAW_CANDIDATES", str(tmp_path / "absent.jsonl"))
     assert cli.main(["candidates"]) == 1
     assert "MEDLINER_RAW_CANDIDATES" in capsys.readouterr().err
 
 
-def test_sampling_defaults_to_the_1k_edge_case_batch(monkeypatch):
+def test_sampling_defaults_to_the_5k_edge_case_batch(monkeypatch):
     monkeypatch.delenv("MEDLINER_SAMPLE_TASKS", raising=False)
     monkeypatch.delenv("MEDLINER_SAMPLE_EDGE_FRACTION", raising=False)
     settings = cli.sampling_settings()
-    assert settings.targets == {"indication": 600, "contraindication": 400}
+    assert settings.targets == {"indication": 3000, "contraindication": 2000}
     assert settings.edge_fraction == 0.8
     assert "edge_fraction=0.8" in (settings.config or "")
 
@@ -275,7 +274,6 @@ def test_label_studio_provisions_with_the_import_file(tmp_path, monkeypatch, cap
     assert cli.main(["label-studio", "--input", str(raw), "--reimport"]) == 0
     assert Path(calls["import_file"]).name.startswith("import-")
     assert calls["reimport"] is True
-    assert calls["csrf_trusted_origins"] == ["https://*.trycloudflare.com"]
     assert "http://127.0.0.1:9030" in capsys.readouterr().out
 
 
@@ -303,7 +301,6 @@ def test_label_studio_annotator_env_and_validation(tmp_path, monkeypatch, capsys
     monkeypatch.setenv("MEDLINER_RAW_CANDIDATES", str(raw))
     monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
     monkeypatch.setenv("MEDLINER_LABEL_STUDIO_ANNOTATORS", "alice:pw-a,bob:pw-b")
-    monkeypatch.setenv("MEDLINER_LABEL_STUDIO_CSRF_ORIGINS", "https://one.example, https://two.example")
     calls = {}
 
     def fake_provision(**kwargs):
@@ -313,7 +310,6 @@ def test_label_studio_annotator_env_and_validation(tmp_path, monkeypatch, capsys
     monkeypatch.setattr(cli, "provision", fake_provision)
     assert cli.main(["label-studio", "--input", str(raw)]) == 0
     assert calls["annotators"] == [("alice", "pw-a"), ("bob", "pw-b")]
-    assert calls["csrf_trusted_origins"] == ["https://one.example", "https://two.example"]
 
     # A pair without a separator is rejected loudly before anything is provisioned.
     monkeypatch.setenv("MEDLINER_LABEL_STUDIO_ANNOTATORS", "alicepw")
@@ -334,13 +330,12 @@ def test_label_studio_warmup_provisions_the_separate_project(tmp_path, monkeypat
         return {"url": "http://127.0.0.1:9030", "container": "c", "tasks_in_project": 2, "annotators_created": 0}
 
     monkeypatch.setattr(cli, "provision", fake_provision)
-    assert cli.main(["label-studio", "--input", str(raw), "--warmup"]) == 0
+    assert cli.main(["label-studio", "--input", str(raw), "--warmup", "--warmup-limit", "3"]) == 0
     assert len(calls) == 2
     assert calls[0]["project_title"] == "MedliNER"
     assert calls[1]["project_title"] == "MedliNER — Warm-up"
-    assert calls[0]["csrf_trusted_origins"] == calls[1]["csrf_trusted_origins"] == ["https://*.trycloudflare.com"]
     warmup_tasks = json.loads(Path(calls[1]["import_file"]).read_text(encoding="utf-8"))
-    assert len(warmup_tasks) == 10  # the warmup import is capped at ten gold cases
+    assert len(warmup_tasks) == 3
     assert all(task["data"]["source_family"] == "gold-warmup" for task in warmup_tasks)
     assert all(task["data"]["gold_mentions"] is not None for task in warmup_tasks)
     assert "warm-up tasks" in capsys.readouterr().out
@@ -390,14 +385,160 @@ def test_label_studio_export_requires_a_destination(monkeypatch, capsys):
     monkeypatch.delenv("MEDLINER_LABEL_STUDIO_EXPORT", raising=False)
     assert cli.main(["label-studio-export"]) == 1
     error = capsys.readouterr().err
-    assert "--output" in error
-    assert "MEDLINER_LABEL_STUDIO_EXPORT" in error
+    assert "--output" in error and "MEDLINER_LABEL_STUDIO_EXPORT" in error
 
 
 def test_label_studio_stop_reports_container_state(monkeypatch, capsys):
     monkeypatch.setattr(cli, "stop_container", lambda: True)
     assert cli.main(["label-studio-stop"]) == 0
     assert "removed" in capsys.readouterr().out
+
+
+def test_dataset_and_splits_materialize(tmp_path, monkeypatch):
+    export = tmp_path / "export.json"
+    _write_reviewed_export(export, 6)
+    monkeypatch.setenv("MEDLINER_LABEL_STUDIO_EXPORT", str(export))
+    monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
+    monkeypatch.delenv("MEDLINER_REGRESSION_IDS", raising=False)
+
+    assert cli.main(["dataset"]) == 0
+    dataset_path = tmp_path / "work" / "normalized" / "examples.jsonl"
+    assert len(read_examples(dataset_path)) == 6
+
+    assert cli.main(["splits"]) == 0
+    manifest = json.loads((tmp_path / "work" / "splits" / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["example_count"] == 6
+
+
+def test_splits_honor_regression_ids_from_environment(tmp_path, monkeypatch):
+    export = tmp_path / "export.json"
+    _write_reviewed_export(export, 6)
+    regression = tmp_path / "regression.json"
+    regression.write_text(json.dumps(["t0"]), encoding="utf-8")
+    monkeypatch.setenv("MEDLINER_LABEL_STUDIO_EXPORT", str(export))
+    monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
+    monkeypatch.setenv("MEDLINER_REGRESSION_IDS", str(regression))
+
+    assert cli.main(["dataset"]) == 0
+    assert cli.main(["splits"]) == 0
+    manifest = json.loads((tmp_path / "work" / "splits" / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["held_out_ids"] == ["t0"]
+    assert "t0" not in {item for ids in manifest["example_ids"].values() for item in ids}
+
+
+def test_splits_refuse_a_leaked_partition(tmp_path, monkeypatch, capsys):
+    dataset_path = tmp_path / "examples.jsonl"
+    write_examples([_example("a", "doc-a")], dataset_path)
+    monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
+    leaked = {"train": [_example("t", "doc-shared")], "validation": [_example("v", "doc-shared")], "test": []}
+    monkeypatch.setattr(cli, "split_examples", lambda *a, **k: (leaked, None))
+    assert cli.main(["splits", "--dataset", str(dataset_path)]) == 1
+    assert "doc-shared" in capsys.readouterr().err
+
+
+def test_missing_export_environment_is_an_explicit_error(monkeypatch, capsys):
+    monkeypatch.delenv("MEDLINER_LABEL_STUDIO_EXPORT", raising=False)
+    assert cli.main(["dataset"]) == 1
+    assert "MEDLINER_LABEL_STUDIO_EXPORT" in capsys.readouterr().err
+
+
+def test_export_path_must_exist(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("MEDLINER_LABEL_STUDIO_EXPORT", str(tmp_path / "absent.json"))
+    assert cli.main(["dataset"]) == 1
+
+
+def test_empty_dataset_fails(tmp_path, monkeypatch, capsys):
+    export = tmp_path / "export.json"
+    export.write_text("[]", encoding="utf-8")
+    monkeypatch.setenv("MEDLINER_LABEL_STUDIO_EXPORT", str(export))
+    monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
+    assert cli.main(["dataset"]) == 1
+    assert "empty" in capsys.readouterr().err
+
+
+def test_train_smoke_flag_reaches_training(tmp_path, monkeypatch):
+    monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
+    calls = {}
+
+    def fake_train(split_dir, output_dir, *, config_path, smoke_test, no_synthetic=False):
+        calls["smoke_test"] = smoke_test
+        calls["no_synthetic"] = no_synthetic
+        return Path(output_dir) / "final"
+
+    monkeypatch.setattr("medliner.training.train_from_split_directory", fake_train)
+    assert cli.main(["train", "--smoke"]) == 0
+    assert calls["smoke_test"] is True
+    assert cli.main(["train"]) == 0
+    assert calls["smoke_test"] is False
+    assert calls["no_synthetic"] is False
+    assert cli.main(["train", "--no-synthetic"]) == 0
+    assert calls["no_synthetic"] is True
+
+
+def _patched_pipeline(monkeypatch, tmp_path):
+    """Replace the pipeline's heavy stages with recorders; returns (stage order, training flags)."""
+    order: list[str] = []
+    training_calls: dict[str, object] = {}
+
+    def fake_dataset(export):
+        order.append("dataset")
+        return tmp_path / "normalized" / "examples.jsonl"
+
+    def fake_splits(dataset_path):
+        order.append("splits")
+        return tmp_path / "splits"
+
+    def fake_train(split_dir, output_dir, *, config_path, smoke_test, no_synthetic=False):
+        order.append("train")
+        training_calls["no_synthetic"] = no_synthetic
+        return Path(output_dir) / "final"
+
+    def fake_evaluation(checkpoint, split_dir):
+        order.append("evaluate")
+        return tmp_path / "evaluation" / "report.json"
+
+    def fake_bundle(checkpoint, report, dataset_path, split_dir):
+        order.append("bundle")
+
+    monkeypatch.setattr(cli, "run_dataset", fake_dataset)
+    monkeypatch.setattr(cli, "run_splits", fake_splits)
+    monkeypatch.setattr("medliner.training.train_from_split_directory", fake_train)
+    monkeypatch.setattr(cli, "run_evaluation", fake_evaluation)
+    monkeypatch.setattr(cli, "run_bundle", fake_bundle)
+    return order, training_calls
+
+
+def _pipeline_environment(tmp_path, monkeypatch):
+    """Point the pipeline at a scratch workdir with a readable (unused) reviewed export."""
+    export = tmp_path / "reviewed.json"
+    export.write_text("[]", encoding="utf-8")
+    monkeypatch.setenv("MEDLINER_LABEL_STUDIO_EXPORT", str(export))
+    monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
+
+
+def test_pipeline_trains_gold_only_when_the_synthetic_pool_is_absent(tmp_path, monkeypatch):
+    # `make train` wraps `medliner pipeline`, so the one-command flow must keep working before
+    # `make synthesize` ever ran: the pipeline itself selects the explicit gold-only fallback
+    # instead of failing on a configured synthetic_weight (direct `medliner train` stays strict,
+    # see test_train_smoke_flag_reaches_training), and the stage order is unchanged.
+    _pipeline_environment(tmp_path, monkeypatch)
+    order, training_calls = _patched_pipeline(monkeypatch, tmp_path)
+
+    assert cli.main(["pipeline"]) == 0
+    assert training_calls["no_synthetic"] is True
+    assert order == ["dataset", "splits", "train", "evaluate", "bundle"]
+
+
+def test_pipeline_mixes_in_the_synthetic_pool_when_it_exists(tmp_path, monkeypatch):
+    # A materialized pool is the semi-supervised default: the pipeline must pass
+    # no_synthetic=False so training loads and down-weights it. Presence is decided by the
+    # default artifact path alone; malformed pool contents stay training's loud error.
+    _pipeline_environment(tmp_path, monkeypatch)
+    order, training_calls = _patched_pipeline(monkeypatch, tmp_path)
+    write_examples([_example("gold-1-synth-paraphrase", "doc-1")], tmp_path / "work" / "synthetic" / "examples.jsonl")
+
+    assert cli.main(["pipeline"]) == 0
+    assert training_calls["no_synthetic"] is False
 
 
 def _fake_gliner(monkeypatch, entities_for):
@@ -422,7 +563,7 @@ def _asthma_entities(text):
     if "asthma" not in text:
         return []
     start = text.index("asthma")
-    return [{"start": start, "end": start + 6, "label": "DiseaseOrPhenotypicFeature", "score": 0.91}]
+    return [{"start": start, "end": start + 6, "label": "disease", "score": 0.91}]
 
 
 def test_prelabel_writes_predictions_and_a_manifest(tmp_path, monkeypatch, capsys):
@@ -441,12 +582,12 @@ def test_prelabel_writes_predictions_and_a_manifest(tmp_path, monkeypatch, capsy
         (prediction,) = task["predictions"]
         assert prediction["model_version"].endswith("@0.35")
         (region,) = prediction["result"]
-        assert region["value"]["labels"] == ["DiseaseOrPhenotypicFeature"]
+        assert region["value"]["labels"] == ["disease"]
         assert region["value"]["text"] == "asthma"
     manifest = json.loads(output.with_suffix(".manifest.json").read_text(encoding="utf-8"))
     assert manifest["schema_version"] == "medliner.prelabel.manifest.v1"
-    assert manifest["label_counts"] == {"DiseaseOrPhenotypicFeature": 2}
-    assert manifest["labels"] == ["DiseaseOrPhenotypicFeature"]
+    assert manifest["label_counts"] == {"disease": 2}
+    assert manifest["labels"] == ["disease", "phenotype"]
     assert "2 suggestions" in capsys.readouterr().out
 
 
@@ -514,150 +655,3 @@ def test_label_studio_without_prelabel_imports_plain_tasks(tmp_path, monkeypatch
     assert not Path(calls["import_file"]).name.endswith(".prelabeled.json")
     assert calls["prelabel_model_version"] is None
     capsys.readouterr()
-
-
-# --- pinned SPLs ----------------------------------------------------------------------------------
-
-PIN_FIXTURE = Path(__file__).parent / "fixtures" / "pinned_spls.json"
-PIN_SETID_1 = "11111111-2222-3333-4444-555555555555"
-PIN_SETID_2 = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-
-
-def _write_pinned_candidates(path: Path) -> None:
-    path.write_text(
-        "\n".join(
-            json.dumps(row)
-            for row in [
-                {
-                    "text": "Indicated for asthma.",
-                    "task": "indication",
-                    "source_family": "dailymed",
-                    "source_document_id": f"{PIN_SETID_1}#34067-9",
-                },
-                {
-                    "text": "Indicated for migraine.",
-                    "task": "indication",
-                    "source_family": "dailymed",
-                    "source_document_id": PIN_SETID_2,  # bare setid, no #<LOINC> suffix
-                },
-                {
-                    "text": "Indicated for hypertension.",
-                    "task": "indication",
-                    "source_family": "dailymed",
-                    "source_document_id": "bbbbbbbb-1111-2222-3333-444444444444#34067-9",
-                },
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-
-
-def test_pin_file_env_parsing(tmp_path, monkeypatch):
-    monkeypatch.setenv("MEDLINER_PIN_FILE", "")
-    assert cli.pin_file() is None  # empty value disables pinning
-    monkeypatch.setenv("MEDLINER_PIN_FILE", str(tmp_path / "absent.json"))
-    assert cli.pin_file() is None  # a missing file disables pinning
-    monkeypatch.setenv("MEDLINER_PIN_FILE", str(PIN_FIXTURE))
-    assert cli.pin_file() == PIN_FIXTURE
-    monkeypatch.delenv("MEDLINER_PIN_FILE")
-    assert cli.pin_file() == Path("configs/pinned_spls.json")  # repo default, resolved from cwd
-
-
-def test_candidates_prepends_pins_and_records_them_in_the_manifest(tmp_path, monkeypatch, capsys):
-    raw = tmp_path / "candidates.ndjson"
-    _write_pinned_candidates(raw)
-    monkeypatch.setenv("MEDLINER_RAW_CANDIDATES", str(raw))
-    monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
-    monkeypatch.setenv("MEDLINER_PIN_FILE", str(PIN_FIXTURE))
-
-    assert cli.main(["candidates"]) == 0
-    out = capsys.readouterr().out
-    assert "forced to the front of the queue" in out
-    import_path = Path(out.split("->")[-1].strip())
-    tasks = json.loads(import_path.read_text(encoding="utf-8"))
-    assert [task["data"]["pinned"] for task in tasks[:2]] == [True, True]
-    assert all(task["data"]["pinned"] is False for task in tasks[2:])
-    manifest = json.loads(import_path.with_suffix(".manifest.json").read_text(encoding="utf-8"))
-    pins = manifest["pins"]
-    assert pins["file"] == str(PIN_FIXTURE)
-    assert pins["matched"][PIN_SETID_1] == {"task_count": 1, "notes": ["supports asthma"]}
-    assert pins["matched"][PIN_SETID_2]["notes"] == ["supports migraine", "supports tension headache"]
-    assert pins["unmatched"] == []
-    assert pins["unattributed_notes"][0]["note"] == "unplaced review comment"
-    # Notes live in the manifest only — never in the import file Label Studio reads.
-    blob = import_path.read_text(encoding="utf-8")
-    for note in ("supports asthma", "supports migraine", "supports tension headache", "unplaced review comment"):
-        assert note not in blob
-
-
-def test_candidates_warns_loudly_on_unmatched_pins(tmp_path, monkeypatch, capsys):
-    raw = tmp_path / "candidates.ndjson"
-    _write_pinned_candidates(raw)
-    pins_file = tmp_path / "pins.json"
-    pins_file.write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "pins": [
-                    {"setid": PIN_SETID_1, "notes": ["supports asthma"]},
-                    {"setid": "99999999-8888-7777-6666-555555555555", "notes": ["typo'd setid"]},
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("MEDLINER_RAW_CANDIDATES", str(raw))
-    monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
-    monkeypatch.setenv("MEDLINER_PIN_FILE", str(pins_file))
-
-    assert cli.main(["candidates"]) == 0
-    out = capsys.readouterr().out
-    assert "WARNING" in out
-    assert "99999999-8888-7777-6666-555555555555" in out
-    import_path = Path(out.split("->")[-1].strip())
-    manifest = json.loads(import_path.with_suffix(".manifest.json").read_text(encoding="utf-8"))
-    assert manifest["pins"]["unmatched"] == ["99999999-8888-7777-6666-555555555555"]
-    assert list(manifest["pins"]["matched"]) == [PIN_SETID_1]
-
-
-def test_import_filename_tracks_the_pin_file_content(tmp_path, monkeypatch, capsys):
-    """Editing the pin file must change the import filename, or a stale import would be reused."""
-    raw = tmp_path / "candidates.ndjson"
-    _write_pinned_candidates(raw)
-    monkeypatch.setenv("MEDLINER_RAW_CANDIDATES", str(raw))
-    monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
-    monkeypatch.setenv("MEDLINER_SAMPLE_TASKS", "")  # isolate the pin hash from sampling config
-    pins_file = tmp_path / "pins.json"
-    pins_file.write_text(PIN_FIXTURE.read_text(encoding="utf-8"), encoding="utf-8")
-    monkeypatch.setenv("MEDLINER_PIN_FILE", str(pins_file))
-
-    assert cli.main(["candidates"]) == 0
-    first = Path(capsys.readouterr().out.split("->")[-1].strip())
-
-    payload = json.loads(pins_file.read_text(encoding="utf-8"))
-    payload["pins"][0]["notes"].append("supports COPD")
-    pins_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-
-    assert cli.main(["candidates"]) == 0
-    second = Path(capsys.readouterr().out.split("->")[-1].strip())
-    assert first.name != second.name
-    # ensure_import_file computes the name the same way: the edited pins reuse, not rebuild.
-    assert cli.ensure_import_file(cli.raw_candidates_path()) == second
-    assert "sampled" not in capsys.readouterr().out
-
-
-def test_pins_are_flagged_and_frontmost_when_sampling_is_disabled(tmp_path, monkeypatch, capsys):
-    raw = tmp_path / "candidates.ndjson"
-    _write_pinned_candidates(raw)
-    monkeypatch.setenv("MEDLINER_RAW_CANDIDATES", str(raw))
-    monkeypatch.setenv("MEDLINER_WORKDIR", str(tmp_path / "work"))
-    monkeypatch.setenv("MEDLINER_SAMPLE_TASKS", "")
-    monkeypatch.setenv("MEDLINER_PIN_FILE", str(PIN_FIXTURE))
-
-    assert cli.main(["candidates"]) == 0
-    out = capsys.readouterr().out
-    assert "sampled" not in out
-    tasks = json.loads(Path(out.split("->")[-1].strip()).read_text(encoding="utf-8"))
-    assert [task["data"]["pinned"] for task in tasks[:2]] == [True, True]
-    assert all(task["data"]["pinned"] is False for task in tasks[2:])

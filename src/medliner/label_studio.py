@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -110,9 +111,6 @@ def _source(task: dict[str, Any]) -> SourceMetadata:
         section=str(section) if section is not None else None,
         source_uri=str(source_uri) if source_uri is not None else None,
         source_hash=str(source_hash) if source_hash is not None else None,
-        # The invisible pin flag is provenance for finetuning, so it follows the task into the
-        # normalized example (SourceMetadata allows extras). Note text never enters task data.
-        pinned=bool(data.get("pinned", False)),
     )
 
 
@@ -199,9 +197,11 @@ def _result_annotations(task: dict[str, Any], annotation_set: dict[str, Any] | N
             raise LabelStudioExportError(
                 f"task {task.get('id', '<unknown>')} span must contain exactly one string label"
             )
-        label = canonical_label(labels[0]) or labels[0].strip()
-        if label not in ALLOWED_LABELS:
-            raise LabelStudioExportError(f"unsupported Label Studio label {label!r}; expected {ALLOWED_LABELS}")
+        label = canonical_label(labels[0])
+        if label is None:
+            raise LabelStudioExportError(
+                f"unsupported Label Studio label {labels[0].strip().lower()!r}; expected {ALLOWED_LABELS}"
+            )
         if start < 0 or end <= start or end > len(text):
             raise LabelStudioExportError(
                 f"invalid character span [{start}, {end}) for task {task.get('id', '<unknown>')!r}"
@@ -227,8 +227,10 @@ def _result_annotations(task: dict[str, Any], annotation_set: dict[str, Any] | N
             origin=_span_origin(task, result),
         )
         key = (start, end)
-        # With one canonical label, same-offset spans are always exact duplicates; they are
-        # harmless export duplication and are collapsed.
+        prior = parsed.get(key)
+        if prior is not None and prior.label != annotation.label:
+            raise LabelStudioExportError(f"conflicting duplicate span [{start}, {end}) in task {task.get('id')!r}")
+        # Exact duplicates with the same label are harmless export duplication and are collapsed.
         parsed[key] = annotation
     return sorted(parsed.values(), key=lambda item: (item.start, item.end, item.label))
 
@@ -255,7 +257,9 @@ def _span_origin(task: dict[str, Any], result: dict[str, Any]) -> str | None:
 def _build_annotation(task: dict[str, Any], *, status: AnnotationStatus, **fields: Any) -> Annotation:
     try:
         return Annotation(
-            status=status, provenance="adjudicated" if status == AnnotationStatus.ADJUDICATED else "human", **fields
+            status=status,
+            provenance="adjudicated" if status == AnnotationStatus.ADJUDICATED else "human",
+            **fields,
         )
     except ValidationError as exc:
         raise LabelStudioExportError(f"task {task.get('id', '<unknown>')!r} has an invalid span: {exc}") from exc
@@ -312,4 +316,12 @@ def normalize_export(path: str | Path, *, export_id: str | None = None, require_
     return examples
 
 
-__all__ = ["LabelStudioExportError", "normalize_export", "normalize_task", "read_tasks"]
+def write_jsonl(examples: Iterable[Example], path: str | Path) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        for example in examples:
+            handle.write(example.model_dump_json() + "\n")
+
+
+__all__ = ["LabelStudioExportError", "normalize_export", "normalize_task", "read_tasks", "write_jsonl"]
