@@ -13,6 +13,7 @@ from medliner.dataset import hash_file, write_examples
 from medliner.schema import Annotation, Example
 from medliner.training import (
     FixedLabelCollator,
+    RobustLossWrapper,
     ValidationF1Callback,
     WeightedCollator,
     WeightedTrainer,
@@ -95,6 +96,42 @@ def test_save_steps_must_land_on_an_evaluation(tmp_path):
     # Best-checkpoint selection can only point at a step that was both evaluated and saved.
     with pytest.raises(ValueError, match="must be a multiple of eval_steps"):
         _training_arguments(object(), {"eval_steps": 10, "save_steps": 25}, tmp_path, "cpu")
+
+
+def test_robust_loss_wrapper_leaves_ordinary_losses_unchanged():
+    loss = torch.tensor(2.0, requires_grad=True)
+    wrapper = RobustLossWrapper(10.0)
+
+    bounded = wrapper(loss)
+
+    # 10 * tanh(0.2) is deliberately near, not exactly, the input; the important property is
+    # that ordinary losses retain their scale and gradient rather than being abruptly clipped.
+    assert torch.isclose(bounded, loss, atol=0.03)
+    bounded.backward()
+    assert torch.isfinite(loss.grad)
+    assert loss.grad > 0
+
+
+def test_robust_loss_wrapper_bounds_extreme_outliers():
+    wrapper = RobustLossWrapper(10.0)
+    huge = torch.tensor(1e9, requires_grad=True)
+
+    bounded = wrapper(huge)
+
+    assert torch.isclose(bounded, torch.tensor(10.0))
+    bounded.backward()
+    assert torch.isfinite(huge.grad)
+    assert huge.grad < 1e-8
+
+
+def test_robust_loss_wrapper_preserves_the_raw_loss_on_outputs():
+    outputs = SimpleNamespace(loss=torch.tensor(1000.0))
+
+    bounded = RobustLossWrapper(10.0)(outputs.loss, outputs)
+
+    assert torch.isclose(outputs.raw_loss, torch.tensor(1000.0))
+    assert torch.isclose(outputs.loss, bounded)
+    assert torch.isclose(bounded, torch.tensor(10.0))
 
 
 def test_load_config_rejects_a_non_mapping(tmp_path):
@@ -462,6 +499,22 @@ def test_compute_loss_rejects_mixed_sample_weight_tensor():
     with pytest.raises(ValueError, match=r"uniform within a batch, got 0\.1 and 1\.0"):
         _bare_trainer().compute_loss(model, inputs)
     assert model.seen is None
+
+
+@pytest.mark.parametrize("bad", [0, -1, float("inf"), float("nan"), "wide"])
+def test_load_config_rejects_a_bad_robust_loss_threshold(tmp_path, bad):
+    path = tmp_path / "config.yaml"
+    path.write_text(f"robust_loss_threshold: {bad!r}\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="robust_loss_threshold"):
+        load_config(path)
+
+
+def test_load_config_accepts_a_disabled_or_positive_robust_loss_threshold(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text("robust_loss_threshold: null\n", encoding="utf-8")
+    assert load_config(path)["robust_loss_threshold"] is None
+    path.write_text("robust_loss_threshold: 10.0\n", encoding="utf-8")
+    assert load_config(path)["robust_loss_threshold"] == 10.0
 
 
 @pytest.mark.parametrize("bad", [0, -0.5, 1.5, float("inf"), float("nan"), "heavy", None])

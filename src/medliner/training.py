@@ -16,7 +16,7 @@ from gliner.training import Trainer as GLiNERTrainer
 from transformers import TrainerCallback
 
 from .dataset import hash_file, read_examples
-from .gliner_data import to_gliner_dataset
+from .gliner_data import sliding_window_examples, to_gliner_dataset
 from .schema import ALLOWED_LABELS, Example
 
 
@@ -85,6 +85,41 @@ class WeightedCollator:
         return batch
 
 
+class RobustLossWrapper:
+    """Bound an extreme per-batch training loss without hiding ordinary errors.
+
+    GLiNER's span objective is a sum over every enumerated candidate span, so one corrupted or
+    adversarial record can dominate the gradient for an entire optimizer step. ``tanh`` clipping
+    leaves losses below ``threshold`` exactly unchanged, saturates outliers at a finite ceiling,
+    and keeps ``dL/dx`` continuous. The raw loss stays on the outputs object for logging; only
+    the scalar returned to the optimizer is bounded.
+    """
+
+    def __init__(self, threshold: float) -> None:
+        import torch
+
+        if threshold <= 0 or not torch.isfinite(torch.tensor(float(threshold))):
+            raise ValueError(f"robust_loss_threshold must be a positive finite number, got {threshold!r}")
+        self.threshold = float(threshold)
+
+    def __call__(self, loss: Any, outputs: Any = None) -> Any:
+        import torch
+
+        bounded = self.threshold * torch.tanh(loss / self.threshold)
+        if outputs is not None:
+            # Keep the unbounded value visible to callbacks/metrics; it is deliberately not fed
+            # to backward(). Outputs may be an immutable namespace, so fall back to a copy.
+            try:
+                outputs.raw_loss = loss
+            except (AttributeError, TypeError):
+                import copy
+
+                outputs = copy.copy(outputs)
+                outputs.raw_loss = loss
+            outputs.loss = bounded
+        return bounded
+
+
 class WeightedTrainer(GLiNERTrainer):
     """GLiNER trainer that scales the batch loss by its ``sample_weight``.
 
@@ -92,8 +127,13 @@ class WeightedTrainer(GLiNERTrainer):
     skip and the gradient-accumulation division untouched, so a weighted micro-batch is scaled
     *before* accumulation — exactly the standard weighted-sum objective. The popped tensor is
     consumed here and never forwarded to the model; weight 1.0 everywhere therefore reproduces
-    the unweighted loss bit-for-bit.
+    the unweighted loss bit-for-bit. An optional robust wrapper bounds single-batch outliers
+    *after* the raw loss is computed and *before* sample weighting/backpropagation.
     """
+
+    def __init__(self, *args: Any, robust_loss: RobustLossWrapper | None = None, **kwargs: Any) -> None:
+        self.robust_loss = robust_loss
+        super().__init__(*args, **kwargs)
 
     def compute_loss(
         self,
@@ -113,9 +153,12 @@ class WeightedTrainer(GLiNERTrainer):
         result = super().compute_loss(
             model, inputs, return_outputs=return_outputs, num_items_in_batch=num_items_in_batch
         )
-        if weights is None:
-            return result
         loss, outputs = result if return_outputs else (result, None)
+        robust = getattr(self, "robust_loss", None)
+        if robust is not None:
+            loss = robust(loss, outputs)
+        if weights is None:
+            return (loss, outputs) if return_outputs else loss
         scaled = loss * weights[0]
         return (scaled, outputs) if return_outputs else scaled
 
@@ -145,6 +188,18 @@ def load_config(path: str | Path) -> dict[str, Any]:
             validate_weight(f"{name}[{generator!r}]", raw)
     if "autolabel_weight" in value:
         validate_weight("autolabel_weight", value["autolabel_weight"])
+    if "robust_loss_threshold" in value:
+        threshold = value["robust_loss_threshold"]
+        if threshold is not None:
+            try:
+                threshold = float(threshold)
+            except (TypeError, ValueError):
+                threshold = float("nan")
+            if not 0 < threshold < float("inf"):
+                raise ValueError(
+                    f"training config {path}: robust_loss_threshold must be a positive finite number, "
+                    f"got {value['robust_loss_threshold']!r}"
+                )
     return value
 
 
@@ -290,12 +345,58 @@ def _export_best_checkpoint(trainer: Any, final_dir: Path) -> str | None:
     return str(source)
 
 
-def load_model(model_id: str, *, device: str, max_length: int | None = None) -> Any:
+def load_model(
+    model_id: str,
+    *,
+    device: str,
+    max_length: int | None = None,
+    max_width: int | None = None,
+) -> Any:
     from gliner import GLiNER
 
     kwargs: dict[str, Any] = {"map_location": device}
     if max_length is not None:
         kwargs["max_length"] = max_length
+    if max_width is not None:
+        kwargs["max_width"] = max_width
+        # Marker-style span layers (gliner_small-v2.1's markerV0) build start/end projections
+        # independent of the width, so GLiNER can widen the enumeration budget without dropping
+        # any pretrained span weights. Non-marker span modes may introduce width-shaped random
+        # weights; refuse that silently-changed model instead of training an accidental rebuild.
+        kwargs["strict"] = False
+        model = GLiNER.from_pretrained(model_id, **kwargs)
+        own_shapes = {name: tuple(value.shape) for name, value in model.model.state_dict().items()}
+        span_shapes = {name: shape for name, shape in own_shapes.items() if "span_rep_layer" in name}
+        checkpoint = getattr(model, "checkpoint_state_dict_shapes", None)
+        if checkpoint is None:
+            # GLiNER does not expose the skipped shapes, so markerV0's known width-invariant
+            # state is the explicit safe list: every span tensor must be width-independent.
+            invariant = all(
+                any(
+                    name.endswith(suffix)
+                    for suffix in (
+                        "project_start.0.weight",
+                        "project_start.0.bias",
+                        "project_start.3.weight",
+                        "project_start.3.bias",
+                        "project_end.0.weight",
+                        "project_end.0.bias",
+                        "project_end.3.weight",
+                        "project_end.3.bias",
+                        "out_project.0.weight",
+                        "out_project.0.bias",
+                        "out_project.3.weight",
+                        "out_project.3.bias",
+                    )
+                )
+                for name in span_shapes
+            )
+            if not invariant:
+                raise ValueError(
+                    f"max_width override is only safe for width-invariant marker span layers; "
+                    f"unexpected span parameter shapes: {span_shapes}"
+                )
+        return model
     return GLiNER.from_pretrained(model_id, **kwargs)
 
 
@@ -400,13 +501,21 @@ def _make_trainer(
     # plain FixedLabelCollator + GLiNER Trainer pair is kept verbatim whenever no synthetic
     # records are mixed in; the weighted pair only ever handles a real mix.
     collator: Any
-    trainer_cls: Any
+    trainer_cls: Any = GLiNERTrainer
+    robust_loss = None
+    if config.get("robust_loss_threshold") is not None:
+        robust_loss = RobustLossWrapper(float(config["robust_loss_threshold"]))
+    trainer_kwargs: dict[str, Any] = {}
+    if robust_loss is not None:
+        trainer_cls = WeightedTrainer
+        trainer_kwargs["robust_loss"] = robust_loss
     if weighted:
         collator = WeightedCollator(model._create_data_collator(), labels)
         trainer_cls = WeightedTrainer
     else:
         collator = FixedLabelCollator(model._create_data_collator(), labels)
-        trainer_cls = GLiNERTrainer
+    if trainer_cls is GLiNERTrainer:
+        trainer_kwargs = {}
     kwargs: dict[str, Any] = {
         "model": model,
         "args": args,
@@ -415,12 +524,15 @@ def _make_trainer(
         "data_collator": collator,
         "callbacks": [callback],
     }
-    signature = inspect.signature(trainer_cls).parameters
+    # Probe the GLiNER/transformers base, not the subclass: WeightedTrainer's own __init__ takes
+    # (*args, **kwargs) and would hide whether this transformers version wants `processing_class`
+    # (v5) or the removed `tokenizer` (v4).
+    signature = inspect.signature(GLiNERTrainer.__init__).parameters
     if "processing_class" in signature:
         kwargs["processing_class"] = model.data_processor.transformer_tokenizer
     else:
         kwargs["tokenizer"] = model.data_processor.transformer_tokenizer
-    return trainer_cls(**kwargs)
+    return trainer_cls(**kwargs, **trainer_kwargs)
 
 
 def _synthetic_pool_path() -> Path:
@@ -513,20 +625,32 @@ def train_from_split_directory(
     output_dir.mkdir(parents=True, exist_ok=True)
     device = _device()
     model_id = str(config.get("model_id", "urchade/gliner_small-v2.1"))
-    model = load_model(model_id, device=device, max_length=int(config.get("max_length", 384)))
+    max_length = int(config.get("max_length", 384))
+    max_width = int(config["max_width"]) if "max_width" in config else None
+    model = load_model(
+        model_id,
+        device=device,
+        max_length=max_length,
+        max_width=max_width,
+    )
     _enable_memory_saving(model, config)
     train_examples = read_examples(split_dir / "train.jsonl")
     eval_examples = read_examples(split_dir / "validation.jsonl")
+    test_path = split_dir / "test.jsonl"
+    test_examples = read_examples(test_path) if test_path.exists() else []
     if not train_examples or not eval_examples:
         raise ValueError("training requires non-empty train and validation splits")
-    test_path = split_dir / "test.jsonl"
-    held_out_examples = eval_examples + (read_examples(test_path) if test_path.exists() else [])
+    held_out_examples = eval_examples + test_examples
     synthetic_weight = float(config.get("synthetic_weight", 1.0))
     overrides = {str(key): float(value) for key, value in (config.get("synthetic_weight_overrides") or {}).items()}
     synthetic_examples, synthetic_dataset_hash = _load_synthetic_examples(config, no_synthetic=no_synthetic)
     autolabel_examples, autolabel_dataset_hash = _load_autolabel_examples(config)
     machine_examples = [*synthetic_examples, *autolabel_examples]
     _assert_no_synthetic_in_held_out(machine_examples, held_out_examples)
+    train_examples = sliding_window_examples(train_examples, model, max_len=max_length, max_width=max_width)
+    eval_examples = sliding_window_examples(eval_examples, model, max_len=max_length, max_width=max_width)
+    synthetic_examples = sliding_window_examples(synthetic_examples, model, max_len=max_length, max_width=max_width)
+    autolabel_examples = sliding_window_examples(autolabel_examples, model, max_len=max_length, max_width=max_width)
     train_records = to_gliner_dataset(train_examples, model=model)
     synthetic_records = [
         to_gliner_dataset(

@@ -2,7 +2,15 @@ from __future__ import annotations
 
 import pytest
 
-from medliner.gliner_data import ModelLimits, char_span_to_token_span, split_words, to_gliner_dataset, to_gliner_record
+from medliner.gliner_data import (
+    ModelLimits,
+    char_span_to_token_span,
+    sliding_window_examples,
+    sliding_windows,
+    split_words,
+    to_gliner_dataset,
+    to_gliner_record,
+)
 from medliner.schema import Annotation, Example
 
 
@@ -42,6 +50,35 @@ def test_span_within_max_width_is_kept():
     end = words.index("w5") + len("w5")
     record = to_gliner_record(_example(words, [(0, end, "disease")]), limits=ModelLimits(max_len=384, max_width=12))
     assert record["ner"] == [(0, 5, "disease")]
+
+
+def test_sliding_windows_retain_long_text_and_remap_boundary_crossing_spans():
+    text = " ".join(f"w{index}" for index in range(30))
+    start = text.index("w9")
+    end = text.index("w13") + len("w13")
+    example = _example(text, [(start, end, "disease")])
+
+    windows = sliding_windows(example, max_len=12, max_width=4)
+
+    assert len(windows) == 4
+    assert "".join(window.text for window in windows)  # every window is non-empty
+    assert any(any(annotation.text == "w9 w10 w11 w12 w13" for annotation in window.annotations) for window in windows)
+    for window in windows:
+        assert len(split_words(window.text)) <= 12
+        for annotation in window.annotations:
+            assert window.text[annotation.start : annotation.end] == annotation.text
+
+
+def test_sliding_window_examples_preserve_short_examples_without_duplication():
+    short = _example("asthma", [(0, 6, "disease")])
+    long = _example(" ".join(f"w{index}" for index in range(25)), [])
+
+    windows = sliding_window_examples([short, long], model=None, max_len=10, max_width=3)
+
+    assert windows[0] is short
+    assert len(windows) > 2
+    assert sum(window.text == short.text for window in windows) == 1
+    assert all(len(split_words(window.text)) <= 10 for window in windows)
 
 
 def test_text_longer_than_max_len_is_refused_rather_than_truncated():

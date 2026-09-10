@@ -3,8 +3,11 @@ model_id: urchade/gliner_small-v2.1
 seed: 2026
 
 # Sequence and span budgets. Longer text or wider gold spans are rejected at conversion time
-# rather than silently truncated/dropped by GLiNER; see docs/TRAINING.md.
+# rather than silently truncated/dropped by GLiNER; see docs/TRAINING.md. The base checkpoint
+# ships max_width=12; 16 covers the widest reviewed gold span (14 tokens) and is safe with the
+# checkpoint's markerV0 span layer because all of its pretrained weights are width-invariant.
 max_length: 384
+max_width: 16
 
 # Micro-batch plus accumulation keeps peak VRAM low. Reduce max_length before raising the batch.
 per_device_train_batch_size: 1
@@ -44,6 +47,11 @@ bf16: true
 
 gradient_checkpointing: true
 freeze_text_encoder: false
+
+# Bound an extreme single-batch loss without changing ordinary steps. GLiNER sums the span
+# loss over every candidate; tanh clipping leaves values below this threshold exactly unchanged
+# and saturates only true outliers, which is important with 0.1/0.3-weighted machine-labeled data.
+robust_loss_threshold: 10.0
 
 # Semi-supervised mixing: synthetic examples count 10x less than gold (1.0) in the loss.
 # Requires the pool from 'medliner synthesize'; without it use 'medliner train --no-synthetic'.

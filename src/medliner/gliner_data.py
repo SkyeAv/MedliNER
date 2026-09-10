@@ -8,7 +8,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from .schema import Example
+from .schema import Annotation, Example
 
 # Matches GLiNER's documented WhitespaceTokenSplitter in 0.2.x. A real model splitter is preferred.
 GLINER_TOKEN = re.compile(r"\w+(?:[-_]\w+)*|\S")
@@ -113,6 +113,96 @@ def to_gliner_record(
     }
 
 
+def sliding_windows(
+    example: Example,
+    *,
+    max_len: int,
+    max_width: int | None = None,
+    model: Any | None = None,
+) -> list[Example]:
+    """Tile a long example into overlapping exact-substring model windows.
+
+    This mirrors DAKP's production NER windowing: every model input stays within GLiNER's word
+    budget, while overlap is wide enough that every annotation (including one crossing a hard
+    boundary) is wholly present in at least one window. Character offsets are remapped into each
+    window and retained in the canonical annotation payload; no text or span is truncated.
+    """
+    if max_len < 1:
+        raise ValueError(f"max_len must be positive, got {max_len!r}")
+    tokens = split_words(example.text, model=model)
+    if len(tokens) <= max_len:
+        return [example]
+    overlap = min(max_width or 0, max_len - 1)
+    stride = max_len - overlap
+    starts = list(range(0, len(tokens) - max_len + 1, stride))
+    final_start = len(tokens) - max_len
+    if not starts or starts[-1] != final_start:
+        starts.append(final_start)
+    windows: list[Example] = []
+    seen_annotations: set[str] = set()
+    for index, token_start in enumerate(starts):
+        token_end = min(token_start + max_len, len(tokens))
+        char_start = 0 if token_start == 0 else tokens[token_start].start
+        char_end = len(example.text) if token_end == len(tokens) else tokens[token_end - 1].end
+        text = example.text[char_start:char_end]
+        annotations: list[Annotation] = []
+        for annotation in example.annotations:
+            if annotation.start < char_start or annotation.end > char_end:
+                continue
+            key = annotation.id or f"{annotation.start}:{annotation.end}:{annotation.label}"
+            seen_annotations.add(key)
+            local_start = annotation.start - char_start
+            local_end = annotation.end - char_start
+            annotations.append(
+                annotation.model_copy(
+                    update={
+                        "start": local_start,
+                        "end": local_end,
+                        "text": text[local_start:local_end],
+                    }
+                )
+            )
+        payload = example.model_dump(mode="python")
+        payload.update(
+            id=f"{example.id}::window-{index:04d}",
+            text=text,
+            annotations=annotations,
+            metadata={
+                **example.metadata,
+                "window_index": index,
+                "window_count": len(starts),
+                "window_char_start": char_start,
+                "window_char_end": char_end,
+            },
+        )
+        windows.append(Example.model_validate(payload))
+    expected = {
+        annotation.id or f"{annotation.start}:{annotation.end}:{annotation.label}" for annotation in example.annotations
+    }
+    missing = expected - seen_annotations
+    if missing:
+        raise ValueError(
+            f"long example {example.id!r} has annotation(s) not contained in any sliding window: {sorted(missing)[:3]}"
+        )
+    return windows
+
+
+def sliding_window_examples(
+    examples: Iterable[Example], model: Any, *, max_len: int | None = None, max_width: int | None = None
+) -> list[Example]:
+    """Window every example using the loaded model's budgets, preserving short examples as-is."""
+    limits = model_limits(model)
+    budget = max_len if max_len is not None else limits.max_len
+    if budget is None:
+        return list(examples)
+    width = max_width if max_width is not None else limits.max_width
+    return [
+        window
+        for example in examples
+        for window in sliding_windows(example, max_len=budget, max_width=width, model=model)
+    ]
+
+
 def to_gliner_dataset(
     examples: Iterable[Example], model: Any | None = None, *, weight: float = 1.0
 ) -> list[dict[str, Any]]:
@@ -127,6 +217,8 @@ __all__ = [
     "char_span_to_token_span",
     "model_limits",
     "split_words",
+    "sliding_window_examples",
+    "sliding_windows",
     "to_gliner_dataset",
     "to_gliner_record",
 ]
