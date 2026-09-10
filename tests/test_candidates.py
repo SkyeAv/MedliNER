@@ -4,27 +4,21 @@ import json
 import tempfile
 from collections import Counter
 from datetime import UTC, datetime
-from itertools import pairwise
 from pathlib import Path
 
 import pytest
 
 from medliner.candidates import (
     GENERATOR_VERSION,
-    GOLD_ANSWERS_NOTE,
     CandidateInputError,
     CandidateText,
-    PinnedSpl,
-    apply_pins,
     build_import_tasks,
     build_warmup_tasks,
     hash_candidates_file,
     import_file_name,
     import_manifest,
     read_candidates,
-    read_pins,
     sample_tasks,
-    source_reference,
     stagger_tasks,
     write_import_file,
 )
@@ -227,7 +221,7 @@ def test_sample_tasks_rejects_out_of_range_edge_fraction():
 
 def _max_task_run(kinds: list[str]) -> int:
     longest = current = 1
-    for previous, item in pairwise(kinds):  # successive pairs
+    for previous, item in zip(kinds, kinds[1:], strict=False):  # deliberately off-by-one pairing
         current = current + 1 if item == previous else 1
         longest = max(longest, current)
     return longest
@@ -254,8 +248,7 @@ def test_stagger_task_runs_only_bound_while_multiple_task_types_remain():
     kinds = [task["data"]["task"] for task in staggered]
     last_minority = max(index for index, kind in enumerate(kinds) if kind == "contraindication")
     assert _max_task_run(kinds[: last_minority + 1]) <= 2
-    assert kinds.count("indication") == 8
-    assert kinds.count("contraindication") == 2
+    assert kinds.count("indication") == 8 and kinds.count("contraindication") == 2
 
 
 def test_stagger_tasks_rejects_invalid_max_run():
@@ -270,8 +263,7 @@ def test_import_file_name_legacy_and_sampling_aware():
     digest = "a" * 64
     assert import_file_name(input_hash=digest) == f"import-{digest[:16]}.json"
     sampled = import_file_name(input_hash=digest, sampling="tasks=indication:6000;seed=2026;max_words=300;max_run=3")
-    assert sampled.startswith("import-")
-    assert sampled != import_file_name(input_hash=digest)
+    assert sampled.startswith("import-") and sampled != import_file_name(input_hash=digest)
     other = import_file_name(input_hash=digest, sampling="tasks=indication:5000;seed=2026;max_words=300;max_run=3")
     assert other != sampled  # the configuration is part of the cache key
     assert (
@@ -310,13 +302,13 @@ def test_build_warmup_tasks_maps_gold_cases_to_demo_tasks():
                 "id": "dailymed-ibuprofen",
                 "source": "dailymed",
                 "text": "Contraindicated in patients with asthma.",
-                "mentions": [{"surface": "asthma", "type": "DiseaseOrPhenotypicFeature"}],
+                "mentions": [{"surface": "asthma", "type": "disease"}],
             },
             {
                 "id": "faers-case-1",
                 "source": "faers",
                 "text": "Used for migraine prophylaxis.",
-                "mentions": [{"surface": "migraine", "type": "DiseaseOrPhenotypicFeature", "start": 9}],
+                "mentions": [{"surface": "migraine", "type": "disease", "start": 9}],
             },
         ]
     )
@@ -326,12 +318,8 @@ def test_build_warmup_tasks_maps_gold_cases_to_demo_tasks():
     assert all(task["data"]["warmup"] is True for task in tasks)
     ibuprofen, faers = tasks
     assert ibuprofen["id"].startswith("warmup-")
-    assert ibuprofen["data"]["gold_mentions"] == [
-        {"start": 33, "end": 39, "label": "DiseaseOrPhenotypicFeature", "text": "asthma"}
-    ]
-    assert faers["data"]["gold_mentions"] == [
-        {"start": 9, "end": 17, "label": "DiseaseOrPhenotypicFeature", "text": "migraine"}
-    ]
+    assert ibuprofen["data"]["gold_mentions"] == [{"start": 33, "end": 39, "label": "disease", "text": "asthma"}]
+    assert faers["data"]["gold_mentions"] == [{"start": 9, "end": 17, "label": "disease", "text": "migraine"}]
     # Ids are deterministic (case-id keyed), so re-runs reproduce the same warm-up queue.
     assert [task["id"] for task in build_warmup_tasks(gold)] == [task["id"] for task in tasks]
 
@@ -352,7 +340,7 @@ def test_build_warmup_tasks_rejects_malformed_benchmarks():
                 "id": "x",
                 "source": "faers",
                 "text": "short",
-                "mentions": [{"surface": "absent", "type": "DiseaseOrPhenotypicFeature"}],
+                "mentions": [{"surface": "absent", "type": "disease"}],
             }
         ]
     )
@@ -360,215 +348,3 @@ def test_build_warmup_tasks_rejects_malformed_benchmarks():
         build_warmup_tasks(bad_offset)
     with pytest.raises(ValueError, match="at least 1"):
         build_warmup_tasks(_gold([{"id": "a", "source": "faers", "text": "t", "mentions": []}]), limit=0)
-
-
-# --- annotation-screen display fields -----------------------------------------------------------
-
-
-def test_import_tasks_always_carry_the_screen_display_fields():
-    """Label Studio renders a missing "$var" literally, so both keys exist on every task."""
-    tasks = build_import_tasks(
-        [
-            CandidateText(text="Contraindicated in asthma.", task="contraindication"),
-            CandidateText(
-                text="Indicated for asthma.", task="indication", source_family="dailymed", source_document_id="spl-1"
-            ),
-        ]
-    )
-    assert all(
-        "shortened_note" in task["data"] and "source_ref" in task["data"] and "gold_answers" in task["data"]
-        for task in tasks
-    )
-    assert all(task["data"]["shortened_note"] == "" for task in tasks)  # nothing shortened yet
-    assert all(task["data"]["gold_answers"] == "" for task in tasks)  # presenter line stays blank
-
-
-def test_warmup_tasks_carry_the_screen_display_fields():
-    payload = {
-        "cases": [
-            {
-                "id": "c1",
-                "source": "dailymed",
-                "text": "Contraindicated in asthma.",
-                "mentions": [{"surface": "asthma", "type": "DiseaseOrPhenotypicFeature"}],
-            }
-        ]
-    }
-    with tempfile.TemporaryDirectory() as tmp:
-        gold = Path(tmp) / "ner_gold.json"
-        gold.write_text(json.dumps(payload), encoding="utf-8")
-        (task,) = build_warmup_tasks(gold)
-    assert task["data"]["shortened_note"] == ""
-    assert task["data"]["gold_answers"] == GOLD_ANSWERS_NOTE  # generic example, not this case's gold
-    assert "source_ref" in task["data"]
-
-
-@pytest.mark.parametrize(
-    ("kwargs", "expected"),
-    [
-        # An explicit URI is the most trustworthy link and wins over any derived one.
-        (
-            {"family": "dailymed", "document_id": "spl-1", "source_uri": "https://example.test/spl-1"},
-            '<a href="https://example.test/spl-1" target="_blank" rel="noopener">DailyMed SPL spl-1</a>',
-        ),
-        # A real setid is linkable; DailyMed resolves it directly.
-        (
-            {"family": "dailymed", "document_id": "3e2f1a0b-4c5d-6e7f-8a9b-0c1d2e3f4a5b"},
-            '<a href="https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=3e2f1a0b-4c5d-6e7f-8a9b-0c1d2e3f4a5b"'
-            ' target="_blank" rel="noopener">DailyMed SPL 3e2f1a0b-4c5d-6e7f-8a9b-0c1d2e3f4a5b</a>',
-        ),
-        # A placeholder id stays plain text: a dead link is worse than no link.
-        ({"family": "dailymed", "document_id": "spl-document-001"}, "DailyMed SPL spl-document-001"),
-        ({"family": "faers", "record_id": "case-12345"}, "FAERS case case-12345"),
-        ({"family": "unknown", "document_id": "doc-9"}, "unknown doc-9"),
-        ({"family": "dailymed"}, ""),  # nothing to point at
-    ],
-)
-def test_source_reference_links_only_what_it_can_resolve(kwargs, expected):
-    assert source_reference(**kwargs) == expected
-
-
-def test_source_reference_escapes_its_inputs():
-    """The value is rendered as HTML by <HyperText>, so it may never carry raw markup."""
-    rendered = source_reference(family="dailymed", document_id='<script>"x"')
-    assert "<script>" not in rendered
-    assert "&lt;script&gt;" in rendered
-
-
-# --- pinned SPLs ----------------------------------------------------------------------------------
-
-PIN_FIXTURE = Path(__file__).parent / "fixtures" / "pinned_spls.json"
-PIN_SETID_1 = "11111111-2222-3333-4444-555555555555"
-PIN_SETID_2 = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-
-
-def test_read_pins_parses_the_fixture():
-    pins = read_pins(PIN_FIXTURE)
-    assert [pin.setid for pin in pins.pins] == [PIN_SETID_1, PIN_SETID_2]
-    assert pins.pins[0].notes == ["supports asthma"]
-    assert pins.pins[1].notes == ["supports migraine", "supports tension headache"]
-    assert pins.unattributed_notes[0].note == "unplaced review comment"
-
-
-def test_read_pins_reports_entry_numbers_and_validates_setids(tmp_path):
-    path = tmp_path / "pins.json"
-    path.write_text(json.dumps({"version": 1, "pins": [{"setid": "not-a-setid"}]}), encoding="utf-8")
-    with pytest.raises(CandidateInputError, match="invalid pin at line 1"):
-        read_pins(path)
-    path.write_text(json.dumps({"version": 1, "pins": [{"setid": PIN_SETID_1}, {"setid": "bad"}]}), encoding="utf-8")
-    with pytest.raises(CandidateInputError, match="invalid pin at line 2"):
-        read_pins(path)
-    path.write_text("not json", encoding="utf-8")
-    with pytest.raises(CandidateInputError, match="cannot read pin file"):
-        read_pins(path)
-    path.write_text(json.dumps({"version": 2, "pins": []}), encoding="utf-8")
-    with pytest.raises(CandidateInputError, match="unsupported pin file version"):
-        read_pins(path)
-    path.write_text(json.dumps({"version": 1, "unattributed_notes": [{"note": "  "}]}), encoding="utf-8")
-    with pytest.raises(CandidateInputError, match="invalid unattributed note at line 1"):
-        read_pins(path)
-
-
-def test_apply_pins_matches_loinc_suffixed_and_bare_setids():
-    pin = PinnedSpl(setid=PIN_SETID_1, notes=["supports asthma"])
-    tasks = build_import_tasks(
-        [
-            CandidateText(
-                text="Indicated for asthma.",
-                task="indication",
-                source_family="dailymed",
-                source_document_id=f"{PIN_SETID_1}#34067-9",
-            ),
-            CandidateText(
-                text="Contraindicated in asthma.",
-                task="contraindication",
-                source_family="dailymed",
-                source_document_id=PIN_SETID_1,  # bare setid, no #<LOINC> suffix
-            ),
-            CandidateText(
-                text="Indicated for migraine.",
-                task="indication",
-                source_family="dailymed",
-                source_document_id="doc-other",
-            ),
-        ]
-    )
-    stats = apply_pins(tasks, [pin])
-    assert stats == {"matched": {PIN_SETID_1: 2}, "unmatched": []}
-    flags = {task["data"]["text"]: task["data"]["pinned"] for task in tasks}
-    assert flags == {
-        "Indicated for asthma.": True,
-        "Contraindicated in asthma.": True,
-        "Indicated for migraine.": False,
-    }
-
-
-def test_apply_pins_reports_unmatched_setids():
-    tasks = build_import_tasks([CandidateText(text="Indicated for asthma.", task="indication")])
-    stats = apply_pins(tasks, read_pins(PIN_FIXTURE).pins)
-    assert stats["matched"] == {}
-    assert stats["unmatched"] == [PIN_SETID_1, PIN_SETID_2]
-
-
-def test_every_task_carries_the_pinned_default():
-    tasks = build_import_tasks([CandidateText(text="Indicated for asthma.", task="indication")])
-    assert all(task["data"]["pinned"] is False for task in tasks)
-    (warmup,) = build_warmup_tasks(
-        _gold(
-            [
-                {
-                    "id": "c1",
-                    "source": "dailymed",
-                    "text": "Contraindicated in asthma.",
-                    "mentions": [{"surface": "asthma", "type": "DiseaseOrPhenotypicFeature"}],
-                }
-            ]
-        )
-    )
-    assert warmup["data"]["pinned"] is False
-
-
-def test_pinned_tasks_bypass_sampling_caps_and_lead_the_order():
-    """Mirrors run_candidates: pins leave the pool before sample_tasks and are prepended after."""
-    long_text = " ".join(["word"] * 301)
-    rows = [
-        CandidateText(
-            text=long_text, task="indication", source_family="dailymed", source_document_id=f"{PIN_SETID_1}#34067-9"
-        )
-    ]
-    rows += [
-        CandidateText(
-            text=f"Indicated for condition number {index}.",
-            task="indication",
-            source_family="dailymed",
-            source_document_id=f"doc-{index}",
-        )
-        for index in range(4)
-    ]
-    tasks = build_import_tasks(rows)
-    apply_pins(tasks, [PinnedSpl(setid=PIN_SETID_1)])
-    pinned = [task for task in tasks if task["data"]["pinned"]]
-    rest = [task for task in tasks if not task["data"]["pinned"]]
-    final = pinned + sample_tasks(rest, {"indication": 1}, max_words=300)
-    assert final[0]["data"]["pinned"] is True
-    # The 301-word pinned text survives both the max_words cap and the per-task target of 1.
-    assert len(final[0]["data"]["text"].split()) == 301
-    assert len(final) == 2
-
-
-def test_note_text_never_enters_task_data():
-    pins = read_pins(PIN_FIXTURE)
-    tasks = build_import_tasks(
-        [
-            CandidateText(
-                text="Indicated for asthma.",
-                task="indication",
-                source_family="dailymed",
-                source_document_id=f"{PIN_SETID_1}#34067-9",
-            )
-        ]
-    )
-    apply_pins(tasks, pins.pins)
-    blob = json.dumps(tasks)
-    for note in ("supports asthma", "supports migraine", "supports tension headache", "unplaced review comment"):
-        assert note not in blob

@@ -12,7 +12,6 @@ and free of ML dependencies.
 
 from __future__ import annotations
 
-import html
 import json
 import re
 from collections import Counter, defaultdict
@@ -25,54 +24,8 @@ from pydantic import BaseModel, ValidationError, field_validator
 
 from .schema import ALLOWED_TASKS
 
-GENERATOR_VERSION = "medliner.candidates.v3"
+GENERATOR_VERSION = "medliner.candidates.v1"
 WARMUP_SOURCE_FAMILY = "gold-warmup"
-
-#: Shown to annotators on tasks whose text an LLM rewrote during ``make prepare``. Every task
-#: carries a ``shortened_note`` key because Label Studio renders a missing ``$var`` as the
-#: literal string ``$shortened_note``; the empty default is what makes the line disappear.
-SHORTENED_NOTE = "An AI shortened this text so it fits on one screen. Highlight only what you see here."
-
-#: Presenter-only line rendered above the passage in the warm-up demo. Every task carries a
-#: ``gold_answers`` key for the same reason as ``shortened_note``; real tasks keep it empty so
-#: annotators never see answer text. Warm-up tasks show the annotation guide's generic teaching
-#: example, never a gold case's own surfaces — those stay in ``gold_mentions``, which the
-#: labeling config renders nowhere.
-GOLD_ANSWERS_NOTE = "Example answers: “active liver disease” and “transaminase elevations”."
-
-#: A DailyMed document id is only linkable when it is an SPL setid. Placeholder ids such as
-#: ``spl-document-001`` must stay plain text rather than become a dead link.
-_SETID_PATTERN = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
-_DAILYMED_SPL_URL = "https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid={setid}"
-
-
-def source_reference(
-    *, family: str, document_id: str | None = None, record_id: str | None = None, source_uri: str | None = None
-) -> str:
-    """Concise provenance line for the annotation screen, as an HTML fragment.
-
-    Annotators who think a passage looks wrong need to reach the exact source document, so
-    this resolves to a link whenever one can be trusted: an explicit ``source_uri`` first,
-    then a DailyMed SPL setid. Anything else stays plain text — a fabricated URL is worse
-    than none. Rendered by ``<HyperText>`` in ``configs/label_studio_ner.xml``, so every
-    interpolated value is escaped.
-    """
-    identifier = document_id or record_id
-    if not identifier:
-        return ""
-    if family == "dailymed":
-        label = f"DailyMed SPL {identifier}"
-    elif family == "faers":
-        label = f"FAERS case {identifier}"
-    else:
-        label = f"{family} {identifier}"
-    href = source_uri
-    if not href and family == "dailymed" and document_id and _SETID_PATTERN.match(document_id):
-        href = _DAILYMED_SPL_URL.format(setid=document_id)
-    escaped = html.escape(label)
-    if not href:
-        return escaped
-    return f'<a href="{html.escape(href, quote=True)}" target="_blank" rel="noopener">{escaped}</a>'
 
 
 class CandidateInputError(ValueError):
@@ -122,101 +75,6 @@ def read_candidates(path: str | Path) -> list[CandidateText]:
     return candidates
 
 
-class PinnedSpl(BaseModel):
-    """One SPL forced to the front of the annotation queue, with the reviewer's notes.
-
-    Notes are an audit trail only: they live in the pin file and the import manifest, and
-    are never copied into task ``data``, so Label Studio cannot render them.
-    """
-
-    setid: str
-    notes: list[str] = []
-    source: str | None = None
-
-    @field_validator("setid")
-    @classmethod
-    def setid_is_an_spl_setid(cls, value: str) -> str:
-        value = value.strip().lower()
-        if not _SETID_PATTERN.match(value):
-            raise ValueError(f"pin setid must be a DailyMed SPL setid, got {value!r}")
-        return value
-
-    @field_validator("notes")
-    @classmethod
-    def notes_are_nonempty(cls, value: list[str]) -> list[str]:
-        if any(not note.strip() for note in value):
-            raise ValueError("pin notes must be non-empty strings")
-        return value
-
-
-class UnattributedNote(BaseModel):
-    """A reviewer note with no SPL attached yet, carried into the manifest until assigned."""
-
-    note: str
-    source: str | None = None
-    comment: str | None = None
-
-    @field_validator("note")
-    @classmethod
-    def note_is_nonempty(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("unattributed note must be non-empty")
-        return value
-
-
-class PinFile(BaseModel):
-    """Contents of ``configs/pinned_spls.json`` (or ``$MEDLINER_PIN_FILE``)."""
-
-    version: int = 1
-    pins: list[PinnedSpl] = []
-    unattributed_notes: list[UnattributedNote] = []
-
-
-def read_pins(path: str | Path) -> PinFile:
-    """Read a pin file, with entry-numbered errors in the :func:`read_candidates` style."""
-    path = Path(path)
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise CandidateInputError(f"cannot read pin file {path}: {exc}") from exc
-    if not isinstance(payload, dict):
-        raise CandidateInputError(f"{path}: pin file must be a JSON object")
-    version = payload.get("version", 1)
-    if version != 1:
-        raise CandidateInputError(f"{path}: unsupported pin file version {version!r}; expected 1")
-    pins: list[PinnedSpl] = []
-    for index, entry in enumerate(payload.get("pins") or [], start=1):
-        try:
-            pins.append(PinnedSpl.model_validate(entry))
-        except ValidationError as exc:
-            raise CandidateInputError(f"invalid pin at line {index}: {exc}") from exc
-    unattributed: list[UnattributedNote] = []
-    for index, entry in enumerate(payload.get("unattributed_notes") or [], start=1):
-        try:
-            unattributed.append(UnattributedNote.model_validate(entry))
-        except ValidationError as exc:
-            raise CandidateInputError(f"invalid unattributed note at line {index}: {exc}") from exc
-    return PinFile(version=version, pins=pins, unattributed_notes=unattributed)
-
-
-def apply_pins(tasks: list[dict[str, Any]], pins: list[PinnedSpl]) -> dict[str, Any]:
-    """Flag every task whose SPL is pinned; returns match stats for the manifest/warnings.
-
-    Real DailyMed ``source_document_id`` values are ``<setid>#<LOINC-section>``, so matching
-    is on the id up to the first ``#``; bare setids match too. A match sets only the invisible
-    ``pinned`` flag — note text never enters task data. Unmatched setids are reported so a
-    typo'd pin cannot fail silently.
-    """
-    wanted = {pin.setid for pin in pins}
-    matched: Counter[str] = Counter()
-    for task in tasks:
-        setid = str(task["data"].get("source_document_id") or "").split("#", 1)[0].lower()
-        if setid in wanted:
-            task["data"]["pinned"] = True
-            matched[setid] += 1
-    return {"matched": {setid: matched[setid] for setid in sorted(matched)}, "unmatched": sorted(wanted - set(matched))}
-
-
 def hash_candidates_file(path: str | Path) -> str:
     digest = blake3()
     with Path(path).open("rb") as handle:
@@ -255,19 +113,6 @@ def build_import_tasks(
             "text": candidate.text,
             "task": candidate.task,
             "source_family": candidate.source_family,
-            # Display fields for the annotation screen. All are always present: Label Studio
-            # renders an absent "$var" as its literal name.
-            "shortened_note": "",
-            "gold_answers": "",
-            # Invisible flag (rendered nowhere): whether this task's SPL is pinned to the
-            # front of the queue. Always present so the column is uniform in the Data Manager.
-            "pinned": False,
-            "source_ref": source_reference(
-                family=candidate.source_family,
-                document_id=candidate.source_document_id,
-                record_id=candidate.source_record_id,
-                source_uri=candidate.source_uri,
-            ),
             "generator_version": GENERATOR_VERSION,
             "generated_at": stamp,
         }
@@ -366,7 +211,7 @@ def difficulty_score(text: str) -> float:
 def _largest_remainder(counts: dict[str, int], total: int) -> dict[str, int]:
     """Split ``total`` across keys proportionally to ``counts`` (largest-remainder rounding)."""
     if total <= 0:
-        return dict.fromkeys(counts, 0)
+        return {key: 0 for key in counts}
     pool = sum(counts.values())
     if total >= pool:
         return dict(counts)
@@ -393,9 +238,9 @@ def sample_tasks(
     a task, the selection is stratified across ``source_family`` in proportion to each
     family's share of the eligible pool, and members are chosen by ``blake3(seed:task_id)``
     rank so the same input plus configuration always reproduce the same subset. ``max_words``
-    drops texts longer than that many whitespace-separated words: GLiNER truncates over-long
-    texts at its ``config.max_len`` word budget with only a warning, so annotating longer
-    passages is wasted effort.
+    drops texts longer than that many whitespace-separated words: GLiNER conversion refuses
+    such texts at training time (``max_length`` in ``configs/train-small.yaml``), so
+    annotating longer passages is wasted effort.
 
     With ``edge_fraction`` above 0, that share of each stratum's allocation goes to the
     highest-``difficulty_score`` members (ties broken by the same blake3 rank) and the
@@ -589,10 +434,6 @@ def build_warmup_tasks(gold_path: str | Path, *, limit: int = 10) -> list[dict[s
                     "task": "contraindication" if source == "dailymed" else "indication",
                     "source_family": WARMUP_SOURCE_FAMILY,
                     "source_document_id": case_id,
-                    "shortened_note": "",
-                    "gold_answers": GOLD_ANSWERS_NOTE,
-                    "pinned": False,
-                    "source_ref": source_reference(family=WARMUP_SOURCE_FAMILY, document_id=case_id),
                     "generator_version": GENERATOR_VERSION,
                     "generated_at": stamp,
                     "warmup": True,
@@ -605,15 +446,9 @@ def build_warmup_tasks(gold_path: str | Path, *, limit: int = 10) -> list[dict[s
 
 __all__ = [
     "GENERATOR_VERSION",
-    "GOLD_ANSWERS_NOTE",
-    "SHORTENED_NOTE",
     "WARMUP_SOURCE_FAMILY",
     "CandidateInputError",
     "CandidateText",
-    "PinFile",
-    "PinnedSpl",
-    "UnattributedNote",
-    "apply_pins",
     "build_import_tasks",
     "build_warmup_tasks",
     "difficulty_score",
@@ -621,9 +456,7 @@ __all__ = [
     "import_file_name",
     "import_manifest",
     "read_candidates",
-    "read_pins",
     "sample_tasks",
-    "source_reference",
     "stagger_tasks",
     "write_import_file",
 ]

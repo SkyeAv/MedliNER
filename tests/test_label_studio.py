@@ -32,7 +32,7 @@ def _task(results: list[dict], **annotation_overrides) -> dict:
 def test_drag_selected_trailing_whitespace_is_trimmed():
     start = TEXT.index("pulmonary hypertension")
     end = start + len("pulmonary hypertension ")  # the drag picked up the following space
-    example = normalize_task(_task([_span(start, end, "DiseaseOrPhenotypicFeature")]))
+    example = normalize_task(_task([_span(start, end, "disease")]))
     annotation = example.annotations[0]
     assert annotation.text == "pulmonary hypertension"
     assert (annotation.start, annotation.end) == (start, end - 1)
@@ -41,7 +41,7 @@ def test_drag_selected_trailing_whitespace_is_trimmed():
 def test_whitespace_only_span_is_rejected():
     start = TEXT.index(" and")
     with pytest.raises(LabelStudioExportError, match="whitespace-only span"):
-        normalize_task(_task([_span(start, start + 1, "DiseaseOrPhenotypicFeature")]))
+        normalize_task(_task([_span(start, start + 1, "disease")]))
 
 
 def test_cancelled_annotations_are_not_silently_negative_examples():
@@ -60,23 +60,26 @@ def test_overlapping_spans_raise_the_adapter_error(tmp_path):
     start = TEXT.index("pulmonary hypertension")
     task = _task(
         [
-            _span(start, start + len("pulmonary hypertension"), "DiseaseOrPhenotypicFeature", result_id="r1"),
-            _span(start, start + len("pulmonary"), "DiseaseOrPhenotypicFeature", result_id="r2"),
+            _span(start, start + len("pulmonary hypertension"), "disease", result_id="r1"),
+            _span(start, start + len("pulmonary"), "phenotype", result_id="r2"),
         ]
     )
     with pytest.raises(LabelStudioExportError, match="not a valid MedliNER example"):
         normalize_task(task)
 
 
+def test_conflicting_duplicate_span_labels_raise():
+    start = TEXT.index("pulmonary hypertension")
+    end = start + len("pulmonary hypertension")
+    task = _task([_span(start, end, "phenotype", result_id="r1"), _span(start, end, "disease", result_id="r2")])
+    with pytest.raises(LabelStudioExportError, match="conflicting duplicate span"):
+        normalize_task(task)
+
+
 def test_identical_duplicate_spans_are_collapsed():
     start = TEXT.index("pulmonary hypertension")
     end = start + len("pulmonary hypertension")
-    task = _task(
-        [
-            _span(start, end, "DiseaseOrPhenotypicFeature", result_id="r1"),
-            _span(start, end, "DiseaseOrPhenotypicFeature", result_id="r2"),
-        ]
-    )
+    task = _task([_span(start, end, "disease", result_id="r1"), _span(start, end, "disease", result_id="r2")])
     assert len(normalize_task(task).annotations) == 1
 
 
@@ -163,7 +166,7 @@ def test_missing_or_invalid_task_metadata_is_rejected():
 def test_missing_text_is_rejected():
     task = _task([])
     del task["data"]["text"]
-    with pytest.raises(LabelStudioExportError, match=r"has no string data\.text"):
+    with pytest.raises(LabelStudioExportError, match="has no string data.text"):
         normalize_task(task)
 
 
@@ -182,27 +185,20 @@ def test_unsupported_label_is_rejected():
 def test_span_outside_the_text_is_rejected():
     with pytest.raises(LabelStudioExportError, match="invalid character span"):
         normalize_task(
-            _task(
-                [
-                    {
-                        **_span(0, 5, "DiseaseOrPhenotypicFeature"),
-                        "value": {"start": 0, "end": 9999, "text": TEXT, "labels": ["DiseaseOrPhenotypicFeature"]},
-                    }
-                ]
-            )
+            _task([{**_span(0, 5, "disease"), "value": {"start": 0, "end": 9999, "text": TEXT, "labels": ["disease"]}}])
         )
 
 
 def test_span_text_disagreeing_with_the_source_is_rejected():
-    span = _span(0, 5, "DiseaseOrPhenotypicFeature")
+    span = _span(0, 5, "disease")
     span["value"]["text"] = "wrong"
     with pytest.raises(LabelStudioExportError, match="span text mismatch"):
         normalize_task(_task([span]))
 
 
 def test_span_must_carry_exactly_one_label():
-    span = _span(TEXT.index("ibuprofen"), TEXT.index("ibuprofen") + 9, "DiseaseOrPhenotypicFeature")
-    span["value"]["labels"] = ["medication", "DiseaseOrPhenotypicFeature"]
+    span = _span(TEXT.index("ibuprofen"), TEXT.index("ibuprofen") + 9, "phenotype")
+    span["value"]["labels"] = ["phenotype", "disease"]
     with pytest.raises(LabelStudioExportError, match="exactly one string label"):
         normalize_task(_task([span]))
 
@@ -263,7 +259,7 @@ def test_span_origin_is_preserved_so_untouched_predictions_stay_visible():
     # unchanged is a weaker signal than drawing it, and the manifest has to be able to say so.
     start = TEXT.index("pulmonary hypertension")
     end = start + len("pulmonary hypertension")
-    example = normalize_task(_task([_origin_span(start, end, "DiseaseOrPhenotypicFeature", "prediction")]))
+    example = normalize_task(_task([_origin_span(start, end, "disease", "prediction")]))
     assert example.annotations[0].origin == "prediction"
     # Provenance is unchanged: submitting the task IS the human review act.
     assert example.annotations[0].provenance == "human"
@@ -272,13 +268,13 @@ def test_span_origin_is_preserved_so_untouched_predictions_stay_visible():
 def test_a_corrected_prediction_is_distinguishable_from_an_accepted_one():
     start = TEXT.index("pulmonary hypertension")
     end = start + len("pulmonary hypertension")
-    example = normalize_task(_task([_origin_span(start, end, "DiseaseOrPhenotypicFeature", "prediction-changed")]))
+    example = normalize_task(_task([_origin_span(start, end, "disease", "prediction-changed")]))
     assert example.annotations[0].origin == "prediction-changed"
 
 
 def test_an_export_without_origins_leaves_the_field_unset_rather_than_guessing():
     start = TEXT.index("pulmonary hypertension")
-    example = normalize_task(_task([_span(start, start + len("pulmonary hypertension"), "DiseaseOrPhenotypicFeature")]))
+    example = normalize_task(_task([_span(start, start + len("pulmonary hypertension"), "disease")]))
     assert example.annotations[0].origin is None
 
 
@@ -286,16 +282,7 @@ def test_an_unknown_span_origin_is_rejected():
     start = TEXT.index("pulmonary hypertension")
     end = start + len("pulmonary hypertension")
     with pytest.raises(LabelStudioExportError, match="unsupported span origin"):
-        normalize_task(_task([_origin_span(start, end, "DiseaseOrPhenotypicFeature", "teleported")]))
-
-
-def test_pinned_flag_reaches_the_normalized_source_metadata():
-    """The invisible pin flag is finetuning provenance, so it survives export normalization."""
-    task = _task([])
-    task["data"]["pinned"] = True
-    assert normalize_task(task).source.pinned is True
-    # Tasks from before pinning (no flag in data) export it as False, never as note text.
-    assert normalize_task(_task([])).source.pinned is False
+        normalize_task(_task([_origin_span(start, end, "disease", "teleported")]))
 
 
 def test_predictions_on_a_task_are_never_read_as_annotations():
@@ -307,7 +294,7 @@ def test_predictions_on_a_task_are_never_read_as_annotations():
         {
             "model_version": "gliner_large-v2.5@0.35",
             "score": 0.9,
-            "result": [_span(start, start + len("pulmonary hypertension"), "DiseaseOrPhenotypicFeature")],
+            "result": [_span(start, start + len("pulmonary hypertension"), "disease")],
         }
     ]
     assert normalize_task(task).annotations == []

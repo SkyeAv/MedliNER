@@ -31,18 +31,7 @@ Fields:
   leakage-safe grouped splitting later, so fill them in whenever the source has a document
   or case identity.
 - `section`, `source_uri`, `source_hash` (optional): extra provenance, preserved into the
-  imported task and the normalized dataset. `source_uri` doubles as the annotator's link to
-  the source document (see below).
-
-`build_import_tasks` derives two further `data` keys that exist only to be rendered on the
-annotation screen, and are present on every task because Label Studio prints an unresolved
-`$var` literally:
-
-- `source_ref`: a concise provenance line for the annotator — `DailyMed SPL <id>` or
-  `FAERS case <id>`, wrapped in a link when `source_uri` is set or when a DailyMed
-  `source_document_id` is a real SPL setid. A placeholder id stays plain text; a dead link is
-  worse than none.
-- `shortened_note`: empty until the shortening step rewrites the text (see below).
+  imported task and the normalized dataset.
 
 Deriving rows from DAKP intermediates: pull section text from the DailyMed SPL inputs
 (contraindication sections `LOINC 34070-3`, indications-and-usage `LOINC 34067-9`) and
@@ -71,7 +60,7 @@ before import. Configuration is environment-only:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `MEDLINER_SAMPLE_TASKS` | `indication:600,contraindication:400` | `task:count` pairs. Unlisted tasks are dropped; empty or `all` disables sampling entirely. |
+| `MEDLINER_SAMPLE_TASKS` | `indication:3000,contraindication:2000` | `task:count` pairs. Unlisted tasks are dropped; empty or `all` disables sampling entirely. |
 | `MEDLINER_SAMPLE_SEED` | `2026` | Seed folded into the per-task `blake3` rank; changing it picks a different subset. |
 | `MEDLINER_SAMPLE_MAX_WORDS` | `300` | Drops texts longer than this many whitespace words. `0` disables the cap. |
 | `MEDLINER_SAMPLE_MAX_RUN` | `3` | Cap on consecutive tasks sharing one task value in the import order. |
@@ -79,7 +68,7 @@ before import. Configuration is environment-only:
 
 Behavior:
 
-- The 600/400 default yields ~1K tasks with more indications than contraindications —
+- The 3,000/2,000 default yields ~5K tasks with more indications than contraindications —
   sized for a limited SME annotation session, closer to the real-world mix than the raw
   81/19 pool while still boosting the minority task for fine-tuning. Adjust the pair to
   rebalance.
@@ -92,8 +81,8 @@ Behavior:
 - Sampling happens **after** deduplication, so repeated FAERS strings cannot burn multiple slots.
 - Within a task, selection is stratified across `source_family` proportionally (indications
   split dailymed/faers at the pool's ratio), so both families stay represented.
-- Texts over `max_words` are dropped before selection: GLiNER truncates texts beyond its
-  `max_len` word budget with only a warning, so annotating them is wasted effort. To
+- Texts over `max_words` are dropped before selection: GLiNER conversion refuses examples
+  beyond `max_length` (`configs/train-small.yaml`), so annotating them is wasted effort. To
   recover those rows instead, see "LLM shortening" below.
 - Selection and ordering are deterministic (`blake3` ranks) — same input + same env always
   reproduce the same import file, and the import filename is keyed on the input hash **and**
@@ -104,52 +93,12 @@ Behavior:
 - The manifest records a `sampling` block (targets, seed, caps, `edge_fraction`, pool counts,
   and pool-vs-selected mean difficulty) for auditability.
 
-## Pinned SPLs
-
-A small git-tracked pin file (default `configs/pinned_spls.json`, override with
-`MEDLINER_PIN_FILE`; an empty value or a missing file disables pinning) lists DailyMed SPL
-setids that must be reviewed first. Every candidate task whose SPL is pinned is
-**force-included** — it bypasses the per-task sampling targets and the `max_words` cap — and
-is **prepended ahead of the staggered sample**, so it sits at the top of the Label Studio
-queue. This holds identically when sampling is disabled: the pins are still flagged and moved
-to the front.
-
-```json
-{
-  "version": 1,
-  "pins": [
-    {
-      "setid": "2b2f3ff5-9d62-4ad2-8eac-1181e5911513",
-      "notes": ["supports aspergillosis", "supports fever"],
-      "source": "who reported it and when"
-    }
-  ],
-  "unattributed_notes": [
-    { "note": "a review comment with no SPL attached yet", "source": "...", "comment": "..." }
-  ]
-}
-```
-
-- Matching is on `source_document_id` up to the `#<LOINC-section>` suffix (real ids look like
-  `<setid>#34070-3`); bare setids match too.
-- **Notes never appear in Label Studio.** Tasks carry only an invisible `pinned: true/false`
-  flag (rendered nowhere; useful as a Data Manager filter column and as provenance in
-  exports). The notes live only in the pin file and in the import manifest's `pins` block —
-  an audit trail on disk, not in the labeling UI.
-- A pinned setid that matches no task in the pool prints a loud `WARNING` and is listed in the
-  manifest's `pins.unmatched` — a typo'd setid never fails silently.
-- The pin file's content hash is part of the import filename, so editing the pins always
-  rebuilds the import instead of silently reusing the old one.
-- To add a pin: append an entry to `pins` in `configs/pinned_spls.json` (setid plus the
-  reviewer's notes), commit it, and re-run `make prepare`. `unattributed_notes` holds review
-  comments whose SPL is not yet known; assign them to a pin once clarified.
-
 ## LLM shortening (sampled batch)
 
 `make prepare` shortens automatically as part of building the import file: after sampling, every sampled text over
 `MEDLINER_SHORTEN_MAX_WORDS` words (default 48, ≈ 3-4 short sentences) is rewritten by the local LLM (Ornith-1.0-9B,
 served from the directory configured in `MODELS_DIR` with `make medliner`) into a shorter text that keeps every
-condition mention verbatim. Only the sampled ~1k batch is sent to the model — never the whole candidate pool — and if
+condition mention verbatim. Only the sampled ~5k batch is sent to the model — never the whole candidate pool — and if
 the LLM is not running, prepare skips shortening with a notice and long texts stay as-is:
 
 ```bash
@@ -157,10 +106,6 @@ make llm            # optional; without it prepare just skips the shortening ste
 make prepare        # sample → shorten (LLM) → attach GLiNER suggestions
 make llm-stop
 ```
-
-A rewritten task is flagged for the annotator: `data.ai_shortened` becomes `true` (a filterable Data Manager column)
-and `data.shortened_note` carries the notice the labeling config renders above the passage, so nobody reviews an LLM
-rewrite believing it is the source label's own wording. Tasks left as-is keep `shortened_note: ""` and carry no flag.
 
 Every rewrite is validated (non-empty, actually shorter) and failures keep the original text, all counted in the import
 manifest's `sampling.llm_shorten` block. Texts are sent up to `MEDLINER_SHORTEN_WORKERS` at a time (default 4, matching

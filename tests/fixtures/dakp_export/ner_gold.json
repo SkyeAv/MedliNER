@@ -1,6 +1,6 @@
 {
   "schema_version": "dakp.ner.gold.v1",
-  "annotation_policy": "Gold spans are the maximal condition-mention spans a contraindication or indication targets. Every mention uses the single label 'DiseaseOrPhenotypicFeature': named disorders/syndromes and clinical findings/symptoms/condition-states alike (hypersensitivity, pregnancy, bleeding, seizures, elevations, pain, nausea, vomiting, fatigue). The disease-vs-phenotype boundary is deliberately NOT part of the annotation task. 'Maximal' covers qualifiers that change the concept -- anatomical/etiological ('pulmonary hypertension', 'portal hypertension'), severity ('severe heart failure'), and course ('active liver disease') -- because the qualified term denotes a different condition than its head. It does NOT cover temporal or evidential hedges ('recent', 'a history of', 'known', 'suspected'), which say something about the patient record rather than about the condition: gold for 'a recent myocardial infarction' is 'myocardial infarction'. Population descriptors (e.g. 'women of childbearing potential') are subject populations, NOT condition mentions, and get no span. Each surface occurs exactly once in its text so offsets resolve unambiguously.",
+  "annotation_policy": "Gold spans are the maximal disease/phenotype mention spans a contraindication or indication targets. type is 'disease' (a diagnosed condition) or 'phenotype' (a clinical finding/symptom/condition-state). Borderline condition-states (hypersensitivity, pregnancy, bleeding, seizures, elevations, pain, nausea, vomiting, fatigue) are labeled 'phenotype'; named disorders/syndromes are 'disease'. 'Maximal' covers qualifiers that change the concept -- anatomical/etiological ('pulmonary hypertension', 'portal hypertension'), severity ('severe heart failure'), and course ('active liver disease') -- because the qualified term denotes a different condition than its head. It does NOT cover temporal or evidential hedges ('recent', 'a history of', 'known', 'suspected'), which say something about the patient record rather than about the condition: gold for 'a recent myocardial infarction' is 'myocardial infarction'. Population descriptors (e.g. 'women of childbearing potential') are subject populations, NOT disease/phenotype mentions, and get no span. Each surface occurs exactly once in its text so offsets resolve unambiguously.",
   "cases": [
     {
       "id": "dailymed-ibuprofen",
@@ -8,14 +8,8 @@
       "loinc": "34070-3",
       "text": "Contraindicated in patients with asthma or known hypersensitivity to ibuprofen.",
       "mentions": [
-        {
-          "surface": "asthma",
-          "type": "DiseaseOrPhenotypicFeature"
-        },
-        {
-          "surface": "hypersensitivity",
-          "type": "DiseaseOrPhenotypicFeature"
-        }
+        {"surface": "asthma", "type": "disease"},
+        {"surface": "hypersensitivity", "type": "phenotype"}
       ]
     },
     {
@@ -24,14 +18,8 @@
       "loinc": "34070-3",
       "text": "Contraindicated in patients with active liver disease or unexplained persistent transaminase elevations.",
       "mentions": [
-        {
-          "surface": "active liver disease",
-          "type": "DiseaseOrPhenotypicFeature"
-        },
-        {
-          "surface": "transaminase elevations",
-          "type": "DiseaseOrPhenotypicFeature"
-        }
+        {"surface": "active liver disease", "type": "disease"},
+        {"surface": "transaminase elevations", "type": "phenotype"}
       ]
     },
     {
@@ -40,14 +28,8 @@
       "loinc": "34070-3",
       "text": "Contraindicated in patients with severe heart failure or recent myocardial infarction.",
       "mentions": [
-        {
-          "surface": "severe heart failure",
-          "type": "DiseaseOrPhenotypicFeature"
-        },
-        {
-          "surface": "myocardial infarction",
-          "type": "DiseaseOrPhenotypicFeature"
-        }
+        {"surface": "severe heart failure", "type": "disease"},
+        {"surface": "myocardial infarction", "type": "disease"}
       ]
     },
     {
@@ -56,14 +38,8 @@
       "loinc": "34070-3",
       "text": "Contraindicated in patients with a history of peptic ulcer disease or gastrointestinal bleeding.",
       "mentions": [
-        {
-          "surface": "peptic ulcer disease",
-          "type": "DiseaseOrPhenotypicFeature"
-        },
-        {
-          "surface": "gastrointestinal bleeding",
-          "type": "DiseaseOrPhenotypicFeature"
-        }
+        {"surface": "peptic ulcer disease", "type": "disease"},
+        {"surface": "gastrointestinal bleeding", "type": "phenotype"}
       ]
     },
     {
@@ -72,14 +48,8 @@
       "loinc": "34070-3",
       "text": "Contraindicated in patients with severe renal impairment or end stage renal disease.",
       "mentions": [
-        {
-          "surface": "severe renal impairment",
-          "type": "DiseaseOrPhenotypicFeature"
-        },
-        {
-          "surface": "end stage renal disease",
-          "type": "DiseaseOrPhenotypicFeature"
-        }
+        {"surface": "severe renal impairment", "type": "disease"},
+        {"surface": "end stage renal disease", "type": "disease"}
       ]
     },
     {
@@ -88,10 +58,7 @@
       "loinc": "34070-3",
       "text": "Contraindicated in patients with uncontrolled hypertension.",
       "mentions": [
-        {
-          "surface": "uncontrolled hypertension",
-          "type": "DiseaseOrPhenotypicFeature"
-        }
+        {"surface": "uncontrolled hypertension", "type": "disease"}
       ]
     },
     {
@@ -100,10 +67,7 @@
       "loinc": "34070-3",
       "text": "Contraindicated during pregnancy and in women of childbearing potential.",
       "mentions": [
-        {
-          "surface": "pregnancy",
-          "type": "DiseaseOrPhenotypicFeature"
-        }
+        {"surface": "pregnancy", "type": "phenotype"}
       ]
     },
     {
@@ -112,14 +76,8 @@
       "loinc": "34070-3",
       "text": "Contraindicated in patients with known QT prolongation or ventricular arrhythmias.",
       "mentions": [
-        {
-          "surface": "QT prolongation",
-          "type": "DiseaseOrPhenotypicFeature"
-        },
-        {
-          "surface": "ventricular arrhythmias",
-          "type": "DiseaseOrPhenotypicFeature"
-        }
+        {"surface": "QT prolongation", "type": "phenotype"},
+        {"surface": "ventricular arrhythmias", "type": "disease"}
       ]
     },
     {
@@ -128,14 +86,8 @@
       "loinc": "34070-3",
       "text": "Contraindicated in patients with active bleeding or a history of hemorrhagic stroke.",
       "mentions": [
-        {
-          "surface": "active bleeding",
-          "type": "DiseaseOrPhenotypicFeature"
-        },
-        {
-          "surface": "hemorrhagic stroke",
-          "type": "DiseaseOrPhenotypicFeature"
-        }
+        {"surface": "active bleeding", "type": "phenotype"},
+        {"surface": "hemorrhagic stroke", "type": "disease"}
       ]
     },
     {
@@ -144,10 +96,7 @@
       "loinc": "34070-3",
       "text": "Contraindicated in patients with severe hepatic impairment.",
       "mentions": [
-        {
-          "surface": "severe hepatic impairment",
-          "type": "DiseaseOrPhenotypicFeature"
-        }
+        {"surface": "severe hepatic impairment", "type": "disease"}
       ]
     },
     {
@@ -156,14 +105,8 @@
       "loinc": "34070-3",
       "text": "Contraindicated in patients with a history of seizures or epilepsy.",
       "mentions": [
-        {
-          "surface": "seizures",
-          "type": "DiseaseOrPhenotypicFeature"
-        },
-        {
-          "surface": "epilepsy",
-          "type": "DiseaseOrPhenotypicFeature"
-        }
+        {"surface": "seizures", "type": "phenotype"},
+        {"surface": "epilepsy", "type": "disease"}
       ]
     },
     {
@@ -172,10 +115,7 @@
       "loinc": "34070-3",
       "text": "Contraindicated in patients with narrow angle glaucoma.",
       "mentions": [
-        {
-          "surface": "narrow angle glaucoma",
-          "type": "DiseaseOrPhenotypicFeature"
-        }
+        {"surface": "narrow angle glaucoma", "type": "disease"}
       ]
     },
     {
@@ -183,10 +123,7 @@
       "source": "faers",
       "text": "hypercholesterolemia",
       "mentions": [
-        {
-          "surface": "hypercholesterolemia",
-          "type": "DiseaseOrPhenotypicFeature"
-        }
+        {"surface": "hypercholesterolemia", "type": "disease"}
       ]
     },
     {
@@ -194,10 +131,7 @@
       "source": "faers",
       "text": "headache",
       "mentions": [
-        {
-          "surface": "headache",
-          "type": "DiseaseOrPhenotypicFeature"
-        }
+        {"surface": "headache", "type": "phenotype"}
       ]
     },
     {
@@ -205,10 +139,7 @@
       "source": "faers",
       "text": "back pain",
       "mentions": [
-        {
-          "surface": "back pain",
-          "type": "DiseaseOrPhenotypicFeature"
-        }
+        {"surface": "back pain", "type": "phenotype"}
       ]
     },
     {
@@ -216,10 +147,7 @@
       "source": "faers",
       "text": "type 2 diabetes mellitus",
       "mentions": [
-        {
-          "surface": "type 2 diabetes mellitus",
-          "type": "DiseaseOrPhenotypicFeature"
-        }
+        {"surface": "type 2 diabetes mellitus", "type": "disease"}
       ]
     },
     {
@@ -227,10 +155,7 @@
       "source": "faers",
       "text": "chronic obstructive pulmonary disease",
       "mentions": [
-        {
-          "surface": "chronic obstructive pulmonary disease",
-          "type": "DiseaseOrPhenotypicFeature"
-        }
+        {"surface": "chronic obstructive pulmonary disease", "type": "disease"}
       ]
     },
     {
@@ -238,10 +163,7 @@
       "source": "faers",
       "text": "atrial fibrillation",
       "mentions": [
-        {
-          "surface": "atrial fibrillation",
-          "type": "DiseaseOrPhenotypicFeature"
-        }
+        {"surface": "atrial fibrillation", "type": "disease"}
       ]
     },
     {
@@ -249,14 +171,8 @@
       "source": "faers",
       "text": "nausea and vomiting",
       "mentions": [
-        {
-          "surface": "nausea",
-          "type": "DiseaseOrPhenotypicFeature"
-        },
-        {
-          "surface": "vomiting",
-          "type": "DiseaseOrPhenotypicFeature"
-        }
+        {"surface": "nausea", "type": "phenotype"},
+        {"surface": "vomiting", "type": "phenotype"}
       ]
     },
     {
@@ -264,10 +180,7 @@
       "source": "faers",
       "text": "rheumatoid arthritis",
       "mentions": [
-        {
-          "surface": "rheumatoid arthritis",
-          "type": "DiseaseOrPhenotypicFeature"
-        }
+        {"surface": "rheumatoid arthritis", "type": "disease"}
       ]
     },
     {
@@ -281,10 +194,7 @@
       "source": "faers",
       "text": "depression",
       "mentions": [
-        {
-          "surface": "depression",
-          "type": "DiseaseOrPhenotypicFeature"
-        }
+        {"surface": "depression", "type": "disease"}
       ]
     },
     {
@@ -292,10 +202,7 @@
       "source": "faers",
       "text": "migraine",
       "mentions": [
-        {
-          "surface": "migraine",
-          "type": "DiseaseOrPhenotypicFeature"
-        }
+        {"surface": "migraine", "type": "disease"}
       ]
     },
     {
@@ -303,10 +210,7 @@
       "source": "faers",
       "text": "fatigue",
       "mentions": [
-        {
-          "surface": "fatigue",
-          "type": "DiseaseOrPhenotypicFeature"
-        }
+        {"surface": "fatigue", "type": "phenotype"}
       ]
     },
     {
@@ -315,10 +219,7 @@
       "loinc": "34070-3",
       "text": "Contraindicated in patients with a history of porphyria.",
       "mentions": [
-        {
-          "surface": "porphyria",
-          "type": "DiseaseOrPhenotypicFeature"
-        }
+        {"surface": "porphyria", "type": "disease"}
       ]
     },
     {
@@ -327,10 +228,7 @@
       "loinc": "34070-3",
       "text": "Contraindicated in patients with myasthenia gravis.",
       "mentions": [
-        {
-          "surface": "myasthenia gravis",
-          "type": "DiseaseOrPhenotypicFeature"
-        }
+        {"surface": "myasthenia gravis", "type": "disease"}
       ]
     },
     {
@@ -338,10 +236,7 @@
       "source": "faers",
       "text": "pheochromocytoma",
       "mentions": [
-        {
-          "surface": "pheochromocytoma",
-          "type": "DiseaseOrPhenotypicFeature"
-        }
+        {"surface": "pheochromocytoma", "type": "disease"}
       ]
     },
     {
@@ -357,10 +252,7 @@
       "loinc": "34070-3",
       "text": "Contraindicated in patients with congestive heart failure.",
       "mentions": [
-        {
-          "surface": "congestive heart failure",
-          "type": "DiseaseOrPhenotypicFeature"
-        }
+        {"surface": "congestive heart failure", "type": "disease"}
       ]
     },
     {
@@ -369,14 +261,8 @@
       "loinc": "34070-3",
       "text": "Do not administer to patients with cirrhosis or hepatic encephalopathy.",
       "mentions": [
-        {
-          "surface": "cirrhosis",
-          "type": "DiseaseOrPhenotypicFeature"
-        },
-        {
-          "surface": "hepatic encephalopathy",
-          "type": "DiseaseOrPhenotypicFeature"
-        }
+        {"surface": "cirrhosis", "type": "disease"},
+        {"surface": "hepatic encephalopathy", "type": "disease"}
       ]
     },
     {
@@ -384,10 +270,7 @@
       "source": "faers",
       "text": "acute kidney injury",
       "mentions": [
-        {
-          "surface": "acute kidney injury",
-          "type": "DiseaseOrPhenotypicFeature"
-        }
+        {"surface": "acute kidney injury", "type": "disease"}
       ]
     },
     {
@@ -396,10 +279,7 @@
       "loinc": "34070-3",
       "text": "Contraindicated in patients with pulmonary hypertension.",
       "mentions": [
-        {
-          "surface": "pulmonary hypertension",
-          "type": "DiseaseOrPhenotypicFeature"
-        }
+        {"surface": "pulmonary hypertension", "type": "disease"}
       ]
     },
     {
@@ -408,10 +288,7 @@
       "loinc": "34070-3",
       "text": "Do not administer to patients with portal hypertension.",
       "mentions": [
-        {
-          "surface": "portal hypertension",
-          "type": "DiseaseOrPhenotypicFeature"
-        }
+        {"surface": "portal hypertension", "type": "disease"}
       ]
     },
     {
@@ -420,10 +297,7 @@
       "loinc": "34070-3",
       "text": "Contraindicated in patients with a recent myocardial infarction.",
       "mentions": [
-        {
-          "surface": "myocardial infarction",
-          "type": "DiseaseOrPhenotypicFeature"
-        }
+        {"surface": "myocardial infarction", "type": "disease"}
       ]
     }
   ]

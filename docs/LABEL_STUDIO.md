@@ -11,7 +11,7 @@ waits for health, creates the `MedliNER` project from
 `configs/label_studio_ner.xml`, and imports the tasks built by `make prepare` (run
 automatically when the import file for the current input hash and sampling config is
 missing; see the sampling table in `docs/CANDIDATE_TASKS.md` for the `MEDLINER_SAMPLE_*`
-variables that bound the import to ~1K mostly-edge-case, balanced, staggered tasks):
+variables that bound the import to ~5K mostly-edge-case, balanced, staggered tasks):
 
 ```bash
 make annotate
@@ -30,16 +30,49 @@ Behavior notes:
 - Re-running `make annotate` reuses a running container and an existing project, and skips
   the import when the project already has tasks. To replace project tasks, run
   `uv run medliner label-studio --reimport`.
-- The labeling config is **not** create-only: annotator instructions live in it, so every run
-  compares `configs/label_studio_ner.xml` against the project's stored config and PATCHes it
-  when they differ. Editing the XML and re-running `make annotate` updates the screen an
-  existing project shows; no project needs to be deleted.
 - If the default-account login ever fails (e.g. image behavior changes), create an account in
   the browser, copy an access token from Account & Settings, and set
   `MEDLINER_LABEL_STUDIO_TOKEN` in `.envrc.local`; the client then sends it as a Bearer
   credential and skips the login form. (Legacy `Token` API auth is disabled by default in
   Label Studio ≥ 1.23, which is why the default path uses session login.)
 - Stop the server with `make stop` (removes the container, keeps the data dir).
+
+## Optional annotator onboarding (presentation mode)
+
+The repository ships a separate `Onboarding` project on the same local server for qualifying
+annotators during a live session — for example, onboarding everyone at once during a
+presentation. It is fully optional; production training runs fine without it.
+
+The project contains ten answer-free benchmark tasks; the gold spans are kept in a versioned
+sidecar under `$MEDLINER_WORKDIR/onboarding/`. Each annotator account gets a deterministic
+four-task attempt. At least three of four tasks must be exactly correct (character boundaries and
+label included) before promotion.
+
+Two commands cover the whole flow — nobody is ever named on the command line:
+
+```bash
+make setup
+export MEDLINER_LABEL_STUDIO_ANNOTATORS="alice:pw-a,bob:pw-b"
+make onboarding            # provisions the project and assigns a quiz to EVERY account at once
+# everyone annotates their four assigned tasks in the Onboarding project
+make onboarding-promote    # exports, scores every attempt, promotes everyone passing (≥3/4)
+```
+
+Rerun `make onboarding` for another round; each round selects a new four-task subset per user from
+the ten-case bank. After promotion, run the unchanged production flow (`make annotate`,
+`make export`, `make train`). To accept only production annotations from promoted users, set
+`MEDLINER_ONBOARDING_REQUIRED=1` before `make train`.
+
+The test-bank and attempt files include benchmark/config hashes, so changing the benchmark starts
+a new onboarding version and old passes do not unlock it. Reports are append-only and non-promoted
+production annotations are retained under the onboarding audit directory rather than entering the
+normalized dataset.
+
+**Community Edition limitation:** CE does not provide per-user project visibility or task
+assignment. A user who already has access to the shared CE instance may technically open the
+production project. When `MEDLINER_ONBOARDING_REQUIRED=1`, the repository gate prevents
+non-promoted annotations from being accepted downstream; a hard UI/API access barrier would
+require a custom proxy/frontend or a separate production instance.
 
 ## Group annotation sessions (e.g. a presentation)
 
@@ -58,54 +91,13 @@ on the shared instance sees every project. The managed flow supports a group ses
    queue order. For a short session either assign each person a slice of the task list, or
    rely on the natural staggering of the sequential queue — both work with this pipeline
    because exports keep per-annotation authorship.
-4. **Warm up the room** with `uv run medliner label-studio --warmup` — an informal demo whose
-   gold spans are intentionally visible to the presenter.
-5. **Speed up labeling** with the hotkey baked into `configs/label_studio_ner.xml`:
-   press `1`, then drag across the span. The same config states the whole task on screen — the
-   span scope, the mechanical steps, what not to highlight, and how to delete a wrong AI
-   suggestion (click it under **Regions** on the right, then the trash icon) — so a
-   subject-matter expert who has never opened Label Studio can start from the first task.
-   Instruction lines render at 14px so they stay subordinate to the 17px passage, and a
-   one-line provenance footer (`source_ref` — the DailyMed SPL link or FAERS case id) sits at
-   the bottom of every task.
-6. **Reach annotators off the LAN** with `make tunnel`, which runs `cloudflared` as an
-   account-less *quick tunnel* (no Cloudflare account, token, or DNS record) in the detached tmux
-   session `medliner-tunnel`, forwards it to the Label Studio port on loopback, and prints the
-   random `https://<slug>.trycloudflare.com` URL to share. `make tunnel-stop` ends the tunnel and
-   the URL stops working.
-
-Notes on `make tunnel`:
-
-- **The URL is public on the internet and signup stays open**: the managed container sets only
-  `LABEL_STUDIO_USERNAME`/`LABEL_STUDIO_PASSWORD`, so anyone who finds the URL can register an
-  account and then see every project. Pre-create the accounts you want
-  (`MEDLINER_LABEL_STUDIO_ANNOTATORS`), replace the default `MEDLINER_LABEL_STUDIO_PASSWORD`,
-  share the URL only with the room, and stop the tunnel as soon as the session ends.
-- **`make stop` does not stop the tunnel**: the server goes away but the public URL keeps
-  resolving (502 until you start the server again, and then it serves it once more on the URL
-  people already have). Run `make tunnel-stop` as well.
-- **Needs `cloudflared` and `tmux`** on `PATH`; the target fails with an install hint otherwise.
-- **The slug changes on every start**, so re-share the URL after each `make tunnel-stop`. While a
-  tunnel is up, `make tunnel` is idempotent: it reprints the current URL instead of opening a
-  second tunnel, and it refuses to guess if the session is serving a different origin.
-- **CSRF is trusted for the quick-tunnel wildcard**: the container receives
-  `CSRF_TRUSTED_ORIGINS=https://*.trycloudflare.com`, so Django accepts the random HTTPS slug
-  shown by `make tunnel`. Set `MEDLINER_LABEL_STUDIO_CSRF_ORIGINS` to a comma-separated list of
-  exact HTTPS origins when using a different public hostname; do not include a trailing slash.
-  The setting is fixed when Podman creates the container, so an existing container created before
-  this setting was added is automatically recreated by the next `make annotate` while its mounted
-  annotations remain intact. Because this trusts any quick-tunnel slug, keep the tunnel private by
-  URL and stop it after the session.
-- **Order does not matter**: `make tunnel` before `make annotate` is fine — the URL answers 502
-  until the server is healthy. `MEDLINER_LABEL_STUDIO_HOST` can stay `127.0.0.1`; a wildcard bind
-  (`0.0.0.0`, `::`) is normalized to loopback for the tunnel origin.
-- **Give it a few seconds** after the URL prints, and do not trust a failure to load *from this
-  machine*: a fresh `*.trycloudflare.com` hostname has to propagate, and some resolvers (a
-  corporate DNS, an IPv6-only answer) never return it. Verify from another device or network; if
-  it fails there too, `data/tunnel/cloudflared.log` shows whether the connector registered
-  (`Registered tunnel connection`).
-- **No uptime guarantee**: quick tunnels are a Cloudflare experimentation feature, so they suit a
-  session-length demo rather than a standing deployment.
+4. **Use onboarding** with `make onboarding` when annotator qualification matters: it assigns
+   everyone their quiz at once and `make onboarding-promote` records each annotator's score and
+   promotes the passing ones. `uv run medliner label-studio --warmup` remains available as an
+   informal demo; its gold spans are intentionally visible to the presenter and it is not a
+   qualification gate.
+5. **Speed up labeling** with the hotkeys baked into `configs/label_studio_ner.xml`:
+   `1` = disease, `2` = phenotype after selecting a span.
 
 ## Export
 
@@ -126,7 +118,7 @@ cat > .envrc.local <<'EOF'
 export MEDLINER_LABEL_STUDIO_EXPORT="$PWD/data/label-studio/indications-2026-01.json"
 EOF
 direnv allow
-make export
+make train
 ```
 
 ## Import task JSON
@@ -141,44 +133,12 @@ task exposes at least:
     "text": "Contraindicated in patients with pulmonary hypertension.",
     "task": "contraindication",
     "source_family": "dailymed",
-    "source_document_id": "spl-document-001",
-    "shortened_note": "",
-    "source_ref": "DailyMed SPL spl-document-001"
+    "source_document_id": "spl-document-001"
   }
 }
 ```
 
-The task and source fields are context, preserved when exported. They are not labels to be highlighted.
-
-Four keys exist only to be rendered on the annotation screen:
-
-| Key | Purpose |
-| --- | --- |
-| `task` | interpolated into the instruction heading ("…this **contraindication** text is about…") |
-| `shortened_note` | the AI-shortened warning, or `""`. Set by the shortening step of `make prepare` on exactly the tasks it rewrote |
-| `gold_answers` | presenter-only demo line: `""` on real tasks, a generic teaching example on warm-up tasks |
-| `source_ref` | concise provenance for the annotator — an `<a>` to the exact DailyMed SPL when the id is a setid or a `source_uri` is present, otherwise plain text |
-
-`shortened_note`, `gold_answers`, and `source_ref` are present on **every** task, including the
-empty case:
-Label Studio renders a `$var` it cannot resolve as the literal string `$shortened_note`. A
-`data.ai_shortened` boolean accompanies the note as a filterable Data Manager column. Because
-an import file predating these keys would display them literally, `medliner` rebuilds any
-import file whose manifest records an older `generator_version` instead of reusing it.
-
-The `gold_answers` line is how the warm-up presenter shows answers without leaking them: real
-tasks carry `""`, and warm-up tasks carry the annotation guide's generic teaching example
-(`Example answers: “active liver disease” and “transaminase elevations”.`), never a gold case's
-own surfaces — those stay in `data.gold_mentions`, which the labeling config renders nowhere.
-The line shows green and bold via the `.medliner-gold` style.
-
-Dailymed-sourced tasks additionally carry `section` (the LOINC section code) and
-`source_uri` (a DailyMed URL whose `#<LOINC>` fragment jumps straight to the source
-section); FAERS tasks carry a `source_record_id` plus a `source_uri` pointing at the FAERS
-data download. These fields are preserved into the dataset and feed `source_ref`, which the
-labeling config (`configs/label_studio_ner.xml`) renders as the one-line provenance footer
-on the annotation screen, so labelers can open the exact DailyMed document — or section,
-via the `#<LOINC>` fragment — for the task at hand.
+The task and source fields are displayed for context and are preserved when exported. They are not labels to be highlighted.
 
 ## Alternative: run Label Studio yourself
 
@@ -209,7 +169,7 @@ into the project's labeling configuration, and import the JSON file written by
 1. Open a task.
 2. Read the visible indication or contraindication context.
 3. Click-drag/highlight the complete condition phrase.
-4. Choose `DiseaseOrPhenotypicFeature`.
+4. Choose `disease` or `phenotype`.
 5. Correct/delete/add spans as needed.
 6. Submit the task.
 
@@ -225,31 +185,25 @@ make prepare                          # candidates + prelabel: import-<hash>.pre
 make annotate                         # serves the pre-labeled file with prediction pre-fill on
 ```
 
-The suggestions come from `gliner-community/gliner_large-v2.5` prompted with the single merged
-condition label `DiseaseOrPhenotypicFeature` at threshold `0.35` — the same checkpoint and
-threshold the sibling DAKP pipeline mines contraindications with; DAKP prompts disease/phenotype
-types separately but merges them downstream, so MedliNER prompts the merged label directly
-(`MEDLINER_PRELABEL_MODEL` / `MEDLINER_PRELABEL_THRESHOLD`
+The suggestions come from `gliner-community/gliner_large-v2.5` prompted with `disease` and
+`phenotype` at threshold `0.35` — the same checkpoint, prompts, and threshold the sibling DAKP
+pipeline mines contraindications with (`MEDLINER_PRELABEL_MODEL` / `MEDLINER_PRELABEL_THRESHOLD`
 override them). Raw model output does not obey the annotation guide, so the same cleanup DAKP
 applies is applied here: leading hedges are trimmed (`recent myocardial infarction` →
 `myocardial infarction`, guide rule 2), population descriptors are dropped (`patients`, `women of
 childbearing potential`, rule 3), overlapping spans collapse to the longest (rule 7), and spans
-wider than the model's `max_width` are dropped because GLiNER never enumerates a span candidate
-that wide.
+wider than the model's `max_width` are dropped because MedliNER refuses to convert them later.
 
 `PRELABEL=1` also turns on the project's `show_collab_predictions`, which is what puts the spans
 in front of the annotator; without it Label Studio stores the predictions and never shows them.
 Opening a pre-labeled task pre-fills the draft annotation with the model's spans.
 
-**They are suggestions, and they over-suggest.** GLiNER is prompted with the bare condition
-label, so it has no idea which conditions the statement actually targets: it proposes every
-condition mention in the text, including ones that belong to a monitoring note or an adverse
-event (rule 1 of `docs/ANNOTATION_GUIDE.md`). Deleting suggestions is routine review work.
-Accept, correct, or delete each one, and add what the model missed — an untouched prediction is
-not gold. MedliNER's adapter reads only the completed `annotations`
+**They are suggestions.** Accept, correct, or delete each one, and add what the model missed —
+an untouched prediction is not gold. MedliNER's adapter reads only the completed `annotations`
 array and never `predictions`, so a task nobody submitted contributes nothing. Each submitted
-span carries an `origin` (`prediction`, `prediction-changed`, or `manual`) in the export, so an
-untouched model span stays distinguishable from one a human drew or corrected.
+span carries an `origin` (`prediction`, `prediction-changed`, or `manual`) into the normalized
+dataset, and `origin_counts` in the dataset manifest reports how much of the result was accepted
+untouched; see `docs/ADJUDICATION.md`.
 
 Re-running `uv run medliner prelabel` is cheap: suggestions are cached per text under
 `$MEDLINER_WORKDIR/label-studio/prelabel-cache.json`, keyed by model, threshold, labels, window
@@ -262,12 +216,13 @@ Before trusting suggestions in front of a room, score them against the gold benc
 uv run medliner prelabel --score-gold
 ```
 
-That reports strict and boundary-only F1 over the ingested `ner_gold.json` cases. Pre-labels
-materially worse than the annotators' own first guess cost time rather than saving it.
+That reports strict and boundary-only F1 over the same `ner_gold.json` cases the trained model is
+evaluated on. Pre-labels materially worse than the annotators' own first guess cost time rather
+than saving it.
 
 ## Export details worth knowing
 
-The raw export is retained as provenance. MedliNER converts it to its canonical schema and validates offsets, labels, overlap, task metadata, review status, and text slices. JSONL is also accepted by MedliNER when one task object is stored per line.
+The raw export is retained as provenance. MedliNER converts it to its canonical schema and validates offsets, labels, overlap, task metadata, review status, and text slices before training. JSONL is also accepted by MedliNER when one task object is stored per line.
 
 Two export details are worth knowing before the first review round:
 

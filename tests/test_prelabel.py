@@ -109,7 +109,7 @@ def test_hedge_trim_is_applied_to_model_output():
     text = "Contraindicated in patients with recent myocardial infarction."
     drops: Counter[str] = Counter()
     spans = suggestions_from_windows(
-        text, [(0, text)], [[_entity(text, "recent myocardial infarction", "DiseaseOrPhenotypicFeature")]], drops=drops
+        text, [(0, text)], [[_entity(text, "recent myocardial infarction", "disease")]], drops=drops
     )
     assert [span.text for span in spans] == ["myocardial infarction"]
     assert drops["hedge"] == 0  # trimmed, not dropped
@@ -122,10 +122,7 @@ def test_population_descriptors_are_never_suggested():
     text = "Contraindicated in women of childbearing potential."
     drops: Counter[str] = Counter()
     spans = suggestions_from_windows(
-        text,
-        [(0, text)],
-        [[_entity(text, "women of childbearing potential", "DiseaseOrPhenotypicFeature")]],
-        drops=drops,
+        text, [(0, text)], [[_entity(text, "women of childbearing potential", "phenotype")]], drops=drops
     )
     assert spans == []
     assert drops["population"] == 1
@@ -136,9 +133,7 @@ def test_a_population_descriptor_hiding_behind_a_hedge_is_still_dropped():
     text = "Contraindicated in pregnant women."
     drops: Counter[str] = Counter()
     assert (
-        suggestions_from_windows(
-            text, [(0, text)], [[_entity(text, "in pregnant women", "DiseaseOrPhenotypicFeature")]], drops=drops
-        )
+        suggestions_from_windows(text, [(0, text)], [[_entity(text, "in pregnant women", "phenotype")]], drops=drops)
         == []
     )
     assert drops["population"] == 1
@@ -156,8 +151,8 @@ def test_overlapping_suggestions_collapse_to_the_longest():
     spans = _single_window(
         text,
         [
-            _entity(text, "hypertension", "DiseaseOrPhenotypicFeature", score=0.99),
-            _entity(text, "pulmonary hypertension", "DiseaseOrPhenotypicFeature", score=0.5),
+            _entity(text, "hypertension", "disease", score=0.99),
+            _entity(text, "pulmonary hypertension", "disease", score=0.5),
         ],
     )
     assert [span.text for span in spans] == ["pulmonary hypertension"]
@@ -165,18 +160,15 @@ def test_overlapping_suggestions_collapse_to_the_longest():
 
 def test_de_overlap_is_deterministic_regardless_of_model_order():
     spans = [
-        Suggestion(start=0, end=6, label="DiseaseOrPhenotypicFeature", text="asthma", score=0.5),
-        Suggestion(start=0, end=6, label="DiseaseOrPhenotypicFeature", text="asthma", score=0.5),
+        Suggestion(start=0, end=6, label="disease", text="asthma", score=0.5),
+        Suggestion(start=0, end=6, label="phenotype", text="asthma", score=0.5),
     ]
     assert select_spans(spans) == select_spans(list(reversed(spans)))
 
 
 def test_disjoint_suggestions_are_all_kept_and_sorted_by_position():
     text = "Indicated for asthma and nausea."
-    spans = _single_window(
-        text,
-        [_entity(text, "nausea", "DiseaseOrPhenotypicFeature"), _entity(text, "asthma", "DiseaseOrPhenotypicFeature")],
-    )
+    spans = _single_window(text, [_entity(text, "nausea", "phenotype"), _entity(text, "asthma", "disease")])
     assert [(span.start, span.text) for span in spans] == [(14, "asthma"), (25, "nausea")]
 
 
@@ -190,9 +182,7 @@ def test_a_span_wider_than_max_width_is_dropped_before_a_human_can_accept_it():
     text = f"Contraindicated in {surface} disease."
     drops: Counter[str] = Counter()
     assert (
-        suggestions_from_windows(
-            text, [(0, text)], [[_entity(text, surface, "DiseaseOrPhenotypicFeature")]], max_width=12, drops=drops
-        )
+        suggestions_from_windows(text, [(0, text)], [[_entity(text, surface, "disease")]], max_width=12, drops=drops)
         == []
     )
     assert drops["width"] == 1
@@ -208,10 +198,7 @@ def test_labels_outside_the_schema_are_dropped():
 def test_suggestion_text_is_always_an_exact_slice_of_the_source():
     text = "Contraindicated in patients with severe heart failure and asthma."
     spans = suggest(
-        lambda window: [
-            _entity(window, "severe heart failure", "DiseaseOrPhenotypicFeature"),
-            _entity(window, "asthma", "DiseaseOrPhenotypicFeature"),
-        ],
+        lambda window: [_entity(window, "severe heart failure", "disease"), _entity(window, "asthma", "disease")],
         text,
     )
     assert spans
@@ -229,15 +216,8 @@ def test_a_mention_cut_by_a_hard_window_split_is_rejoined():
         "gravis filler filler filler filler filler filler",
     ]
     raw = [
-        [
-            {
-                "start": parts[0][1].index("myasthenia"),
-                "end": len(parts[0][1]),
-                "label": "DiseaseOrPhenotypicFeature",
-                "score": 0.8,
-            }
-        ],
-        [{"start": 0, "end": len("gravis"), "label": "DiseaseOrPhenotypicFeature", "score": 0.6}],
+        [{"start": parts[0][1].index("myasthenia"), "end": len(parts[0][1]), "label": "disease", "score": 0.8}],
+        [{"start": 0, "end": len("gravis"), "label": "disease", "score": 0.6}],
     ]
     (span,) = suggestions_from_windows(text, parts, raw)
     assert span.text == "myasthenia gravis"
@@ -251,18 +231,14 @@ def test_a_mention_cut_by_a_hard_window_split_is_rejoined():
 def test_prediction_control_names_match_the_labeling_config():
     # Label Studio silently ignores a prediction whose from_name/to_name it cannot resolve.
     root = ET.parse(CONFIG).getroot()
-    # Descendant search, not direct children: the controls sit inside layout <View> wrappers.
-    labels_node = root.find(".//Labels")
-    text_node = root.find(".//Text")
-    assert labels_node is not None
-    assert text_node is not None
-    (region,) = build_prediction(
-        "medliner-abc", [Suggestion(0, 6, "DiseaseOrPhenotypicFeature", "asthma", 0.9)], version="v"
-    )["result"]
+    labels_node = root.find("Labels")
+    text_node = root.find("Text")
+    assert labels_node is not None and text_node is not None
+    (region,) = build_prediction("medliner-abc", [Suggestion(0, 6, "disease", "asthma", 0.9)], version="v")["result"]
     assert region["from_name"] == labels_node.get("name")
     assert region["to_name"] == text_node.get("name")
     assert region["type"] == "labels"
-    assert region["value"] == {"start": 0, "end": 6, "text": "asthma", "labels": ["DiseaseOrPhenotypicFeature"]}
+    assert region["value"] == {"start": 0, "end": 6, "text": "asthma", "labels": ["disease"]}
 
 
 def test_prediction_labels_are_all_offered_by_the_labeling_config():
@@ -271,10 +247,7 @@ def test_prediction_labels_are_all_offered_by_the_labeling_config():
 
 
 def test_predictions_are_byte_identical_across_runs():
-    spans = [
-        Suggestion(0, 6, "DiseaseOrPhenotypicFeature", "asthma", 0.9),
-        Suggestion(11, 17, "DiseaseOrPhenotypicFeature", "nausea", 0.7),
-    ]
+    spans = [Suggestion(0, 6, "disease", "asthma", 0.9), Suggestion(11, 17, "phenotype", "nausea", 0.7)]
     first = build_prediction("medliner-abc", spans, version="m@0.35")
     assert json.dumps(first, sort_keys=True) == json.dumps(
         build_prediction("medliner-abc", spans, version="m@0.35"), sort_keys=True
@@ -282,7 +255,7 @@ def test_predictions_are_byte_identical_across_runs():
 
 
 def test_region_ids_differ_per_task_so_two_tasks_never_share_one():
-    span = Suggestion(0, 6, "DiseaseOrPhenotypicFeature", "asthma", 0.9)
+    span = Suggestion(0, 6, "disease", "asthma", 0.9)
     left = build_prediction("medliner-aaa", [span], version="v")["result"][0]["id"]
     right = build_prediction("medliner-bbb", [span], version="v")["result"][0]["id"]
     assert left != right
@@ -297,9 +270,7 @@ def test_a_task_with_no_suggestions_still_carries_an_empty_prediction():
 
 def test_attach_predictions_does_not_mutate_the_input_tasks():
     tasks = [{"id": "medliner-abc", "data": {"text": "asthma"}}]
-    attach_predictions(
-        tasks, {"medliner-abc": [Suggestion(0, 6, "DiseaseOrPhenotypicFeature", "asthma", 0.9)]}, version="v"
-    )
+    attach_predictions(tasks, {"medliner-abc": [Suggestion(0, 6, "disease", "asthma", 0.9)]}, version="v")
     assert "predictions" not in tasks[0]
 
 
@@ -336,7 +307,7 @@ def test_a_cache_hit_skips_the_model_entirely(tmp_path):
     text = "Indicated for asthma."
     key = cache_key(text, model_id=DEFAULT_MODEL_ID, threshold=0.35, labels=ALLOWED_LABELS, budget=384)
     cache = PrelabelCache(tmp_path / "cache.json")
-    cache.put(key, [Suggestion(14, 20, "DiseaseOrPhenotypicFeature", "asthma", 0.9)])
+    cache.put(key, [Suggestion(14, 20, "disease", "asthma", 0.9)])
     cache.save()
 
     reloaded = PrelabelCache(tmp_path / "cache.json").load()
@@ -345,7 +316,7 @@ def test_a_cache_hit_skips_the_model_entirely(tmp_path):
         raise AssertionError(f"model was called for {texts!r}")
 
     result = prelabel_texts(predict, {"t1": text}, cache=reloaded)
-    assert result == {"t1": [Suggestion(14, 20, "DiseaseOrPhenotypicFeature", "asthma", 0.9)]}
+    assert result == {"t1": [Suggestion(14, 20, "disease", "asthma", 0.9)]}
     assert reloaded.hits == 1
 
 
@@ -404,10 +375,7 @@ def test_a_model_span_with_impossible_offsets_is_dropped():
     drops: Counter[str] = Counter()
     assert (
         suggestions_from_windows(
-            text,
-            [(0, text)],
-            [[{"start": 0, "end": len(text) + 10, "label": "DiseaseOrPhenotypicFeature", "score": 0.9}]],
-            drops=drops,
+            text, [(0, text)], [[{"start": 0, "end": len(text) + 10, "label": "disease", "score": 0.9}]], drops=drops
         )
         == []
     )
@@ -422,16 +390,7 @@ def test_an_all_hedge_span_is_counted_as_a_hedge_drop():
         suggestions_from_windows(
             text,
             [(0, text)],
-            [
-                [
-                    {
-                        "start": start,
-                        "end": start + len("in patients with"),
-                        "label": "DiseaseOrPhenotypicFeature",
-                        "score": 0.9,
-                    }
-                ]
-            ],
+            [[{"start": start, "end": start + len("in patients with"), "label": "disease", "score": 0.9}]],
             drops=drops,
         )
         == []

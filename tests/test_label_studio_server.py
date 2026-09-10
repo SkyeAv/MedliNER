@@ -30,14 +30,9 @@ class FakePodman:
         if action[:1] == ["inspect"]:
             if name not in self.containers:
                 return subprocess.CompletedProcess(args, 1, "", "no such container")
-            if "Config.Env" in " ".join(args):
-                env = self.containers[name].get("env", [])
-                return subprocess.CompletedProcess(args, 0, "\n".join(env) + "\n", "")
             return subprocess.CompletedProcess(args, 0, self.containers[name]["state"] + "\n", "")
         if action[:1] == ["run"]:
-            container_name = args[args.index("--name") + 1]
-            env = [args[index + 1] for index, value in enumerate(args[:-1]) if value == "-e"]
-            self.containers[container_name] = {"state": "running", "env": env}
+            self.containers[args[args.index("--name") + 1]] = {"state": "running"}
             return subprocess.CompletedProcess(args, 0, "container-id\n", "")
         if action[:1] == ["rm"]:
             self.containers.pop(name, None)
@@ -104,33 +99,12 @@ class FakeLabelStudio:
         project_id = int(path.split("/")[3])
         project = self.projects[project_id]
         if method == "GET":
-            return FakeResponse(
-                {"id": project_id, "task_number": len(project["tasks"]), "label_config": project.get("label_config")}
-            )
+            return FakeResponse({"id": project_id, "task_number": len(project["tasks"])})
         if method == "POST" and path.endswith("/import"):
             project["tasks"] = json.loads(request.data.decode())
             return FakeResponse({"task_count": len(project["tasks"])})
         if method == "PATCH":
-            payload = json.loads(request.data.decode())
-            # Mirror Label Studio's ProjectSerializer.validate_model_version: a changed
-            # model_version must match a live backend or an imported static prediction.
-            version = payload.get("model_version")
-            if version and project.get("model_version") != version:
-                known = {p.get("model_version") for task in project["tasks"] for p in task.get("predictions", [])}
-                if version not in known:
-                    body = json.dumps(
-                        {
-                            "status_code": 400,
-                            "detail": "Validation error",
-                            "validation_errors": {
-                                "model_version": [
-                                    "Model version doesn't exist either as live model or as static predictions."
-                                ]
-                            },
-                        }
-                    ).encode()
-                    raise urllib.error.HTTPError(url, 400, "Bad Request", {}, io.BytesIO(body))
-            project.update(payload)
+            project.update(json.loads(request.data.decode()))
             return FakeResponse({"id": project_id})
         raise AssertionError(f"unexpected API call: {method} {path}")
 
@@ -155,8 +129,7 @@ def test_ensure_container_creates_when_absent(podman, tmp_path):
     assert run_call[run_call.index("-p") + 1] == "127.0.0.1:8080:8080"
     volume = run_call[run_call.index("-v") + 1]
     assert volume.endswith(":/label-studio/data:Z")
-    assert "LABEL_STUDIO_USERNAME=u" in run_call
-    assert "LABEL_STUDIO_PASSWORD=p" in run_call
+    assert "LABEL_STUDIO_USERNAME=u" in run_call and "LABEL_STUDIO_PASSWORD=p" in run_call
     assert podman.containers["medliner-label-studio"]["state"] == "running"
     # The container runs as UID 1001; the bind-mounted data dir is handed to that user.
     (chown_call,) = [call for call in podman.calls if call[1] == "unshare"]
@@ -171,47 +144,13 @@ def test_ensure_container_reuses_a_running_container(podman, tmp_path):
     assert not [call for call in podman.calls if call[1] == "run"]
 
 
-def test_ensure_container_passes_csrf_trusted_origins(podman, tmp_path):
-    server.ensure_container(
-        name="medliner-label-studio",
-        image="img",
-        port=8080,
-        data_dir=tmp_path,
-        username="u",
-        password="p",
-        csrf_trusted_origins=["https://*.trycloudflare.com", "https://review.example"],
-    )
-    (run_call,) = [call for call in podman.calls if call[1] == "run"]
-    assert "CSRF_TRUSTED_ORIGINS=https://*.trycloudflare.com,https://review.example" in run_call
-    assert (
-        run_call[run_call.index("CSRF_TRUSTED_ORIGINS=https://*.trycloudflare.com,https://review.example") - 1] == "-e"
-    )
-
-
-def test_ensure_container_replaces_running_container_with_stale_csrf_origins(podman, tmp_path):
-    podman.containers["medliner-label-studio"] = {"state": "running", "env": []}
-    server.ensure_container(
-        name="medliner-label-studio",
-        image="img",
-        port=8080,
-        data_dir=tmp_path,
-        username="u",
-        password="p",
-        csrf_trusted_origins=["https://*.trycloudflare.com"],
-    )
-    assert [call for call in podman.calls if call[1] == "rm"]
-    (run_call,) = [call for call in podman.calls if call[1] == "run"]
-    assert "CSRF_TRUSTED_ORIGINS=https://*.trycloudflare.com" in run_call
-
-
 def test_ensure_container_replaces_a_stopped_container(podman, tmp_path):
     podman.containers["medliner-label-studio"] = {"state": "exited"}
     server.ensure_container(
         name="medliner-label-studio", image="img", port=8080, data_dir=tmp_path, username="u", password="p"
     )
     actions = [call[1] for call in podman.calls]
-    assert "rm" in actions
-    assert "run" in actions
+    assert "rm" in actions and "run" in actions
 
 
 def test_stop_container_reports_whether_one_was_removed(podman):
@@ -282,8 +221,7 @@ def test_session_login_drives_the_api_with_cookies_and_csrf(monkeypatch):
     monkeypatch.setattr("urllib.request.build_opener", fake_build_opener)
     client = server.LabelStudioClient("http://localhost:9030", username="u", password="p")
     opener = client._opener
-    assert b"email=u" in opener.posts[0]
-    assert b"csrfmiddlewaretoken=csrf-value" in opener.posts[0]
+    assert b"email=u" in opener.posts[0] and b"csrfmiddlewaretoken=csrf-value" in opener.posts[0]
 
     client.api("GET", "/api/projects")
     # Session path: CSRF header, no Authorization bearer.
@@ -304,12 +242,8 @@ def test_provision_creates_project_and_imports_tasks(monkeypatch, podman, tmp_pa
         username="u",
         password="p",
         token="test-token",
-        csrf_trusted_origins=["https://*.trycloudflare.com"],
     )
     assert result["url"] == f"http://127.0.0.1:{server.DEFAULT_PORT}"
-    assert result["csrf_trusted_origins"] == ["https://*.trycloudflare.com"]
-    run_call = next(call for call in podman.calls if call[1] == "run")
-    assert "CSRF_TRUSTED_ORIGINS=https://*.trycloudflare.com" in run_call
     assert result["tasks_in_project"] == 1
     assert result["reimported"] is False
     project = fake.projects[result["project_id"]]
@@ -350,58 +284,6 @@ def test_provision_reuses_project_and_skips_existing_tasks(monkeypatch, podman, 
     assert fake.projects[7]["tasks"][0]["id"] == "t1"
 
 
-def test_provision_updates_a_stale_label_config_in_place(monkeypatch, podman, tmp_path):
-    """Config edits must reach a live project: PATCH the label_config, keep tasks/annotations."""
-    existing = {
-        "id": 7,
-        "title": server.DEFAULT_PROJECT_TITLE,
-        "label_config": "<View>old</View>",
-        "tasks": [{"id": "t0", "data": {}, "annotations": [{"result": []}]}],
-    }
-    fake = _install_api(monkeypatch, FakeLabelStudio(projects=[existing]))
-    import_file = tmp_path / "import.json"
-    import_file.write_text(json.dumps([{"id": "t1", "data": {"text": "x", "task": "indication"}}]), encoding="utf-8")
-    config = tmp_path / "config.xml"
-    config.write_text("<View/>", encoding="utf-8")
-
-    result = server.provision(
-        import_file=import_file,
-        label_config_path=config,
-        data_dir=tmp_path / "data",
-        username="u",
-        password="p",
-        token="test-token",
-    )
-    assert result["project_id"] == 7
-    assert fake.projects[7]["label_config"] == "<View/>"
-    assert fake.projects[7]["tasks"][0]["id"] == "t0"  # annotations survive the config update
-    assert ("PATCH", "/api/projects/7") in fake.requests
-
-
-def test_provision_leaves_a_matching_label_config_alone(monkeypatch, podman, tmp_path):
-    existing = {
-        "id": 7,
-        "title": server.DEFAULT_PROJECT_TITLE,
-        "label_config": "<View/>",
-        "tasks": [{"id": "t0", "data": {}}],
-    }
-    fake = _install_api(monkeypatch, FakeLabelStudio(projects=[existing]))
-    import_file = tmp_path / "import.json"
-    import_file.write_text(json.dumps([{"id": "t1", "data": {"text": "x"}}]), encoding="utf-8")
-    config = tmp_path / "config.xml"
-    config.write_text("<View/>", encoding="utf-8")
-
-    server.provision(
-        import_file=import_file,
-        label_config_path=config,
-        data_dir=tmp_path / "data",
-        username="u",
-        password="p",
-        token="test-token",
-    )
-    assert not any(method == "PATCH" for method, _ in fake.requests)
-
-
 def test_provision_surfaces_api_errors(monkeypatch, podman, tmp_path):
     fake = _install_api(monkeypatch, FakeLabelStudio())
 
@@ -431,76 +313,13 @@ def test_label_config_fixture_is_real_xml():
     assert config.exists()
 
 
-def test_label_config_speaks_to_annotators_not_machines():
-    """The screen instructs a first-time SME; no key-value metadata dumps survive.
-
-    Subject-matter experts annotate without ever having opened Label Studio, so the config is
-    the only place the mechanics and the span scope are stated.
-    """
-    import xml.etree.ElementTree as ET
-
-    config = Path(__file__).resolve().parents[1] / "configs" / "label_studio_ner.xml"
-    headers = [node.get("value", "") for node in ET.parse(config).iter("Header")]
-    assert not [value for value in headers if value.startswith(("Task:", "Source:"))]
-    joined = " ".join(headers)
-    style = " ".join(node.text or "" for node in ET.parse(config).iter("Style"))
-    assert "font-size:14px" in style  # instruction lines stay subordinate to the 17px passage
-    # Scope: only the conditions the statement targets, and there can be several.
-    assert "only the conditions this $task text is about" in joined
-    assert "Repeat for each condition" in joined
-    # Mechanics: press the label hotkey before dragging, and how to delete a pre-label.
-    assert "Press 1, then drag across the whole phrase" in joined
-    assert "Submit" in joined
-    assert "Regions" in joined  # deleting a wrong AI suggestion goes through the Regions panel
-    assert "trash" in joined
-    # Provenance comes from the per-task $source_ref HyperText, not a hardcoded line.
-    assert "Presented at" not in joined
-
-
-def test_label_config_interpolates_every_field_the_import_file_supplies():
-    """Label Studio renders an unresolved "$var" literally, so the keys must be a known set."""
-    import re
-    import xml.etree.ElementTree as ET
-
-    config = Path(__file__).resolve().parents[1] / "configs" / "label_studio_ner.xml"
-    values = [node.get("value", "") for node in ET.parse(config).iter() if node.get("value")]
-    referenced = {match for value in values for match in re.findall(r"\$([a-z_]+)", value)}
-    assert referenced == {"task", "text", "shortened_note", "gold_answers", "source_ref"}
-
-
-def test_label_config_source_line_is_actually_clickable():
-    """HyperText's clickableLinks defaults to false — the SPL link would render but do nothing."""
-    import xml.etree.ElementTree as ET
-
-    config = Path(__file__).resolve().parents[1] / "configs" / "label_studio_ner.xml"
-    (source,) = ET.parse(config).iter("HyperText")
-    assert source.get("clickableLinks") == "true"
-    assert source.get("inline") == "true"  # embed the one-line footer, not an iframe
-
-
 def test_label_config_labels_carry_hotkeys():
-    """The single condition label keeps a number-key hotkey so live annotation stays fast."""
+    """Number-key hotkeys keep a live multi-annotator session fast."""
     import xml.etree.ElementTree as ET
 
     config = Path(__file__).resolve().parents[1] / "configs" / "label_studio_ner.xml"
     labels = {node.get("value"): node.get("hotkey") for node in ET.parse(config).iter("Label")}
-    assert labels == {"DiseaseOrPhenotypicFeature": "1"}
-
-
-def test_ensure_project_updates_a_stale_label_config(monkeypatch, tmp_path):
-    """Instructions live in the config, so a project created by an earlier run must be updated."""
-    fake = _install_api(
-        monkeypatch, FakeLabelStudio(projects=[{"id": 7, "title": "MedliNER", "label_config": "<View/>"}])
-    )
-    client = server.LabelStudioClient("http://127.0.0.1:9030", token="test-token")
-
-    assert client.ensure_project("MedliNER", "<View>new</View>") == 7
-    assert ("PATCH", "/api/projects/7") in fake.requests
-    assert fake.projects[7]["label_config"] == "<View>new</View>"
-
-    fake.requests.clear()
-    assert client.ensure_project("MedliNER", "<View>new</View>") == 7
-    assert not [call for call in fake.requests if call[0] == "PATCH"]  # unchanged config, no write
+    assert labels == {"disease": "1", "phenotype": "2"}
 
 
 def test_ensure_container_publish_host_binds_wider(podman, tmp_path):
@@ -524,14 +343,14 @@ def test_provision_seeds_missing_annotators_idempotently(monkeypatch, podman, tm
     config = tmp_path / "config.xml"
     config.write_text("<View/>", encoding="utf-8")
 
-    common: dict[str, Any] = {
-        "import_file": import_file,
-        "label_config_path": config,
-        "data_dir": tmp_path / "data",
-        "username": "u",
-        "password": "p",
-        "token": "test-token",
-    }
+    common: dict[str, Any] = dict(
+        import_file=import_file,
+        label_config_path=config,
+        data_dir=tmp_path / "data",
+        username="u",
+        password="p",
+        token="test-token",
+    )
     result = server.provision(annotators=[("alice", "pw-a"), ("medliner@localhost", "x")], **common)
     assert result["annotators_created"] == 1  # the existing admin is skipped
     again = server.provision(annotators=[("alice", "pw-a")], **common)
@@ -542,7 +361,10 @@ def test_export_project_writes_file_and_counts_annotations(monkeypatch, podman, 
     annotated = {
         "id": 1,
         "title": server.DEFAULT_PROJECT_TITLE,
-        "tasks": [{"id": "t1", "annotations": [{"result": []}]}, {"id": "t2", "annotations": []}],
+        "tasks": [
+            {"id": "t1", "annotations": [{"result": []}]},
+            {"id": "t2", "annotations": []},
+        ],
     }
     _install_api(monkeypatch, FakeLabelStudio(projects=[annotated]))
 
@@ -565,18 +387,7 @@ def test_provision_turns_on_prediction_prefill_when_asked(monkeypatch, podman, t
     # so the annotator would still draw every span by hand.
     fake = _install_api(monkeypatch, FakeLabelStudio())
     import_file = tmp_path / "import.json"
-    import_file.write_text(
-        json.dumps(
-            [
-                {
-                    "id": "t1",
-                    "data": {"text": "x"},
-                    "predictions": [{"model_version": "gliner_large-v2.5@0.35", "score": 0.9, "result": []}],
-                }
-            ]
-        ),
-        encoding="utf-8",
-    )
+    import_file.write_text(json.dumps([{"id": "t1", "data": {"text": "x"}, "predictions": []}]), encoding="utf-8")
     config = tmp_path / "config.xml"
     config.write_text("<View/>", encoding="utf-8")
 
@@ -593,10 +404,6 @@ def test_provision_turns_on_prediction_prefill_when_asked(monkeypatch, podman, t
     assert project["show_collab_predictions"] is True
     assert project["model_version"] == "gliner_large-v2.5@0.35"
     assert result["prelabeled"] is True
-    # The prefill PATCH must follow the import: the server only accepts a model_version it can
-    # already see among the imported predictions (the fake PATCH above rejects it otherwise).
-    project_prefix = f"/api/projects/{result['project_id']}"
-    assert fake.requests.index(("POST", f"{project_prefix}/import")) < fake.requests.index(("PATCH", project_prefix))
 
 
 def test_provision_leaves_prefill_alone_for_a_plain_text_project(monkeypatch, podman, tmp_path):
