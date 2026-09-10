@@ -16,13 +16,13 @@ from typing import Any
 from . import llm
 from .candidates import CandidateText
 from .gliner_data import ModelLimits, to_gliner_record
-from .schema import ALLOWED_LABELS, Annotation, AnnotationStatus, Example, SourceMetadata
+from .schema import ALLOWED_LABELS, Annotation, AnnotationStatus, Example, SourceMetadata, canonical_label
 from .synthesis import map_mentions
 
 AUTOLABEL_PROMPT = """Identify every disease or phenotype mention in the medical text.
 Return ONLY a JSON array, with no markdown or explanation. Each item must be an object with
-exactly these fields: {\"text\": the exact contiguous mention copied from the input,
-\"label\": either \"disease\" or \"phenotype\"}. Return [] when there are no mentions.
+exactly these fields: {{\"text\": the exact contiguous mention copied from the input,
+\"label\": either \"disease\" or \"phenotype\"}}. Return [] when there are no mentions.
 Do not return offsets. Do not normalize, expand, or paraphrase mentions.
 
 Text:
@@ -59,9 +59,10 @@ def _parse_reply(reply: str) -> list[dict[str, str]]:
         text, label = item["text"], item["label"]
         if not isinstance(text, str) or not text:
             raise AutolabelError("mention text must be a non-empty string")
-        if not isinstance(label, str) or label.strip().lower() not in ALLOWED_LABELS:
+        canonical = canonical_label(label) if isinstance(label, str) else None
+        if canonical is None:
             raise AutolabelError(f"unsupported label {label!r}; expected one of {ALLOWED_LABELS}")
-        mentions.append({"text": text, "label": label.strip().lower()})
+        mentions.append({"text": text, "label": canonical})
     return mentions
 
 

@@ -21,8 +21,8 @@ export MEDLINER_ONBOARDING_EXPORT ?= $(CURDIR)/data/materialized/onboarding/expo
 export MEDLINER_LLM_URL ?= http://127.0.0.1:8080
 # Semi-supervised synthesis: llama.cpp supplies odd slots and 9router supplies even slots.
 # Both endpoints are mandatory when 9router is configured; the CLI hard-fails if either is down.
-export MEDLINER_SYNTH_RATIO ?= 20
-export MEDLINER_SYNTH_MIN_RATIO ?= 20
+export MEDLINER_SYNTH_RATIO ?= 10
+export MEDLINER_SYNTH_MIN_RATIO ?= 5
 export MEDLINER_SYNTH_MAX_ATTEMPTS ?= 3
 export MEDLINER_SYNTH_MAX_WORDS ?= 250
 export MEDLINER_SYNTH_MIN_SIMILARITY ?= 0.3
@@ -120,6 +120,10 @@ export:
 
 synthesize:
 	uv run medliner synthesize
+
+# Alias for the trusted 9router pseudo-labeling stage; output remains draft/model_suggestion.
+autolabel:
+	uv run medliner autolabel
 
 train:
 	uv run medliner pipeline

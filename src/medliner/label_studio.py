@@ -22,6 +22,7 @@ from .schema import (
     AnnotationStatus,
     Example,
     SourceMetadata,
+    canonical_label,
 )
 
 
@@ -196,9 +197,11 @@ def _result_annotations(task: dict[str, Any], annotation_set: dict[str, Any] | N
             raise LabelStudioExportError(
                 f"task {task.get('id', '<unknown>')} span must contain exactly one string label"
             )
-        label = labels[0].strip().lower()
-        if label not in ALLOWED_LABELS:
-            raise LabelStudioExportError(f"unsupported Label Studio label {label!r}; expected {ALLOWED_LABELS}")
+        label = canonical_label(labels[0])
+        if label is None:
+            raise LabelStudioExportError(
+                f"unsupported Label Studio label {labels[0].strip().lower()!r}; expected {ALLOWED_LABELS}"
+            )
         if start < 0 or end <= start or end > len(text):
             raise LabelStudioExportError(
                 f"invalid character span [{start}, {end}) for task {task.get('id', '<unknown>')!r}"

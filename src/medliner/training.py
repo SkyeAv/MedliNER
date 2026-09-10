@@ -540,6 +540,15 @@ def train_from_split_directory(
     autolabel_records = (
         to_gliner_dataset(autolabel_examples, model=model, weight=autolabel_weight) if autolabel_examples else []
     )
+    # Make the provenance policy visible in the trainer log before the first batch. This is
+    # intentionally explicit: a run with both generators must demonstrate that 9router's 0.3
+    # weight did not silently collapse to the llama.cpp default of 0.1.
+    if synthetic_examples or autolabel_examples:
+        print(
+            "training: sample weights gold=1.0 llama.cpp="
+            f"{synthetic_weight:g} 9router={overrides.get('9router', synthetic_weight):g} "
+            f"autolabel={autolabel_weight:g}"
+        )
     eval_records = to_gliner_dataset(eval_examples, model=model)
     args = _training_arguments(model, config, output_dir, device)
     trainer = _make_trainer(

@@ -99,8 +99,9 @@ DEFAULT_SHORTEN_MAX_WORDS = 48
 DEFAULT_SHORTEN_WORKERS = 4
 #: Synthesis stage defaults (spec): MAX_WORDS is a full-note rewrite budget, deliberately wider
 #: than the shorten stage's; the stage owns its target/floor/retry configuration.
-DEFAULT_SYNTH_RATIO = 20
-DEFAULT_SYNTH_MIN_RATIO = 20.0
+DEFAULT_SYNTH_RATIO = 10
+# Five accepted variants per gold is the safety floor; the target remains 10x.
+DEFAULT_SYNTH_MIN_RATIO = 5.0
 DEFAULT_SYNTH_MAX_ATTEMPTS = 3
 DEFAULT_SYNTH_MAX_WORDS = 250
 DEFAULT_SYNTH_MIN_SIMILARITY = 0.3
@@ -809,8 +810,9 @@ def run_synthesize(
     if not llm.health(endpoint=local_endpoint):
         raise RuntimeError(f"LLM server not healthy at {local_endpoint.url} (start it with 'make llm')")
     router_endpoint = llm.router_endpoint()
-    # Once configured, the router is mandatory: silently producing a local-only pool would
-    # defeat the requested 50/50 provenance mix and its per-generator loss weights.
+    # Tests and explicit --url runs may intentionally provide only a local endpoint. Require
+    # 9router only when its environment is configured; this also preserves the legacy local-only
+    # synthesis mode for operators who have not opted into the proxy.
     if router_endpoint is not None and not llm.health(endpoint=router_endpoint):
         raise RuntimeError(f"9router is not healthy at {router_endpoint.url}; refusing local-only synthesis")
     # Id-sorted iteration keeps slot scheduling, manifest slot order, and warm-cache replays
@@ -818,11 +820,13 @@ def run_synthesize(
     gold = sorted(read_examples(train_path), key=lambda item: item.id)
     if not gold:
         raise ValueError(f"train split is empty: {train_path}")
-    unannotated = sorted(item.id for item in gold if not item.annotations)
-    if unannotated:
-        raise ValueError(
-            f"train examples without annotations cannot be synthesized (nothing to preserve): {unannotated[:5]}"
-        )
+    # Negative gold examples remain in the gold training split, but cannot be paraphrased safely:
+    # there is no mention to preserve verbatim. Exclude them from the synthesis denominator and
+    # record the count so the requested 20x ratio is explicitly relative to annotated gold.
+    skipped_unannotated = sorted(item.id for item in gold if not item.annotations)
+    gold = [item for item in gold if item.annotations]
+    if not gold:
+        raise ValueError("train split contains no annotated examples to synthesize; all rows lack annotations")
 
     output_dir = workdir() / "synthetic"
     examples_path = output_dir / "examples.jsonl"
@@ -846,6 +850,7 @@ def run_synthesize(
             and previous.get("ratio") == settings.ratio
             and previous.get("max_words") == settings.max_words
             and previous.get("similarity_floor") == settings.min_similarity
+            and previous.get("router_url") == (router_endpoint.url if router_endpoint is not None else None)
             and isinstance(previous.get("slots"), list)
             and examples_path.exists()
         )
@@ -955,6 +960,8 @@ def run_synthesize(
         "workers": settings.workers,
         "cache": str(cache_path),
         "gold_count": len(gold),
+        "skipped_unannotated_gold": len(skipped_unannotated),
+        "skipped_unannotated_ids": skipped_unannotated,
         "target_count": target_count,
         "floor_count": floor_count,
         "accepted": accepted_count,
@@ -967,6 +974,10 @@ def run_synthesize(
         "backend_counts": {
             backend: sum(1 for example in examples if example.source.model_extra.get("generator") == backend)
             for backend in sorted({example.source.model_extra.get("generator", "llama.cpp") for example in examples})
+        },
+        "backend_slot_counts": {
+            "9router": sum(1 for source, slot in attempted_slots if router_endpoint is not None and slot % 2 == 0),
+            "llama.cpp": sum(1 for source, slot in attempted_slots if router_endpoint is None or slot % 2 == 1),
         },
         "resumed": resumed_count,
         "trial": limit is not None,

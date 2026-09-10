@@ -26,6 +26,19 @@ HUMAN_PROVENANCE_VALUES = ("human", "adjudicated")
 # Source family that marks an example as machine-synthesized. The synthesis engine stamps it on
 # SourceMetadata.family so provenance policing, split grouping, and manifest counts all see it.
 SYNTHETIC_SOURCE_FAMILY = "synthetic"
+
+
+def canonical_label(value: str) -> str | None:
+    """Normalize current merged Label Studio labels into this branch's two-label contract."""
+    folded = value.strip().casefold()
+    for allowed in ALLOWED_LABELS:
+        if folded == allowed.casefold():
+            return allowed
+    if folded == "diseaseorphenotypicfeature":
+        return "disease"
+    return None
+
+
 # Label Studio stamps each submitted region with where it came from. Pre-labeled projects need
 # this to stay auditable: "prediction" means a human submitted a model span without touching it,
 # which is a weaker signal than a span they drew or corrected themselves.
@@ -82,10 +95,10 @@ class Annotation(BaseModel):
     @field_validator("label")
     @classmethod
     def valid_label(cls, value: str) -> str:
-        value = value.strip().lower()
-        if value not in ALLOWED_LABELS:
+        canonical = canonical_label(value)
+        if canonical is None:
             raise ValueError(f"unsupported label {value!r}; expected one of {ALLOWED_LABELS}")
-        return value
+        return canonical
 
     @model_validator(mode="after")
     def valid_span(self) -> Annotation:
@@ -201,6 +214,7 @@ class SplitManifest(BaseModel):
 __all__ = [
     "ALLOWED_LABELS",
     "ALLOWED_TASKS",
+    "canonical_label",
     "Annotation",
     "AnnotationStatus",
     "DatasetManifest",

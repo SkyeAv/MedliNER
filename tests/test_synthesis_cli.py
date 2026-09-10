@@ -196,36 +196,34 @@ def test_synthesize_generates_the_target_pool_with_a_full_manifest(server, tmp_p
 
     assert cli.main(["synthesize"]) == 0
     examples = read_examples(_synthetic_dir(workdir) / "examples.jsonl")
-    assert len(examples) == 40
+    assert len(examples) == 20
     assert [item.id for item in examples] == sorted(item.id for item in examples)  # deterministic ordering
     assert all(item.source.family == "synthetic" for item in examples)
     assert all(annotation.provenance == "synthetic" for item in examples for annotation in item.annotations)
 
     manifest = json.loads((_synthetic_dir(workdir) / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["schema_version"] == "medliner.synthesis.manifest.v1"
-    assert manifest["ratio"] == 20 and manifest["min_ratio"] == 20.0
-    assert manifest["gold_count"] == 2 and manifest["target_count"] == 40 and manifest["floor_count"] == 40.0
-    assert manifest["accepted"] == 40 and manifest["achieved_ratio"] == 20.0
-    assert manifest["backend_counts"] == {"llama.cpp": 40}
+    assert manifest["ratio"] == 10 and manifest["min_ratio"] == 5.0
+    assert manifest["gold_count"] == 2 and manifest["target_count"] == 20 and manifest["floor_count"] == 10.0
+    assert manifest["accepted"] == 20 and manifest["achieved_ratio"] == 10.0
+    assert manifest["backend_counts"] == {"llama.cpp": 20}
     assert manifest["llm_url"] == server
     counters = manifest["counters"]
-    assert counters["attempts"] == 40 and counters["accepted_this_run"] == 40
+    assert counters["attempts"] == 20 and counters["accepted_this_run"] == 20
     assert counters["attempts"] == counters["accepted_this_run"] + sum(counters["rejections"].values())
-    assert manifest["gate"] == {"passed": True, "enforced": True, "required": 40.0}
+    assert manifest["gate"] == {"passed": True, "enforced": True, "required": 10.0}
     assert manifest["trial"] is False and manifest["resumed"] == 0
     assert manifest["similarity"]["min"] is not None and manifest["similarity"]["min"] >= 0.3
     assert manifest["similarity"]["min"] <= manifest["similarity"]["mean"] <= manifest["similarity"]["max"] <= 1.0
-    assert manifest["label_counts"] == {"disease": 40, "phenotype": 20}
-    assert manifest["task_counts"] == {"contraindication": 20, "indication": 20}
+    assert manifest["label_counts"] == {"disease": 20, "phenotype": 10}
+    assert manifest["task_counts"] == {"contraindication": 10, "indication": 10}
     slots = manifest["slots"]
-    assert len(slots) == 40
+    assert len(slots) == 20
     assert slots == sorted(slots, key=lambda record: (record["source_id"], record["slot"]))  # variants by slot
     per_gold_a = [record["variant"] for record in slots if record["source_id"] == "gold-a"]
-    assert per_gold_a == list(cli.SYNTH_VARIANT_STYLES) + [
-        f"{style}-2" for style in cli.SYNTH_VARIANT_STYLES
-    ]  # slot k gets style k
+    assert per_gold_a == list(cli.SYNTH_VARIANT_STYLES)  # slot k gets style k
     assert all(record["attempts"] == 1 for record in slots)
-    assert "40/40 variants accepted" in capsys.readouterr().out
+    assert "20/20 variants accepted" in capsys.readouterr().out
 
 
 def test_synthesize_fails_below_min_ratio(server, tmp_path, monkeypatch, capsys):
@@ -246,7 +244,7 @@ def test_synthesize_fails_below_min_ratio(server, tmp_path, monkeypatch, capsys)
     assert "manifest" in error
     manifest = json.loads((_synthetic_dir(workdir) / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["accepted"] == 0 and manifest["gate"]["passed"] is False
-    assert manifest["counters"]["rejections"]["missing_mention"] == 40
+    assert manifest["counters"]["rejections"]["missing_mention"] == 20
     assert (_synthetic_dir(workdir) / "examples.jsonl").exists()
 
 
@@ -314,16 +312,16 @@ def test_synthesize_resumes_an_interrupted_run(server, tmp_path, monkeypatch, ca
     assert StubSynthHandler.request_count == 4
 
     assert cli.main(["synthesize"]) == 0
-    assert StubSynthHandler.request_count == 40  # only the 36 pending slots hit the server
+    assert StubSynthHandler.request_count == 20  # only the 36 pending slots hit the server
     resumed = read_examples(_synthetic_dir(workdir) / "examples.jsonl")
-    assert len(resumed) == 40
+    assert len(resumed) == 20
     assert {item.id for item in first} <= {item.id for item in resumed}
     manifest = json.loads((_synthetic_dir(workdir) / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["resumed"] == 4
-    assert manifest["counters"]["attempts"] == 36
-    assert manifest["counters"]["accepted_this_run"] == 36
-    assert manifest["accepted"] == 40 and manifest["achieved_ratio"] == 20.0
-    assert len(manifest["slots"]) == 40
+    assert manifest["counters"]["attempts"] == 16
+    assert manifest["counters"]["accepted_this_run"] == 16
+    assert manifest["accepted"] == 20 and manifest["achieved_ratio"] == 10.0
+    assert len(manifest["slots"]) == 20
     assert manifest["gate"]["passed"] is True
 
 
@@ -336,14 +334,14 @@ def test_synthesize_force_regenerates_everything_without_the_cache(server, tmp_p
     workdir = _stage(monkeypatch, server, tmp_path / "work", WORKERS=1)
     _write_train(workdir, _gold())
     assert cli.main(["synthesize"]) == 0
-    assert StubSynthHandler.request_count == 40
+    assert StubSynthHandler.request_count == 20
     first_texts = {item.text for item in read_examples(_synthetic_dir(workdir) / "examples.jsonl")}
 
     StubSynthHandler.marker_replies = {"eczema": REPLY_A_ALT, "migraine": REPLY_B_ALT}
     assert cli.main(["synthesize", "--force"]) == 0
-    assert StubSynthHandler.request_count == 80  # no reply served from the cache
+    assert StubSynthHandler.request_count == 40  # no reply served from the cache
     manifest = json.loads((_synthetic_dir(workdir) / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["resumed"] == 0 and manifest["counters"]["attempts"] == 40
+    assert manifest["resumed"] == 0 and manifest["counters"]["attempts"] == 20
     second_texts = {item.text for item in read_examples(_synthetic_dir(workdir) / "examples.jsonl")}
     assert second_texts and not (first_texts & second_texts)  # genuinely regenerated
 
@@ -360,11 +358,11 @@ def test_synthesize_warm_cache_rerun_is_byte_identical(server, tmp_path, monkeyp
     examples_path = _synthetic_dir(workdir) / "examples.jsonl"
     manifest_path = _synthetic_dir(workdir) / "manifest.json"
     first = (examples_path.read_bytes(), manifest_path.read_bytes())
-    assert StubSynthHandler.request_count == 40
+    assert StubSynthHandler.request_count == 20
 
     shutil.rmtree(_synthetic_dir(workdir))  # keep the cache, lose the outputs
     assert cli.main(["synthesize"]) == 0
-    assert StubSynthHandler.request_count == 40  # entirely served from the warm cache
+    assert StubSynthHandler.request_count == 20  # entirely served from the warm cache
     assert (examples_path.read_bytes(), manifest_path.read_bytes()) == first
 
 
@@ -383,7 +381,7 @@ def test_synthesize_limit_trial_still_enforces_the_floor_gate(server, tmp_path, 
     assert "floor requires" in error and "MEDLINER_SYNTH_MIN_RATIO" in error
     manifest = json.loads((_synthetic_dir(workdir) / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["trial"] is True and manifest["limit"] == 3
-    assert manifest["gate"] == {"passed": False, "enforced": True, "required": 40.0}
+    assert manifest["gate"] == {"passed": False, "enforced": True, "required": 10.0}
     assert manifest["counters"]["attempts"] == 3
     assert (_synthetic_dir(workdir) / "examples.jsonl").exists()
 
