@@ -25,6 +25,7 @@ from medliner.training import (
     _precision,
     _seed_everything,
     _training_arguments,
+    clean_machine_examples,
     load_config,
 )
 
@@ -132,6 +133,28 @@ def test_robust_loss_wrapper_preserves_the_raw_loss_on_outputs():
     assert torch.isclose(outputs.raw_loss, torch.tensor(1000.0))
     assert torch.isclose(outputs.loss, bounded)
     assert torch.isclose(bounded, torch.tensor(10.0))
+
+
+def test_clean_machine_examples_removes_exact_duplicates_but_keeps_disagreements():
+    first = Example(
+        id="first",
+        text="A disease",
+        task="indication",
+        annotations=[Annotation(start=2, end=9, label="disease", text="disease", provenance="synthetic")],
+        source={"family": "synthetic"},
+    )
+    duplicate = first.model_copy(update={"id": "duplicate"})
+    disagreement = first.model_copy(
+        update={
+            "id": "disagreement",
+            "annotations": [Annotation(start=2, end=9, label="phenotype", text="disease", provenance="synthetic")],
+        }
+    )
+
+    cleaned, removed = clean_machine_examples([first, duplicate, disagreement])
+
+    assert removed == 1
+    assert [item.id for item in cleaned] == [first.id, disagreement.id]
 
 
 def test_load_config_rejects_a_non_mapping(tmp_path):

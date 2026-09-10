@@ -544,6 +544,32 @@ def _autolabel_pool_path() -> Path:
     return Path(os.environ.get("MEDLINER_WORKDIR", "data/materialized")) / "autolabel" / "examples.jsonl"
 
 
+def clean_machine_examples(examples: list[Example]) -> tuple[list[Example], int]:
+    """Remove only byte-equivalent machine duplicates while preserving negatives and disagreements.
+
+    Synthetic generators can produce the same rewrite under different prompt styles. Exact
+    normalized-text duplicates with an identical task and annotation signature add no supervision
+    and overweight that example. We retain a duplicate when its annotations differ, because that
+    disagreement is signal that must not be silently resolved by cleaning.
+    """
+    kept: list[Example] = []
+    seen: set[tuple[Any, ...]] = set()
+    removed = 0
+    for example in examples:
+        text_key = " ".join(example.text.casefold().split())
+        annotation_key = tuple(
+            (annotation.start, annotation.end, annotation.label, annotation.text.casefold())
+            for annotation in example.annotations
+        )
+        key = (example.task, text_key, annotation_key)
+        if key in seen:
+            removed += 1
+            continue
+        seen.add(key)
+        kept.append(example)
+    return kept, removed
+
+
 def _load_autolabel_examples(config: dict[str, Any]) -> tuple[list[Example], str | None]:
     path = _autolabel_pool_path()
     if not path.exists():
@@ -645,6 +671,8 @@ def train_from_split_directory(
     overrides = {str(key): float(value) for key, value in (config.get("synthetic_weight_overrides") or {}).items()}
     synthetic_examples, synthetic_dataset_hash = _load_synthetic_examples(config, no_synthetic=no_synthetic)
     autolabel_examples, autolabel_dataset_hash = _load_autolabel_examples(config)
+    synthetic_examples, synthetic_duplicates_removed = clean_machine_examples(synthetic_examples)
+    autolabel_examples, autolabel_duplicates_removed = clean_machine_examples(autolabel_examples)
     machine_examples = [*synthetic_examples, *autolabel_examples]
     _assert_no_synthetic_in_held_out(machine_examples, held_out_examples)
     train_examples = sliding_window_examples(train_examples, model, max_len=max_length, max_width=max_width)
@@ -698,10 +726,12 @@ def train_from_split_directory(
         "train_examples": len(train_examples) + len(machine_examples),
         "gold_train_examples": len(train_examples),
         "synthetic_examples": len(synthetic_examples),
+        "synthetic_duplicates_removed": synthetic_duplicates_removed,
         "synthetic_weight": synthetic_weight,
         "synthetic_weight_overrides": overrides,
         "synthetic_dataset_hash": synthetic_dataset_hash,
         "autolabel_examples": len(autolabel_examples),
+        "autolabel_duplicates_removed": autolabel_duplicates_removed,
         "autolabel_weight": autolabel_weight,
         "autolabel_dataset_hash": autolabel_dataset_hash,
         "validation_examples": len(eval_examples),
